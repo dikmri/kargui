@@ -945,6 +945,6 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         }
     }
     STATE.with(|s| s.borrow_mut().take());
-    log::event("exit", "", "ok");
+    log::event("loop.end", "", "ok");
     Ok(())
 }
