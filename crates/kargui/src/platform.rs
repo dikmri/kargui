@@ -68,6 +68,8 @@ enum Post {
     AssociateIme(HWND, bool),
     ImePosition(HWND, IRect),
     DarkTitle(HWND, bool),
+    /// マウスを捕まえる（true）か放す（false）か
+    Capture(HWND, bool),
 }
 
 /// 読み上げの操作を、窓の持ち主のスレッドへ渡す係（AccessKit は別のスレッドから呼ぶことがある）
@@ -270,6 +272,13 @@ fn drain_post() {
                 log::event("ime.associate", &format!("on={on}"), &format!("ok={}", ok.as_bool()));
             },
             Post::ImePosition(hwnd, caret) => set_ime_position(hwnd, caret),
+            Post::Capture(hwnd, on) => unsafe {
+                if on {
+                    SetCapture(hwnd);
+                } else {
+                    let _ = ReleaseCapture();
+                }
+            },
             Post::DarkTitle(hwnd, dark) => unsafe {
                 let v = BOOL::from(dark);
                 let res = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&v as *const BOOL).cast(), 4);
@@ -550,7 +559,7 @@ impl State {
                 }
                 Some(LRESULT(0))
             }
-            WM_ERASEBKGND => Some(LRESULT(1)),
+
             WM_DPICHANGED => {
                 let dpi = (wp.0 & 0xffff) as f32;
                 let (w, h) = (self.rt.cx.width, self.rt.cx.height);
@@ -614,7 +623,8 @@ impl State {
             }
             WM_LBUTTONDOWN => {
                 let (x, y) = (lo(lp.0) as f32, hi(lp.0) as f32);
-                unsafe { SetCapture(self.hwnd) };
+                // マウスの捕まえは WM_CAPTURECHANGED を送り返すので、借りの外で行う
+                self.post.push(Post::Capture(self.hwnd, true));
                 let target = self.rt.cx.hit(x, y).map(|h| h.id);
                 log::event("click", &format!("x={x} y={y}"), &format!("target={target:?}"));
                 self.push(Event::PointerDown { x, y, shift: mods_now().shift });
@@ -622,9 +632,7 @@ impl State {
             }
             WM_LBUTTONUP => {
                 let (x, y) = (lo(lp.0) as f32, hi(lp.0) as f32);
-                unsafe {
-                    let _ = ReleaseCapture();
-                }
+                self.post.push(Post::Capture(self.hwnd, false));
                 self.push(Event::PointerUp { x, y });
                 Some(LRESULT(0))
             }
@@ -750,6 +758,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
     }
     match msg {
+        // 状態を使わない物は、借りる前に答える（BeginPaint などの中から入れ子で届くため）
+        WM_ERASEBKGND => return LRESULT(1),
+        WM_NCPAINT | WM_CAPTURECHANGED => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
         WM_IME_SETCONTEXT => {
             // IME の既定の変換中の窓を出さない（変換中の文字は入力欄の中に描く）
             let lp = LPARAM(((lp.0 as u32) & !ISC_SHOWUICOMPOSITIONWINDOW) as i32 as isize);
