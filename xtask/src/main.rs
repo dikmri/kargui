@@ -179,8 +179,9 @@ fn shots() -> Vec<Shot> {
             size: (360.0, 180.0),
             view: |ui| {
                 ui.list(1000, 32.0).grow().show(|ui, i| {
-                    ui.checkbox(&mut (i % 3 == 2), "").label(format!("Item {i}"));
-                    ui.label(format!("Item {i}")).grow();
+                    let done = i % 3 == 2;
+                    ui.checkbox(&mut done.clone(), format!("Item {i}")).strike(done);
+                    ui.fill();
                     ui.button("Delete").small().width(Size::Auto);
                 });
             },

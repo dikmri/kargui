@@ -98,7 +98,7 @@ pub(crate) enum Kind {
     Stack,
     Label { text: String, size: TextKind, bold: bool, weak: bool, strike: bool, wrap: bool },
     Button { text: String, primary: bool, small: bool },
-    Checkbox { checked: bool, text: String },
+    Checkbox { checked: bool, text: String, strike: bool },
     Toggle { on: bool, text: String },
     Segment { text: String, selected: bool },
     TextInput { value: String, hint: String },
@@ -362,7 +362,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn checkbox(&mut self, checked: &mut bool, text: impl Into<String>) -> Toggled<'_> {
-        let (idx, id) = self.add(Kind::Checkbox { checked: *checked, text: text.into() }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::Checkbox { checked: *checked, text: text.into(), strike: false }, Dir::Leaf);
         let changed = self.cx.clicked == Some(id);
         if changed {
             *checked = !*checked;
@@ -817,6 +817,21 @@ impl Toggled<'_> {
     /// Whether it was clicked (and the value flipped).
     pub fn changed(&self) -> bool {
         self.changed
+    }
+    /// Draws a line through a check box's label and dims it when `on` is true, for example for
+    /// finished tasks. The label stays clickable. Has no effect on switches.
+    ///
+    /// ```
+    /// # let mut done = true;
+    /// # kargui::test::example(|ui| {
+    /// ui.checkbox(&mut done, "Buy milk").strike(done);
+    /// # });
+    /// ```
+    pub fn strike(mut self, on: bool) -> Self {
+        if let Kind::Checkbox { strike, .. } = self.h.kind() {
+            *strike = on;
+        }
+        self
     }
 }
 

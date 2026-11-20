@@ -383,6 +383,33 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_checkbox_label_toggles_it() {
+        // 作者の手の確かめで、チェックの横の文字を押しても切り替わらなかった（文字を別の部品にしていた）。
+        // 文字をチェックの一部にすれば、文字の右端を押しても切り替わる
+        struct Task {
+            done: bool,
+        }
+        impl App for Task {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.row(|ui| {
+                    let done = self.done;
+                    ui.checkbox(&mut self.done, "00001 企画書を作る").strike(done);
+                    ui.fill();
+                });
+            }
+        }
+        let mut h = Harness::new(Task { done: false });
+        let r = h.find("00001 企画書を作る").unwrap();
+        let (x, y) = (r.right() - 3.0, r.y + r.h / 2.0);
+        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        assert!(h.app().done);
+        // 文字の外（右の空き）を押しても切り替わらない
+        let (x, y) = (r.right() + 40.0, r.y + r.h / 2.0);
+        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        assert!(h.app().done);
+    }
+
+    #[test]
     fn fixed_sizes_are_scaled() {
         struct Fixed;
         impl App for Fixed {

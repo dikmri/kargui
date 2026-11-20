@@ -89,10 +89,11 @@ impl App for TaskBook {
         list.show(|ui, row| {
             let task = &store.tasks()[visible[row]];
             let mut done = task.done;
-            if ui.checkbox(&mut done, "").label(&task.text).changed() {
+            // 文字もチェックの一部にする（箱と文字のどちらを押しても切り替わる）
+            if ui.checkbox(&mut done, &task.text).strike(task.done).changed() {
                 toggled = Some(task.id);
             }
-            ui.label(&task.text).strike(task.done).grow();
+            ui.fill();
             if ui.button("削除").small().label(format!("削除: {}", task.text)).clicked() {
                 removed = Some(task.id);
             }

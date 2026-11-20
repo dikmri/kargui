@@ -217,7 +217,7 @@ impl Painter<'_> {
                 put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
                 self.hit(tree, i, true, false);
             }
-            Kind::Checkbox { checked, text } => {
+            Kind::Checkbox { checked, text, strike } => {
                 let t = self.cx.theme.clone();
                 let b = self.px(sz::BOX);
                 let bx = Rect::new(r.x, (r.y + (r.h - b) / 2.0).round(), b, b);
@@ -237,7 +237,13 @@ impl Painter<'_> {
                 }
                 if !text.is_empty() {
                     let st = style(self.cx, TextKind::Body, false);
-                    text_mid(self.d, self.cx, text, st, r.x + b + self.px(sz::BOX_GAP), r, t.text);
+                    let x = r.x + b + self.px(sz::BOX_GAP);
+                    let color = if *strike { t.done_text } else { t.text };
+                    let laid = text_mid(self.d, self.cx, text, st, x, r, color);
+                    if *strike {
+                        let y = (r.y + (r.h - laid.height) / 2.0 + laid.height * 0.55).round();
+                        self.d.fill(Rect::new(x, y, laid.width, line), t.done_text, 0.0);
+                    }
                 }
                 self.hit(tree, i, true, false);
             }
