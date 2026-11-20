@@ -1,0 +1,4 @@
+# bash の台本は LF のまま（CRLF だと Git Bash で動かない）
+*.sh text eol=lf
+# 組み立て済みのシェーダー
+*.cso binary
