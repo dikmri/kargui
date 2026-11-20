@@ -2,3 +2,7 @@
 *.sh text eol=lf
 # 組み立て済みのシェーダー
 *.cso binary
+# 作った文書は LF のまま（xtask の --check が作り直した物と比べるため）
+docs/llms.txt text eol=lf
+docs/widgets.md text eol=lf
+*.png binary
