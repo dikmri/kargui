@@ -410,6 +410,37 @@ mod tests {
     }
 
     #[test]
+    fn clicks_just_outside_a_small_checkbox_still_hit_it() {
+        // 作者の手の確かめ（3 回目）で、箱の左の端から 2 画素外と、文字の終わりから 10 画素右のクリックが当たらなかった
+        struct Rows {
+            done: Vec<bool>,
+        }
+        impl App for Rows {
+            fn view(&mut self, ui: &mut Ui) {
+                let done = &mut self.done;
+                ui.list(done.len(), 32.0).grow().show(|ui, i| {
+                    ui.checkbox(&mut done[i], format!("{:05} 企画書を作る", i + 1));
+                    ui.fill();
+                    ui.button("削除").small();
+                });
+            }
+        }
+        let mut h = Harness::new(Rows { done: vec![false; 3] });
+        let r = h.find("00001 企画書を作る").unwrap();
+        let mid = r.y + r.h / 2.0;
+        for (x, y) in [(r.x - 2.0, mid), (r.right() + 10.0, mid), (r.x + 4.0, r.y - 5.0)] {
+            let before = h.app().done[0];
+            h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+            assert_ne!(h.app().done[0], before, "({x}, {y}) が当たらない");
+        }
+        // 2 行目の本来の範囲は、1 行目の余白より強い
+        let r2 = h.find("00002 企画書を作る").unwrap();
+        let (x, y) = (r2.x + 4.0, r2.y + 1.0);
+        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        assert!(h.app().done[1]);
+    }
+
+    #[test]
     fn fixed_sizes_are_scaled() {
         struct Fixed;
         impl App for Fixed {
@@ -423,3 +454,4 @@ mod tests {
         assert_eq!(h.find("Wide").unwrap().w, 300.0);
     }
 }
+

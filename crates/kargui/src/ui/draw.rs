@@ -26,6 +26,9 @@ mod sz {
     pub const INPUT_PAD: f32 = 10.0;
     pub const RADIUS: f32 = 6.0;
     pub const SCROLLBAR_W: f32 = 6.0;
+    /// チェックとスイッチの当たりの余白（左右・上下）
+    pub const SLOP_X: f32 = 12.0;
+    pub const SLOP_Y: f32 = 8.0;
 }
 
 fn style(cx: &Context, kind: TextKind, bold: bool) -> TextStyle {
@@ -152,7 +155,11 @@ impl Painter<'_> {
         let r = tree.layout[i].rect;
         if let Some(r) = intersect(r, self.clip) {
             let id = tree.info[i].id;
-            self.prev.hits.push(Hit { id, rect: r, focusable, text_input });
+            // チェックとスイッチは小さいので、少し外れたクリックも当てる（切り取り範囲の外には広げない）
+            let small = matches!(tree.info[i].kind, Kind::Checkbox { .. } | Kind::Toggle { .. });
+            let (sx, sy) = if small { (self.px(sz::SLOP_X), self.px(sz::SLOP_Y)) } else { (0.0, 0.0) };
+            let slop = intersect(Rect::new(r.x - sx, r.y - sy, r.w + 2.0 * sx, r.h + 2.0 * sy), self.clip).unwrap_or(r);
+            self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input });
             if focusable {
                 self.prev.focus_order.push(id);
             }

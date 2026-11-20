@@ -271,7 +271,7 @@ impl EditState {
 mod tests {
     use super::*;
 
-    fn at(s: &str, i: usize) -> EditState {
+    fn at(_s: &str, i: usize) -> EditState {
         EditState { cursor: i, anchor: i, ..Default::default() }
     }
 

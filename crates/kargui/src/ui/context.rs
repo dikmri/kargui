@@ -36,8 +36,17 @@ impl Clipboard for MemoryClipboard {
 pub(crate) struct Hit {
     pub id: Id,
     pub rect: Rect,
+    /// 当たりの余白を含めた範囲（小さい部品だけ rect より広い）
+    pub slop: Rect,
     pub focusable: bool,
     pub text_input: bool,
+}
+
+/// 点 (x, y) から四角までの距離の 2 乗（中なら 0）
+fn distance2(r: &Rect, x: f32, y: f32) -> f32 {
+    let dx = (r.x - x).max(0.0).max(x - r.right());
+    let dy = (r.y - y).max(0.0).max(y - r.bottom());
+    dx * dx + dy * dy
 }
 
 /// 一覧の、前のフレームでの場所と中身の高さ（物理ピクセル）
@@ -132,9 +141,17 @@ impl Context {
         }
     }
 
-    /// 前のフレームで (x, y) にあった、押せる部品（上に重なっている物）
+    /// 前のフレームで (x, y) にあった、押せる部品（上に重なっている物）。
+    /// 本来の範囲で見つからなければ、当たりの余白の中で一番近い部品にする（隣の部品の範囲は奪わない）
     pub fn hit(&self, x: f32, y: f32) -> Option<&Hit> {
-        self.prev.hits.iter().rev().find(|h| h.rect.contains(x, y))
+        if let Some(h) = self.prev.hits.iter().rev().find(|h| h.rect.contains(x, y)) {
+            return Some(h);
+        }
+        self.prev
+            .hits
+            .iter()
+            .filter(|h| h.slop.contains(x, y))
+            .min_by(|a, b| distance2(&a.rect, x, y).total_cmp(&distance2(&b.rect, x, y)))
     }
 
     fn is_text_input(&self, id: Id) -> bool {
