@@ -275,6 +275,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae293c039020f9ec10710af98d29ce6aa2051486638b49c9a6409f3b4a9e98ad"
 
 [[package]]
+name = "kargui"
+version = "0.0.1"
+dependencies = [
+ "accesskit",
+ "accesskit_windows",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "kargui-spike"
 version = "0.0.0"
 dependencies = [
@@ -588,6 +598,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "taskbook-kargui"
+version = "0.0.0"
+dependencies = [
+ "kargui",
+ "taskcore",
+]
+
+[[package]]
 name = "taskcore"
 version = "0.1.0"
 
@@ -753,6 +771,10 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
 
 [[package]]
 name = "yeslogic-fontconfig-sys"
