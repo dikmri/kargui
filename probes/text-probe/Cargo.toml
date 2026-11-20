@@ -1,0 +1,16 @@
+[package]
+name = "text-probe"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "段階 0: 文字の並べ方を parley と DirectWrite で比べる（起動の時間・1 行あたりの時間・メモリ・依存の数）"
+
+[dependencies]
+parley = "=0.13.0"
+taskcore = { path = "../../taskcore" }
+
+[dependencies.windows]
+version = "=0.62.2"
+features = ["Win32_Foundation", "Win32_Graphics_DirectWrite", "Win32_System_ProcessStatus", "Win32_System_Threading"]
+

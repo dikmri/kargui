@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["taskcore", "spike"]
+members = ["taskcore", "spike", "probes/text-probe"]
 
 [workspace.package]
 edition = "2024"

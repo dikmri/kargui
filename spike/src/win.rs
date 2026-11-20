@@ -10,6 +10,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -36,6 +37,10 @@ use crate::raster::Canvas;
 use crate::text::Text;
 
 const WM_APP_A11Y: u32 = WM_APP + 1;
+/// 変換中に手が止まったら、候補の窓の位置を記録するためのタイマー
+const IME_SHOT_TIMER: usize = 7;
+const IME_SHOT_DELAY_MS: u32 = 600;
+const IME_SHOT_MAX: u32 = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RendererKind {
@@ -121,7 +126,19 @@ struct State {
     high_surrogate: Option<u16>,
     vblank_count: u64,
     last_caret: Option<IRect>,
+    /// 記録の置き場所（候補の窓の写真もここに置く）
+    log_dir: PathBuf,
+    ime_shots: u32,
+    /// 遅いフレームの内訳を記録するための、前のフレームの時間（ミリ秒）
+    last_tick_at: Option<Instant>,
+    t_build: f64,
+    t_draw: f64,
+    t_wait: f64,
+    slow_frames: u32,
 }
+
+/// これより長くフレームの間が空いたら、内訳を記録する（60 Hz の 1.5 フレーム）
+const SLOW_FRAME_MS: f64 = 25.0;
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -235,7 +252,10 @@ impl State {
     /// 描く。CPU の道では、スクロールだけが変わったときは絵をずらして帯だけを描く
     fn render(&mut self, why: &str) {
         let t = Instant::now();
+        let made_before = (self.text.layouts_made, self.text.glyphs_made);
         self.app.build(&mut self.text, &mut self.list);
+        self.t_build = t.elapsed().as_secs_f64() * 1000.0;
+        let t_draw = Instant::now();
         let scroll = self.app.scroll_px();
         let full = self.full_dirty || self.drawn_scroll.is_none();
         let mut mode = "none";
@@ -267,6 +287,18 @@ impl State {
                 c.present(&rects);
             }
             None => return,
+        }
+        self.t_draw = t_draw.elapsed().as_secs_f64() * 1000.0;
+        if self.animating() && self.t_build + self.t_draw > SLOW_FRAME_MS * 0.5 {
+            log::event(
+                "frame.heavy",
+                &format!(
+                    "mode={mode} new_layouts={} new_glyphs={}",
+                    self.text.layouts_made - made_before.0,
+                    self.text.glyphs_made - made_before.1
+                ),
+                &format!("build_ms={:.2} draw_ms={:.2}", self.t_build, self.t_draw),
+            );
         }
         self.drawn_scroll = Some(scroll);
         self.full_dirty = false;
@@ -351,6 +383,24 @@ impl State {
 
     /// 測定のスクロール。描くたびに呼ぶ
     fn tick(&mut self) {
+        let now = Instant::now();
+        if let Some(prev) = self.last_tick_at {
+            let gap = (now - prev).as_secs_f64() * 1000.0;
+            if gap > SLOW_FRAME_MS {
+                self.slow_frames += 1;
+                // 前のフレームの内訳: 作る・描く・垂直同期の待ち。残りはメッセージの処理か、OS に止められた時間
+                let rest = gap - self.t_build - self.t_draw - self.t_wait;
+                log::event(
+                    "frame.slow",
+                    &format!("n={} gap_ms={gap:.1}", self.slow_frames),
+                    &format!(
+                        "build_ms={:.2} draw_ms={:.2} wait_ms={:.2} other_ms={rest:.1}",
+                        self.t_build, self.t_draw, self.t_wait
+                    ),
+                );
+            }
+        }
+        self.last_tick_at = Some(now);
         let Some(ready) = self.ready_at else { return };
         let Some(bench) = self.bench.as_mut() else { return };
         match bench.tick(ready.elapsed().as_secs_f32()) {
@@ -377,6 +427,7 @@ impl State {
     fn wait_vblank(&mut self) {
         // 前面にない窓は、--full-rate が無ければ 2 回に 1 回だけ描く（約 30 fps）
         let waits = if self.window_focused || self.full_rate { 1 } else { 2 };
+        let t = Instant::now();
         for _ in 0..waits {
             self.vblank_count += 1;
             match self.renderer.as_mut() {
@@ -385,6 +436,7 @@ impl State {
                 None => {}
             }
         }
+        self.t_wait = t.elapsed().as_secs_f64() * 1000.0;
     }
 
     fn forget_output(&mut self) {
@@ -581,6 +633,8 @@ impl State {
                         log::event("ime.preedit", &format!("text={s}"), "shown");
                         self.app.preedit = s;
                     }
+                    // 手が止まったら候補の窓の位置を記録する
+                    unsafe { SetTimer(Some(self.hwnd), IME_SHOT_TIMER, IME_SHOT_DELAY_MS, None) };
                 } else if flags & GCS_RESULTSTR.0 != 0 {
                     self.app.preedit.clear();
                 }
@@ -595,6 +649,25 @@ impl State {
                 Some(LRESULT(0))
             }
             WM_IME_CHAR => Some(LRESULT(0)),
+            WM_IME_NOTIFY => {
+                log::event("ime.notify", &format!("imn=0x{:02X}", wp.0), "default");
+                None
+            }
+            WM_TIMER if wp.0 == IME_SHOT_TIMER => {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), IME_SHOT_TIMER);
+                }
+                if self.composing && self.ime_shots < IME_SHOT_MAX {
+                    self.ime_shots += 1;
+                    let c = self.app.caret;
+                    let mut p = POINT { x: c.x as i32, y: c.bottom() as i32 };
+                    unsafe {
+                        let _ = ClientToScreen(self.hwnd, &mut p);
+                    }
+                    crate::imeshot::shot(self.hwnd, p.x, p.y, &self.log_dir, self.ime_shots);
+                }
+                Some(LRESULT(0))
+            }
             WM_APP_A11Y => {
                 self.apply_a11y_actions();
                 Some(LRESULT(0))
@@ -641,7 +714,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 }
 
 /// 窓を作って、閉じられるまでメッセージの輪を回す
-pub fn run(a: Args, kind: RendererKind, main_started: Instant) -> Result<()> {
+pub fn run(a: Args, kind: RendererKind, main_started: Instant, log_dir: PathBuf) -> Result<()> {
     let t0 = Instant::now();
     unsafe {
         if let Err(e) = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) {
@@ -671,7 +744,16 @@ pub fn run(a: Args, kind: RendererKind, main_started: Instant) -> Result<()> {
     }
     let scale = dx as f32 / 96.0;
     let style = WS_OVERLAPPEDWINDOW;
-    let mut r = RECT { left: 0, top: 0, right: (WINDOW_SIZE.0 * scale) as i32, bottom: (WINDOW_SIZE.1 * scale) as i32 };
+    // 窓の中の大きさ（論理ピクセル）。既定は前回の比べと同じ 900×640。
+    // 大きい窓での重さを測るときは、環境変数 KARGUI_SIZE=1800x1000 のように変える
+    let (sw, sh) = std::env::var("KARGUI_SIZE")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?))
+        })
+        .unwrap_or(WINDOW_SIZE);
+    let mut r = RECT { left: 0, top: 0, right: (sw * scale) as i32, bottom: (sh * scale) as i32 };
     unsafe {
         let _ = AdjustWindowRectExForDpi(&mut r, style, false, WINDOW_EX_STYLE(0), dx);
     }
@@ -748,6 +830,13 @@ pub fn run(a: Args, kind: RendererKind, main_started: Instant) -> Result<()> {
             high_surrogate: None,
             vblank_count: 0,
             last_caret: None,
+            log_dir,
+            ime_shots: 0,
+            last_tick_at: None,
+            t_build: 0.0,
+            t_draw: 0.0,
+            t_wait: 0.0,
+            slow_frames: 0,
         })
     });
 

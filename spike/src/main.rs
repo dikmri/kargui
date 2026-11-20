@@ -7,6 +7,7 @@ mod app;
 mod cpu;
 mod draw;
 mod gpu;
+mod imeshot;
 mod raster;
 mod text;
 mod win;
@@ -37,7 +38,11 @@ fn main() {
         ),
         &format!("log={path:?}"),
     );
-    if let Err(e) = win::run(a, kind, main_started) {
+    let log_dir = std::path::Path::new(a.log_path.as_deref().unwrap_or(DEFAULT_LOG))
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    if let Err(e) = win::run(a, kind, main_started, log_dir) {
         log::event("error", "run", &format!("{e:?}"));
     }
     log::event("exit", "", "ok");
