@@ -30,7 +30,7 @@ pub(crate) struct Runtime {
 pub(crate) struct FrameOut {
     /// もう 1 フレーム描いてほしい（アニメーション、一覧の高さのずれ）
     pub want_frame: bool,
-    pub unlabeled: usize,
+
 }
 
 impl Runtime {
@@ -86,7 +86,7 @@ impl Runtime {
         }
         self.tree = tree;
         self.frames += 1;
-        FrameOut { want_frame: want, unlabeled: 0 }
+        FrameOut { want_frame: want }
     }
 
     pub fn a11y(&mut self) -> (TreeUpdate, usize) {

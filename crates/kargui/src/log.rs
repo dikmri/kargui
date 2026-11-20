@@ -33,7 +33,3 @@ pub(crate) fn event(event: &str, args: &str, result: &str) {
     }
 }
 
-/// 記録が要るか（記録の文字列を作る手間を省くため）
-pub(crate) fn enabled() -> bool {
-    LOGGER.get().is_some()
-}

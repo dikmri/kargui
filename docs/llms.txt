@@ -1,0 +1,290 @@
+# kargui
+
+> A light native GUI framework for Rust (Windows 10/11). Immediate-mode code, CPU rendering that only redraws what changed, input methods (IME) and screen readers built in.
+
+This file is generated from the source by `cargo run -p xtask -- llms`. Do not edit by hand.
+
+## Writing a screen
+
+Building screens.
+
+You describe the whole screen in [`App::view`](crate::App::view) every time something
+changes. Keep your state in your own struct and pass it to widgets:
+
+```
+use kargui::{App, Ui};
+
+struct Counter {
+    count: u32,
+}
+
+impl App for Counter {
+    fn view(&mut self, ui: &mut Ui) {
+        ui.row(|ui| {
+            ui.label(format!("Count: {}", self.count));
+            if ui.button("Add").clicked() {
+                self.count += 1;
+            }
+        });
+    }
+}
+
+let mut h = kargui::test::Harness::new(Counter { count: 0 });
+h.click("Add");
+assert_eq!(h.app().count, 1);
+```
+
+kargui remembers each widget between frames (text cursor, scroll position, focus) by an
+[`Id`] derived from where in your code the widget is created. Widgets created in a loop are
+told apart by their order; use [`Ui::keyed`] when items can move.
+
+## Widgets and layout (methods of `Ui`)
+
+### `pub fn row(&mut self, f: impl FnOnce(&mut Ui)) -> Handle<'_>`
+
+Places the widgets created in `f` side by side, centered vertically.
+
+```
+ui.row(|ui| {
+    ui.label("Name");
+    ui.button("OK");
+});
+```
+
+### `pub fn column(&mut self, f: impl FnOnce(&mut Ui)) -> Handle<'_>`
+
+Places the widgets created in `f` one below another, as wide as the column.
+
+```
+ui.column(|ui| {
+    ui.heading("Settings");
+    ui.label("Choose how the app looks.");
+});
+```
+
+### `pub fn stack(&mut self, f: impl FnOnce(&mut Ui)) -> Handle<'_>`
+
+Places the widgets created in `f` on top of each other.
+
+```
+ui.stack(|ui| {
+    ui.label("Under");
+    ui.label("Over");
+});
+```
+
+### `pub fn keyed<K: Hash>(&mut self, key: K, f: impl FnOnce(&mut Ui))`
+
+Gives the widgets created in `f` identities based on `key`, so that their state
+(text cursor, focus) follows the item when items are added, removed or reordered.
+
+```
+for (id, name) in [(7, "Milk"), (3, "Bread")] {
+    ui.keyed(id, |ui| {
+        ui.label(name);
+    });
+}
+```
+
+### `pub fn fill(&mut self)`
+
+Empty space that takes the rest of the row (or column), pushing the following widgets to the end.
+
+```
+ui.row(|ui| {
+    ui.heading("Tasks");
+    ui.fill();
+    ui.button("Settings");
+});
+```
+
+### `pub fn space(&mut self, length: f32)`
+
+Empty space of a fixed length (logical pixels).
+
+```
+ui.label("Above");
+ui.space(24.0);
+ui.label("Below");
+```
+
+### `pub fn label(&mut self, text: impl Into<String>) -> Label<'_>`
+
+Text.
+
+```
+ui.label("10 tasks").weak();
+```
+
+### `pub fn heading(&mut self, text: impl Into<String>) -> Label<'_>`
+
+A large, bold title. Screen readers announce it as a heading.
+
+```
+ui.heading("Tasks");
+```
+
+### `pub fn button(&mut self, text: impl Into<String>) -> Button<'_>`
+
+A button. Ask [`Button::clicked`] whether it was clicked (by pointer, keyboard or screen reader).
+
+```
+if ui.button("Save").primary().clicked() {
+    app.saved = true;
+}
+```
+
+### `pub fn checkbox(&mut self, checked: &mut bool, text: impl Into<String>) -> Toggled<'_>`
+
+A check box with a label. Clicking it flips `checked`.
+
+```
+if ui.checkbox(&mut done, "Done").changed() {
+    // save
+}
+```
+
+### `pub fn toggle(&mut self, on: &mut bool, text: impl Into<String>) -> Toggled<'_>`
+
+An on/off switch with a label. Clicking it flips `on`.
+
+```
+ui.toggle(&mut dark, "Dark mode");
+```
+
+### `pub fn segmented<T: Copy + PartialEq>(&mut self, value: &mut T, options: &[(T, &str)]) -> bool`
+
+A row of buttons of which exactly one is selected. Returns whether the selection changed.
+
+```
+#[derive(Clone, Copy, PartialEq)]
+enum Show { All, Open, Done }
+ui.segmented(&mut show, &[(Show::All, "All"), (Show::Open, "Open"), (Show::Done, "Done")]);
+```
+
+### `pub fn text_input(&mut self, text: &mut String) -> TextInput<'_>`
+
+A one-line text field. Typing, the input method (IME), selection, copy and paste, undo and
+redo edit `text` directly.
+
+While the input method is composing (for example kana before conversion), `text` does not
+change; it changes when the conversion is committed. The Enter key that commits a conversion
+does not count as [`TextInput::submitted`].
+
+```
+let field = ui.text_input(&mut name).hint("Your name").grow();
+if field.submitted() {
+    // use the name
+}
+```
+
+### `pub fn list(&mut self, count: usize, row_height: f32) -> List<'_, 'a>`
+
+A list that only creates the rows that are visible, so it stays fast with any number of
+rows. All rows have the same height (logical pixels). Finish with [`List::show`].
+
+```
+ui.list(items.len(), 32.0).grow().show(|ui, i| {
+    ui.label(&items[i]);
+});
+```
+
+### `pub fn dark(&self) -> bool`
+
+Whether dark mode is on. It starts as the operating system's setting
+(or [`Options::dark`](crate::Options::dark)).
+
+```
+let label = if ui.dark() { "Light mode" } else { "Dark mode" };
+ui.button(label);
+```
+
+### `pub fn set_dark(&mut self, dark: bool)`
+
+Switches between dark and light mode.
+
+```
+ui.set_dark(true);
+assert_eq!(ui.theme().background, kargui::Theme::dark().background);
+```
+
+### `pub fn theme(&self) -> &Theme`
+
+The colors in use, for example to match your own drawing to the widgets.
+
+```
+let accent = ui.theme().accent;
+assert_eq!(accent[3], 1.0);
+```
+
+### `pub fn set_padding(&mut self, x: f32, y: f32)`
+
+Space inside the edges of the current container (logical pixels): `x` left and right,
+`y` top and bottom. At the top level this is the window's margin (16 and 12 by default).
+
+```
+ui.set_padding(24.0, 24.0);
+ui.heading("Roomy");
+```
+
+### `pub fn set_gap(&mut self, length: f32)`
+
+Space between the children of the current container (logical pixels).
+At the top level the default is 10.
+
+```
+ui.set_gap(4.0);
+ui.label("Close");
+ui.label("together");
+```
+
+### `pub fn request_frame(&mut self)`
+
+Asks for another frame right after this one, for animations.
+kargui otherwise draws only when something changes.
+
+```
+ui.request_frame();
+```
+
+## Testing without a window
+
+Running an app without a window, for tests and documentation.
+
+[`Harness`] runs your [`App`] the same way the window does, but you send the input yourself
+and look at the result. Widgets are found by the name a screen reader would read, so tests
+also check that every control has a name.
+
+```
+use kargui::test::Harness;
+use kargui::{App, Ui};
+
+#[derive(Default)]
+struct Notes {
+    input: String,
+    notes: Vec<String>,
+}
+
+impl App for Notes {
+    fn view(&mut self, ui: &mut Ui) {
+        ui.row(|ui| {
+            let field = ui.text_input(&mut self.input).hint("New note").grow();
+            if field.submitted() || ui.button("Add").clicked() {
+                self.notes.push(std::mem::take(&mut self.input));
+            }
+        });
+        for note in &self.notes {
+            ui.label(note);
+        }
+    }
+}
+
+let mut h = Harness::new(Notes::default());
+h.click("New note").type_text("milk").press(kargui::Key::Enter);
+assert_eq!(h.app().notes, ["milk"]);
+// The input method: composing does not change the text, committing does.
+h.ime_compose("ぎゅうにゅう");
+assert_eq!(h.app().input, "");
+h.ime_commit("牛乳").press(kargui::Key::Enter);
+assert_eq!(h.app().notes, ["milk", "牛乳"]);
+```

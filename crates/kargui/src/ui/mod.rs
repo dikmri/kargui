@@ -100,7 +100,7 @@ pub(crate) enum Kind {
     Button { text: String, primary: bool, small: bool },
     Checkbox { checked: bool, text: String },
     Toggle { on: bool, text: String },
-    Segment { text: String, selected: bool, first: bool, last: bool },
+    Segment { text: String, selected: bool },
     TextInput { value: String, hint: String },
     Space,
     List { count: usize, separators: bool, view_h: f32 },
@@ -411,10 +411,9 @@ impl<'a> Ui<'a> {
         let mut changed = false;
         {
             let mut ui = self.child(row);
-            let n = options.len();
             for (k, (v, text)) in options.iter().enumerate() {
                 ui.salt = hash_of(k);
-                let kind = Kind::Segment { text: text.to_string(), selected: *v == *value, first: k == 0, last: k + 1 == n };
+                let kind = Kind::Segment { text: text.to_string(), selected: *v == *value };
                 let (_, id) = ui.add(kind, Dir::Leaf);
                 if ui.cx.clicked == Some(id) && *v != *value {
                     *value = *v;
@@ -558,7 +557,15 @@ impl<'a> Ui<'a> {
 
     // ---- そのほか ----
 
-    /// Whether dark mode is on.
+    /// Whether dark mode is on. It starts as the operating system's setting
+    /// (or [`Options::dark`](crate::Options::dark)).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let label = if ui.dark() { "Light mode" } else { "Dark mode" };
+    /// ui.button(label);
+    /// # });
+    /// ```
     pub fn dark(&self) -> bool {
         self.cx.dark
     }
@@ -575,7 +582,14 @@ impl<'a> Ui<'a> {
         self.cx.set_dark(dark);
     }
 
-    /// The colors in use.
+    /// The colors in use, for example to match your own drawing to the widgets.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let accent = ui.theme().accent;
+    /// assert_eq!(accent[3], 1.0);
+    /// # });
+    /// ```
     pub fn theme(&self) -> &Theme {
         &self.cx.theme
     }

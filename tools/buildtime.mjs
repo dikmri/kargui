@@ -12,7 +12,7 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const R = (...p) => path.join(ROOT, ...p);
 const OUT = R('runtime/build-times.json');
 const pkg = process.argv[2] ?? 'kargui-spike';
-const MAIN = { 'kargui-spike': 'spike/src/main.rs', 'text-probe': 'probes/text-probe/src/main.rs' }[pkg];
+const MAIN = { 'kargui-spike': 'spike/src/main.rs', 'text-probe': 'probes/text-probe/src/main.rs', 'taskbook-kargui': 'examples/taskbook/src/main.rs' }[pkg];
 const results = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, 'utf8')) : {};
 
 function cargo(args, targetDir) {

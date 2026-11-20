@@ -38,7 +38,6 @@ pub(crate) struct Gpu {
     output: Option<IDXGIOutput>,
     pub width: u32,
     pub height: u32,
-    pub adapter_name: String,
 }
 
 fn buffer(device: &ID3D11Device, bytes: u32, bind: D3D11_BIND_FLAG) -> Result<ID3D11Buffer> {
@@ -199,7 +198,6 @@ impl Gpu {
             output: None,
             width,
             height,
-            adapter_name,
         };
         gpu.make_target()?;
         Ok(gpu)

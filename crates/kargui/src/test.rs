@@ -232,15 +232,6 @@ fn png(img: &Image) -> Vec<u8> {
     out
 }
 
-/// 説明の中の例で使う、閉じた画面（関数の中身を 1 回だけ動かす）
-struct Once<F: FnMut(&mut Ui)>(F);
-
-impl<F: FnMut(&mut Ui) + 'static> App for Once<F> {
-    fn view(&mut self, ui: &mut Ui) {
-        (self.0)(ui)
-    }
-}
-
 /// Runs `f` once against a throwaway screen. Used by the examples in this documentation.
 #[doc(hidden)]
 pub fn example(f: impl FnOnce(&mut Ui)) {

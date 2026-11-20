@@ -7,7 +7,13 @@
 //! - Every widget appears to screen readers with a role and a name.
 //!
 //! Windows 10 and 11 only for now.
-#![warn(missing_docs)]
+//!
+//! In the repository, `docs/widgets.md` shows every widget in light and dark mode and
+//! `docs/llms.txt` is an index for AI assistants. Both are generated from the source.
+//!
+//! 説明の決まり: 公開項目に説明が無いと組み立てが落ちる（deny(missing_docs)）。
+//! 部品を作る関数には動く例が要る（cargo run -p xtask -- doc-check）。
+#![deny(missing_docs)]
 
 mod app;
 mod damage;
