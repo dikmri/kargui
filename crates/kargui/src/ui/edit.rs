@@ -121,12 +121,12 @@ impl EditState {
     }
 
     /// 文字を入れる（選択していれば置き換える）。改行は入れない（1 行の入力欄）
-    pub fn insert(&mut self, s: &mut String, text: &str) -> bool {
+    pub fn insert(&mut self, s: &mut String, text: &str, typing: bool) -> bool {
         let text: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
         if text.is_empty() && !self.has_selection() {
             return false;
         }
-        self.snapshot(s, !self.has_selection());
+        self.snapshot(s, typing && !self.has_selection());
         self.delete_selection(s);
         s.insert_str(self.cursor, &text);
         self.cursor += text.len();
@@ -281,7 +281,7 @@ mod tests {
         let mut e = at(&s, 0);
         e.anchor = "牛乳".len();
         e.cursor = 0;
-        assert!(e.insert(&mut s, "豆乳\n"));
+        assert!(e.insert(&mut s, "豆乳\n", true));
         assert_eq!(s, "豆乳を買う");
         assert_eq!(e.cursor, "豆乳".len());
         assert!(!e.has_selection());
@@ -327,7 +327,7 @@ mod tests {
         let mut s = String::new();
         let mut e = EditState::default();
         for c in ["a", "b", "c"] {
-            e.insert(&mut s, c);
+            e.insert(&mut s, c, true);
         }
         e.backspace(&mut s, false);
         assert_eq!(s, "ab");
