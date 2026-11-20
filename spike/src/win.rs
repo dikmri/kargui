@@ -41,6 +41,8 @@ const WM_APP_A11Y: u32 = WM_APP + 1;
 const IME_SHOT_TIMER: usize = 7;
 const IME_SHOT_DELAY_MS: u32 = 600;
 const IME_SHOT_MAX: u32 = 8;
+/// WM_GETOBJECT（読み上げソフトなどからの問い合わせ）を受けた回数
+static GETOBJECT_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RendererKind {
@@ -72,6 +74,8 @@ enum Post {
     Raise(QueuedEvents),
     /// 日本語入力を使える（true）か使えない（false）か
     AssociateIme((HWND, bool)),
+    /// 文字を打つ位置を IME に知らせる（IME からの入れ子のメッセージが届くので、借りの外で行う）
+    ImePosition((HWND, IRect)),
 }
 
 /// 読み上げの操作を、窓の持ち主のスレッドへ渡す係（AccessKit は別のスレッドから呼ぶことがある）
@@ -171,7 +175,39 @@ fn drain_post() {
                 let ok = ImmAssociateContextEx(hwnd, HIMC::default(), flags);
                 log::event("ime.associate", &format!("on={on}"), &format!("ok={}", ok.as_bool()));
             },
+            Post::ImePosition((hwnd, caret)) => set_ime_position(hwnd, caret),
         }
+    }
+}
+
+/// 文字を打つ位置を IME に知らせる（候補の窓をそこに出すため）
+fn set_ime_position(hwnd: HWND, caret: IRect) {
+    unsafe {
+        let himc = ImmGetContext(hwnd);
+        if himc.is_invalid() {
+            return;
+        }
+        let comp = COMPOSITIONFORM {
+            dwStyle: CFS_POINT,
+            ptCurrentPos: POINT { x: caret.x, y: caret.y },
+            rcArea: RECT::default(),
+        };
+        let cand = CANDIDATEFORM {
+            dwIndex: 0,
+            dwStyle: CFS_EXCLUDE,
+            ptCurrentPos: POINT { x: caret.x, y: caret.bottom() },
+            rcArea: RECT { left: caret.x, top: caret.y, right: caret.right(), bottom: caret.bottom() },
+        };
+        let a = ImmSetCompositionWindow(himc, &comp);
+        let b = ImmSetCandidateWindow(himc, &cand);
+        let _ = ImmReleaseContext(hwnd, himc);
+        let mut screen = POINT { x: caret.x, y: caret.bottom() };
+        let _ = ClientToScreen(hwnd, &mut screen);
+        log::event(
+            "ime.caret",
+            &format!("client={},{} h={} screen_bottom_left={},{}", caret.x, caret.y, caret.h, screen.x, screen.y),
+            &format!("comp={} cand={}", a.as_bool(), b.as_bool()),
+        );
     }
 }
 
@@ -331,33 +367,27 @@ impl State {
             return;
         }
         self.last_caret = Some(caret);
+        self.post.push(Post::ImePosition((self.hwnd, caret)));
+    }
+
+    /// IME の「変換中の何文字目は画面のどこか」の問い合わせに答える。
+    /// 文字ごとの位置はまだ持っていないので、変換中の文字の範囲を文字数で等分して近い位置を返す
+    fn answer_char_position(&self, info: &mut IMECHARPOSITION) {
+        let p = self.app.preedit_rect;
+        let count = self.app.preedit.encode_utf16().count().max(1) as f32;
+        let x = p.x + p.w * (info.dwCharPos as f32 / count).min(1.0);
+        let mut pt = POINT { x: x.round() as i32, y: p.y as i32 };
+        let r = self.app.input_rect;
+        let mut lt = POINT { x: r.x as i32, y: r.y as i32 };
+        let mut rb = POINT { x: r.right() as i32, y: r.bottom() as i32 };
         unsafe {
-            let himc = ImmGetContext(self.hwnd);
-            if himc.is_invalid() {
-                return;
-            }
-            let comp = COMPOSITIONFORM {
-                dwStyle: CFS_POINT,
-                ptCurrentPos: POINT { x: caret.x, y: caret.y },
-                rcArea: RECT::default(),
-            };
-            let cand = CANDIDATEFORM {
-                dwIndex: 0,
-                dwStyle: CFS_EXCLUDE,
-                ptCurrentPos: POINT { x: caret.x, y: caret.bottom() },
-                rcArea: RECT { left: caret.x, top: caret.y, right: caret.right(), bottom: caret.bottom() },
-            };
-            let a = ImmSetCompositionWindow(himc, &comp);
-            let b = ImmSetCandidateWindow(himc, &cand);
-            let _ = ImmReleaseContext(self.hwnd, himc);
-            let mut screen = POINT { x: caret.x, y: caret.bottom() };
-            let _ = ClientToScreen(self.hwnd, &mut screen);
-            log::event(
-                "ime.caret",
-                &format!("client={},{} h={} screen_bottom_left={},{}", caret.x, caret.y, caret.h, screen.x, screen.y),
-                &format!("comp={} cand={}", a.as_bool(), b.as_bool()),
-            );
+            let _ = ClientToScreen(self.hwnd, &mut pt);
+            let _ = ClientToScreen(self.hwnd, &mut lt);
+            let _ = ClientToScreen(self.hwnd, &mut rb);
         }
+        info.pt = pt;
+        info.cLineHeight = p.h.max(1.0) as u32;
+        info.rcDocument = RECT { left: lt.x, top: lt.y, right: rb.x, bottom: rb.y };
     }
 
     fn ime_string(&self, kind: IME_COMPOSITION_STRING) -> Option<String> {
@@ -653,6 +683,21 @@ impl State {
                 log::event("ime.notify", &format!("imn=0x{:02X}", wp.0), "default");
                 None
             }
+            WM_IME_REQUEST => {
+                let imr = wp.0 as u32;
+                if imr == IMR_QUERYCHARPOSITION && lp.0 != 0 {
+                    let info = unsafe { &mut *(lp.0 as *mut IMECHARPOSITION) };
+                    self.answer_char_position(info);
+                    log::event(
+                        "ime.request",
+                        &format!("imr=QUERYCHARPOSITION char={}", info.dwCharPos),
+                        &format!("pt={},{} line_h={}", info.pt.x, info.pt.y, info.cLineHeight),
+                    );
+                    return Some(LRESULT(1));
+                }
+                log::event("ime.request", &format!("imr=0x{imr:02X}"), "default");
+                None
+            }
             WM_TIMER if wp.0 == IME_SHOT_TIMER => {
                 unsafe {
                     let _ = KillTimer(Some(self.hwnd), IME_SHOT_TIMER);
@@ -685,6 +730,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
         }
         WM_GETOBJECT => {
+            // 読み上げソフトなどの問い合わせの数を記録する（最初の 5 回と、以後 100 回ごと）
+            let n = GETOBJECT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if n <= 5 || n % 100 == 0 {
+                log::event("a11y.getobject", &format!("objid={} n={n}", lp.0 as i32), "received");
+            }
             // 借りの中で木を作って渡し、UIA への受け渡し（入れ子のメッセージが起きうる）は借りの外で行う
             let reply = with_state(|st| {
                 let mut initial = Initial(Some(st.app.a11y_tree()));

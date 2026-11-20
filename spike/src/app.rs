@@ -64,6 +64,10 @@ pub struct App {
     pub height: f32,
     /// 文字を打つ位置（物理ピクセル、窓の中）。日本語入力の候補の窓を出す位置に使う
     pub caret: Rect,
+    /// 変換中の文字の範囲（物理ピクセル、窓の中）。IME の「何文字目はどこ」の問い合わせに使う
+    pub preedit_rect: Rect,
+    /// 入力欄の範囲（物理ピクセル、窓の中）
+    pub input_rect: Rect,
 }
 
 fn put(d: &mut DrawList, laid: &Laid, x: f32, y: f32, color: Color) {
@@ -122,6 +126,8 @@ impl App {
             width: 0.0,
             height: 0.0,
             caret: Rect::default(),
+            preedit_rect: Rect::default(),
+            input_rect: Rect::default(),
         }
     }
 
@@ -256,6 +262,8 @@ impl App {
         }
         let caret_x = (l.input.x + pad + committed.width + pre.width).round();
         self.caret = Rect::new(caret_x, ty.round(), line, line_h.round());
+        self.preedit_rect = Rect::new((l.input.x + pad + committed.width).round(), ty.round(), pre.width, line_h.round());
+        self.input_rect = l.input;
         if focused {
             d.fill(Rect::new(caret_x, ty, (1.5 * s).round().max(1.0), line_h), TEXT, 0.0);
         }
