@@ -139,7 +139,12 @@ struct State {
     t_draw: f64,
     t_wait: f64,
     slow_frames: u32,
+    /// 今の変換の間に届いた IME の問い合わせの数（記録は最初の数回と、変換の終わりの合計だけ）
+    ime_requests: u32,
 }
+
+/// 変換ごとに記録する IME の問い合わせの数
+const IME_REQUEST_LOG_MAX: u32 = 3;
 
 /// これより長くフレームの間が空いたら、内訳を記録する（60 Hz の 1.5 フレーム）
 const SLOW_FRAME_MS: f64 = 25.0;
@@ -674,7 +679,8 @@ impl State {
             WM_IME_ENDCOMPOSITION => {
                 self.composing = false;
                 self.app.preedit.clear();
-                log::event("ime.end", "", "ok");
+                log::event("ime.end", &format!("requests={}", self.ime_requests), "ok");
+                self.ime_requests = 0;
                 self.full_dirty = true;
                 Some(LRESULT(0))
             }
@@ -685,17 +691,23 @@ impl State {
             }
             WM_IME_REQUEST => {
                 let imr = wp.0 as u32;
+                self.ime_requests += 1;
+                let log_this = self.ime_requests <= IME_REQUEST_LOG_MAX;
                 if imr == IMR_QUERYCHARPOSITION && lp.0 != 0 {
                     let info = unsafe { &mut *(lp.0 as *mut IMECHARPOSITION) };
                     self.answer_char_position(info);
-                    log::event(
-                        "ime.request",
-                        &format!("imr=QUERYCHARPOSITION char={}", info.dwCharPos),
-                        &format!("pt={},{} line_h={}", info.pt.x, info.pt.y, info.cLineHeight),
-                    );
+                    if log_this {
+                        log::event(
+                            "ime.request",
+                            &format!("imr=QUERYCHARPOSITION char={}", info.dwCharPos),
+                            &format!("pt={},{} line_h={}", info.pt.x, info.pt.y, info.cLineHeight),
+                        );
+                    }
                     return Some(LRESULT(1));
                 }
-                log::event("ime.request", &format!("imr=0x{imr:02X}"), "default");
+                if log_this {
+                    log::event("ime.request", &format!("imr=0x{imr:02X}"), "default");
+                }
                 None
             }
             WM_TIMER if wp.0 == IME_SHOT_TIMER => {
@@ -704,8 +716,9 @@ impl State {
                 }
                 if self.composing && self.ime_shots < IME_SHOT_MAX {
                     self.ime_shots += 1;
+                    // 候補の窓は変換している文節の頭に出るので、変換中の文字の頭を基準に撮る
                     let c = self.app.caret;
-                    let mut p = POINT { x: c.x as i32, y: c.bottom() as i32 };
+                    let mut p = POINT { x: self.app.preedit_rect.x as i32, y: c.bottom() as i32 };
                     unsafe {
                         let _ = ClientToScreen(self.hwnd, &mut p);
                     }
@@ -887,6 +900,7 @@ pub fn run(a: Args, kind: RendererKind, main_started: Instant, log_dir: PathBuf)
             t_draw: 0.0,
             t_wait: 0.0,
             slow_frames: 0,
+            ime_requests: 0,
         })
     });
 
