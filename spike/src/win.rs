@@ -736,6 +736,10 @@ impl State {
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    // 調べる用: KARGUI_TRACE=1 のとき、届いたメッセージを記録する
+    if std::env::var_os("KARGUI_TRACE").is_some() {
+        log::event("msg", &format!("msg=0x{msg:04X} wp=0x{:X} lp=0x{:X}", wp.0, lp.0), "");
+    }
     match msg {
         WM_IME_SETCONTEXT => {
             // IME の既定の変換中の窓を出さない（変換中の文字は入力欄の中に描く）

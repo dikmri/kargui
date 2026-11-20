@@ -42,6 +42,10 @@ use crate::ui::Id;
 use crate::ui::context::Clipboard;
 
 const WM_APP_A11Y: u32 = WM_APP + 1;
+/// windows crate の読み込んだ範囲に無いので自分で定義する。
+/// match の中で読み込まれていない名前を書くと、何にでも当てはまる変数になり、
+/// それより後のメッセージを全部受け止めてしまう（2026-11-21 に窓の枠が消えた原因）
+const WM_MOUSELEAVE: u32 = 0x02A3;
 /// これより長くフレームの間が空いたら、内訳を記録する（60 Hz の 1.5 フレーム）
 const SLOW_FRAME_MS: f64 = 25.0;
 /// 変換ごとに記録する IME の問い合わせの数
@@ -397,10 +401,12 @@ impl State {
                 self.post.push(Post::ImePosition(self.hwnd, caret));
             }
         }
-        if self.dark_title != Some(self.rt.cx.dark) {
-            self.dark_title = Some(self.rt.cx.dark);
-            self.post.push(Post::DarkTitle(self.hwnd, self.rt.cx.dark));
+        // 明るいテーマで始まるときは呼ばない（OS の既定のまま）
+        let want = self.rt.cx.dark;
+        if self.dark_title.is_some_and(|d| d != want) || (self.dark_title.is_none() && want) {
+            self.post.push(Post::DarkTitle(self.hwnd, want));
         }
+        self.dark_title = Some(want);
         if self.shown {
             let number = self.rt.frames - 1;
             self.app.presented(&Frame { number, since_start: self.started.elapsed() });
@@ -728,7 +734,21 @@ impl State {
     }
 }
 
+/// 環境変数 KARGUI_TRACE=1 のとき、届いたメッセージを最初の 400 件だけ記録する（不具合を調べるため）
+static TRACE_LEFT: AtomicU32 = AtomicU32::new(0);
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if TRACE_LEFT.load(Ordering::Relaxed) > 0 {
+        TRACE_LEFT.fetch_sub(1, Ordering::Relaxed);
+        let borrowed = STATE.with(|s| s.try_borrow().is_err());
+        log::event("msg", &format!("msg=0x{msg:04X} wp=0x{:X} lp=0x{:X}", wp.0, lp.0), &format!("borrowed={borrowed}"));
+        if msg == WM_WINDOWPOSCHANGING {
+            let pos = unsafe { &*(lp.0 as *const WINDOWPOS) };
+            let bt = std::backtrace::Backtrace::force_capture().to_string();
+            let frames: Vec<&str> = bt.lines().filter(|l| !l.trim_start().starts_with("at ")).take(24).collect();
+            log::event("msg.windowpos", &format!("flags=0x{:X} x={} y={} cx={} cy={}", pos.flags.0, pos.x, pos.y, pos.cx, pos.cy), &frames.join(" | "));
+        }
+    }
     match msg {
         WM_IME_SETCONTEXT => {
             // IME の既定の変換中の窓を出さない（変換中の文字は入力欄の中に描く）
@@ -782,13 +802,16 @@ fn dispatch_pending(msg: &mut MSG) -> bool {
 
 pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Error> {
     let started = Instant::now();
+    if std::env::var_os("KARGUI_TRACE").is_some() {
+        TRACE_LEFT.store(400, Ordering::Relaxed);
+    }
     unsafe {
         if let Err(e) = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) {
             log::event("dpi.awareness", "", &format!("error={e:?}"));
         }
     }
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
-    let class = w!("kargui");
+    let class = w!("kargui-window");
     let wc = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         lpfnWndProc: Some(wndproc),

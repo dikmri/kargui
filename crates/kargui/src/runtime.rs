@@ -69,7 +69,15 @@ impl Runtime {
         want |= std::mem::take(&mut self.cx.want_frame);
         draw::layout(&mut tree, &mut self.cx);
         draw::paint(&tree, &mut self.cx, &mut self.draw);
-        want |= draw::list_needs_refresh(&tree);
+        // 一覧の見える範囲を決めた高さがずれていたら（最初のフレーム、窓の大きさが変わった時）、
+        // 決まった高さでこのフレームの中でもう一度回す。余分なフレームを画面に出さない
+        if draw::list_needs_refresh(&tree) {
+            tree = Tree::new(ROOT, self.cx.scale);
+            app.view(&mut Ui::new(&mut self.cx, &mut tree));
+            want |= std::mem::take(&mut self.cx.want_frame);
+            draw::layout(&mut tree, &mut self.cx);
+            draw::paint(&tree, &mut self.cx, &mut self.draw);
+        }
         // 焦点のある部品が消えたら、焦点を外す
         if let Some(f) = self.cx.focus {
             if !tree.info.iter().any(|n| n.id == f) {
