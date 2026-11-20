@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["taskcore", "spike"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+
+# 前回の比べ（Tauri・egui・GPUI）と同じリリースの設定
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

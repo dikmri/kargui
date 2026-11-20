@@ -1,0 +1,223 @@
+//! CPU の道の描き方。描く物の一覧を、画素の並び（BGRA、1 画素 = u32）に描く。
+//! 描くのは clip の中だけ。スクロールは今の絵をずらし、新しく見えた帯だけを描き直す（scroll_up）。
+//! 角の丸い四角の計算は、GPU のシェーダー（shaders/ui.hlsl）と同じ。
+
+use crate::draw::{Color, DrawList, IRect, Quad};
+
+pub struct Canvas<'a> {
+    pub px: &'a mut [u32],
+    pub width: i32,
+    pub height: i32,
+}
+
+/// 色を 0〜255 の BGR と不透明度にする
+fn channels(c: &Color) -> (u32, u32, u32, u32) {
+    let to = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+    (to(c[2]), to(c[1]), to(c[0]), to(c[3]))
+}
+
+/// dst に (b, g, r) を不透明度 a（0〜255）で重ねる
+#[inline]
+fn blend(dst: u32, b: u32, g: u32, r: u32, a: u32) -> u32 {
+    if a >= 255 {
+        return 0xff00_0000 | (r << 16) | (g << 8) | b;
+    }
+    if a == 0 {
+        return dst;
+    }
+    let inv = 255 - a;
+    let db = dst & 0xff;
+    let dg = (dst >> 8) & 0xff;
+    let dr = (dst >> 16) & 0xff;
+    let ob = (b * a + db * inv + 127) / 255;
+    let og = (g * a + dg * inv + 127) / 255;
+    let or = (r * a + dr * inv + 127) / 255;
+    0xff00_0000 | (or << 16) | (og << 8) | ob
+}
+
+/// 角の丸い四角の、画素の中心 (px, py) での覆い具合（0〜1）。四角の左上が (0, 0)
+pub fn rounded_coverage(px: f32, py: f32, w: f32, h: f32, radius: f32) -> f32 {
+    let hw = w * 0.5;
+    let hh = h * 0.5;
+    let qx = (px - hw).abs() - (hw - radius);
+    let qy = (py - hh).abs() - (hh - radius);
+    let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+    let inside = qx.max(qy).min(0.0);
+    (0.5 - (outside + inside - radius)).clamp(0.0, 1.0)
+}
+
+impl Canvas<'_> {
+    fn bounds(&self) -> IRect {
+        IRect::new(0, 0, self.width, self.height)
+    }
+
+    /// clip の中を背景の色で塗り、一覧の物を順に描く
+    pub fn draw(&mut self, list: &DrawList, atlas: &[u8], atlas_size: u32, clip: IRect, background: Color) {
+        let Some(clip) = clip.intersect(&self.bounds()) else { return };
+        let (b, g, r, _) = channels(&background);
+        let solid = 0xff00_0000 | (r << 16) | (g << 8) | b;
+        for y in clip.y..clip.bottom() {
+            let row = (y * self.width) as usize;
+            self.px[row + clip.x as usize..row + clip.right() as usize].fill(solid);
+        }
+        for q in &list.quads {
+            let qr = IRect::covering(q.bounds());
+            let Some(area) = qr.intersect(&clip) else { continue };
+            if q.is_glyph() {
+                self.glyph(q, area, atlas, atlas_size);
+            } else {
+                self.rounded(q, area);
+            }
+        }
+    }
+
+    fn rounded(&mut self, q: &Quad, area: IRect) {
+        let (b, g, r, a) = channels(&q.color);
+        let [qx, qy, qw, qh] = q.rect;
+        let radius = q.extra[0];
+        for y in area.y..area.bottom() {
+            let row = (y * self.width) as usize;
+            let ly = y as f32 + 0.5 - qy;
+            // 角にかからない行は、左右の端まで一様に塗る
+            let corner_row = radius > 0.0 && (ly < radius || ly > qh - radius);
+            for x in area.x..area.right() {
+                let cov = if corner_row {
+                    let lx = x as f32 + 0.5 - qx;
+                    if lx < radius || lx > qw - radius {
+                        rounded_coverage(lx, ly, qw, qh, radius)
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                };
+                let alpha = (a as f32 * cov + 0.5) as u32;
+                let i = row + x as usize;
+                self.px[i] = blend(self.px[i], b, g, r, alpha);
+            }
+        }
+    }
+
+    fn glyph(&mut self, q: &Quad, area: IRect, atlas: &[u8], atlas_size: u32) {
+        let (b, g, r, a) = channels(&q.color);
+        let ox = q.rect[0] as i32;
+        let oy = q.rect[1] as i32;
+        let ax = q.uv[0] as i32;
+        let ay = q.uv[1] as i32;
+        for y in area.y..area.bottom() {
+            let row = (y * self.width) as usize;
+            let src = ((ay + y - oy) as u32 * atlas_size) as usize;
+            for x in area.x..area.right() {
+                let m = atlas[src + (ax + x - ox) as usize] as u32;
+                if m == 0 {
+                    continue;
+                }
+                let alpha = (m * a + 127) / 255;
+                let i = row + x as usize;
+                self.px[i] = blend(self.px[i], b, g, r, alpha);
+            }
+        }
+    }
+
+    /// region の中の絵を dy 画素だけ上へずらす（dy が負なら下へ）。
+    /// 空いた帯は描き直しが要るので、その範囲を返す。|dy| が region の高さ以上なら region 全体を返す。
+    pub fn scroll_up(&mut self, region: IRect, dy: i32) -> IRect {
+        let Some(region) = region.intersect(&self.bounds()) else { return IRect::default() };
+        if dy == 0 {
+            return IRect::new(region.x, region.y, region.w, 0);
+        }
+        if dy.abs() >= region.h {
+            return region;
+        }
+        let (x0, x1) = (region.x as usize, region.right() as usize);
+        let w = self.width as usize;
+        if dy > 0 {
+            for y in region.y..region.bottom() - dy {
+                let dst = y as usize * w;
+                let src = (y + dy) as usize * w;
+                self.px.copy_within(src + x0..src + x1, dst + x0);
+            }
+            IRect::new(region.x, region.bottom() - dy, region.w, dy)
+        } else {
+            let d = -dy;
+            for y in (region.y + d..region.bottom()).rev() {
+                let dst = y as usize * w;
+                let src = (y - d) as usize * w;
+                self.px.copy_within(src + x0..src + x1, dst + x0);
+            }
+            IRect::new(region.x, region.y, region.w, d)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::draw::{Rect, rgb};
+
+    const WHITE: u32 = 0xffff_ffff;
+
+    fn canvas(px: &mut [u32], w: i32, h: i32) -> Canvas<'_> {
+        Canvas { px, width: w, height: h }
+    }
+
+    #[test]
+    fn coverage_is_full_inside_and_zero_outside_corner() {
+        // 10×10、丸み 4。中心は覆われ、角の外は覆われない
+        assert_eq!(rounded_coverage(5.0, 5.0, 10.0, 10.0, 4.0), 1.0);
+        assert_eq!(rounded_coverage(0.5, 0.5, 10.0, 10.0, 4.0), 0.0);
+        // 丸みのない辺の上は半分
+        let edge = rounded_coverage(5.0, 0.0, 10.0, 10.0, 4.0);
+        assert!((edge - 0.5).abs() < 1e-6, "{edge}");
+    }
+
+    #[test]
+    fn draw_fills_only_inside_clip() {
+        let mut px = vec![0u32; 8 * 4];
+        let mut c = canvas(&mut px, 8, 4);
+        let mut list = DrawList::default();
+        list.fill(Rect::new(0.0, 0.0, 8.0, 4.0), rgb(0x000000), 0.0);
+        c.draw(&list, &[], 0, IRect::new(2, 1, 3, 2), rgb(0xffffff));
+        for y in 0..4 {
+            for x in 0..8 {
+                let inside = (2..5).contains(&x) && (1..3).contains(&y);
+                let expect = if inside { 0xff00_0000 } else { 0 };
+                assert_eq!(px[y * 8 + x], expect, "x={x} y={y}");
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_mask_blends_by_coverage() {
+        // 2×1 の形: 1 画素目は覆い 255、2 画素目は 0
+        let atlas = [255u8, 0, 0, 0];
+        let mut px = vec![WHITE; 4];
+        let mut c = canvas(&mut px, 4, 1);
+        let mut list = DrawList::default();
+        list.glyph(1.0, 0.0, 2.0, 1.0, 0.0, 0.0, rgb(0x000000));
+        c.draw(&list, &atlas, 2, IRect::new(0, 0, 4, 1), rgb(0xffffff));
+        assert_eq!(px, vec![WHITE, 0xff00_0000, WHITE, WHITE]);
+    }
+
+    #[test]
+    fn scroll_up_moves_rows_and_returns_the_strip() {
+        // 1 列 × 5 行。値は行の番号
+        let mut px: Vec<u32> = (0..5).collect();
+        let mut c = canvas(&mut px, 1, 5);
+        let strip = c.scroll_up(IRect::new(0, 1, 1, 4), 2);
+        assert_eq!(strip, IRect::new(0, 3, 1, 2));
+        // 行 0 は範囲の外なのでそのまま。行 1, 2 に行 3, 4 が来る
+        assert_eq!(&px[..3], &[0, 3, 4]);
+
+        let mut px: Vec<u32> = (0..5).collect();
+        let mut c = canvas(&mut px, 1, 5);
+        let strip = c.scroll_up(IRect::new(0, 0, 1, 5), -1);
+        assert_eq!(strip, IRect::new(0, 0, 1, 1));
+        assert_eq!(&px[1..], &[0, 1, 2, 3]);
+
+        // 範囲の高さ以上ずらすと、全体を描き直す
+        let mut px: Vec<u32> = (0..5).collect();
+        let mut c = canvas(&mut px, 1, 5);
+        assert_eq!(c.scroll_up(IRect::new(0, 0, 1, 5), 7), IRect::new(0, 0, 1, 5));
+    }
+}

@@ -1,0 +1,9 @@
+[package]
+name = "taskcore"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "タスク帳のデータ・絞り込み・起動引数・記録。前回の比べ（ai-coding-notes の reports/rust-gui/src/common、コミット 72a73fe）から写した"
+
+[dependencies]
