@@ -98,7 +98,7 @@ cargo run -p xtask -- check                      # 説明と例の割合・部�
 
 ### Linux と macOS
 
-対応する予定。OS に頼る所（窓・入力・日本語入力・文字・画面に出す・クリップボード・読み上げの橋渡し）は、`platform.rs`・`gdi.rs`・`gpu.rs`・`text/dwrite.rs`・`wic.rs`（画像のファイルを読む）の 5 つのファイルにまとめてある。それ以外（部品・並べ方・描き方・試験台）は Linux と macOS でも組み立てられ、文字は parley と swash で並べて描く。送るたびに、Windows・Linux・macOS で試験を走らせる（GitHub Actions）。窓はまだ開けないので、Windows 以外で `kargui::run` を呼ぶと、対応していないことを伝える `Err` を返す。移植は Linux から行う。
+対応する予定。OS に頼る所（窓・入力・日本語入力・文字・画面に出す・クリップボード・読み上げの橋渡し）は、`platform.rs`・`gdi.rs`・`gpu.rs`・`text/dwrite.rs`・`wic.rs`（画像のファイルを読む）の 5 つのファイルにまとめてある。それ以外（部品・並べ方・描き方・試験台）は Linux と macOS でも組み立てられ、文字は parley と swash で並べて描く。Linux で組み立てるには fontconfig の開発用ファイルが要る（Debian と Ubuntu では `libfontconfig1-dev` と `pkg-config`）。parley の中の fontique が、OS のフォントを探すのに fontconfig を使うため。送るたびに、Windows・Linux・macOS で試験を走らせる（GitHub Actions）。窓はまだ開けないので、Windows 以外で `kargui::run` を呼ぶと、対応していないことを伝える `Err` を返す。移植は Linux から行う。
 
 0.x の間は API が変わることがある。変わった所は [CHANGELOG.md](CHANGELOG.md) に書く。
 

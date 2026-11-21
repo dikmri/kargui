@@ -134,7 +134,9 @@ They are planned. Everything that depends on the operating system (window, input
 text, putting pixels on screen, clipboard, screen-reader adapter) is kept in five files:
 `platform.rs`, `gdi.rs`, `gpu.rs`, `text/dwrite.rs` and `wic.rs` (reading image files). The rest (widgets, layout, drawing, the
 test harness) builds on Linux and macOS as well, with text laid out and drawn by parley and swash.
-Every push runs the tests on Windows, Linux and macOS (GitHub Actions). Windows cannot be opened
+On Linux, building needs the fontconfig development files (`libfontconfig1-dev` and `pkg-config` on
+Debian and Ubuntu); fontique, inside parley, uses fontconfig to find the system fonts.
+Every push runs the tests on Windows, Linux and macOS (GitHub Actions). Apps cannot open windows
 there yet, so `kargui::run` returns an `Err` saying the system is not supported. Linux comes first.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).

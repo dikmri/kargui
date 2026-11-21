@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The crate now states its minimum Rust version (1.95, `rust-version`). Building on Linux needs the
+  fontconfig development files (`libfontconfig1-dev` and `pkg-config` on Debian and Ubuntu); the
+  README says so.
+
 - Disabled widgets: `Ui::enabled(bool, |ui| ..)` disables every widget created inside, and
   `Button::enabled(bool)` disables one button. Disabled widgets are drawn dimmed, ignore the
   pointer, the keyboard and screen-reader actions, are skipped by Tab, lose the focus, and are

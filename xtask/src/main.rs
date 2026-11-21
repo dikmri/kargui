@@ -725,6 +725,15 @@ fn make_llms(check: bool) -> bool {
     ok
 }
 
+/// rustdoc の --show-coverage の JSON が書かれたファイル。Rust 1.95 までは JSON を標準出力に出すので None。
+/// 1.100 からはファイル（target/doc/kargui.json）に書き、標準出力には `Generated output into "<場所>"` を
+/// Debug の形（Windows では \ が二重）で出す
+fn coverage_file(stdout: &str) -> Option<PathBuf> {
+    let line = stdout.lines().find(|l| l.starts_with("Generated output into "))?;
+    let (start, end) = (line.find('"')?, line.rfind('"')?);
+    (end > start).then(|| PathBuf::from(line[start + 1..end].replace("\\\\", "\\").replace("\\\"", "\"")))
+}
+
 /// 公開項目の全部に説明と例があるか。rustdoc の --show-coverage（stable では RUSTC_BOOTSTRAP=1）の JSON を数える
 fn coverage() -> bool {
     let out = std::process::Command::new("cargo")
@@ -733,7 +742,11 @@ fn coverage() -> bool {
         .args(["rustdoc", "-q", "-p", "kargui", "--offline", "--", "-Z", "unstable-options", "--show-coverage", "--output-format", "json"])
         .output()
         .expect("cargo rustdoc");
-    let json = String::from_utf8_lossy(&out.stdout);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let json = match coverage_file(&stdout) {
+        Some(path) => fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+        None => stdout,
+    };
     let sum = |key: &str| -> u64 {
         json.match_indices(&format!("\"{key}\":")).filter_map(|(i, m)| json[i + m.len()..].split(|c: char| !c.is_ascii_digit()).next()?.parse::<u64>().ok()).sum()
     };
@@ -889,5 +902,14 @@ mod tests {
         assert_eq!(list[0].docs, ["A button.", "", "```", "example(|ui| {", "```"]);
         assert!(list[1].docs.is_empty());
         assert_eq!(list[0].signature, "pub fn button(&mut self) -> B");
+    }
+
+    #[test]
+    fn coverage_is_read_from_stdout_or_from_the_file_rustdoc_names() {
+        // Rust 1.95 まで: JSON を標準出力に出す（ファイルは無い）
+        assert_eq!(coverage_file("{\"a.rs\":{\"total\":1,\"with_docs\":1}}"), None);
+        // Rust 1.100 から: ファイルに書き、場所を Debug の形で出す（Windows では \ が二重になる）
+        assert_eq!(coverage_file("Generated output into \"D:/k/target\\\\doc\\\\kargui.json\"\n"), Some(PathBuf::from("D:/k/target\\doc\\kargui.json")));
+        assert_eq!(coverage_file("Generated output into \"/home/r/target/doc/kargui.json\"\n"), Some(PathBuf::from("/home/r/target/doc/kargui.json")));
     }
 }

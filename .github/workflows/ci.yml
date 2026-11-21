@@ -32,8 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Japanese fonts
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      # fontconfig の開発用ファイルは、parley の中の fontique が OS のフォントを探すのに使う（組み立ての時に要る）
+      - name: Japanese fonts and fontconfig
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk libfontconfig1-dev pkg-config
       - name: Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Tests
