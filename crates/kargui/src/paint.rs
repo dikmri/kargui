@@ -6,6 +6,7 @@
 //! 座標は窓の中の物理ピクセル。スクロールする層の物も、スクロールを反映した窓の座標で入れる。
 
 use crate::geom::{Color, IRect, Rect};
+use crate::image::Image;
 
 /// 描く物 1 つ。GPU の頂点の入力と同じ並び（64 バイト）。
 #[repr(C)]
@@ -17,13 +18,18 @@ pub(crate) struct Quad {
     pub color: [f32; 4],
     /// 文字の形の表の中の位置 x, y, 幅, 高さ（画素）。幅が 0 なら塗りつぶし
     pub uv: [f32; 4],
-    /// x: 角の丸み（画素）。残りは使っていない
+    /// x: 角の丸み（画素）。y: 画像なら DrawList::images の番号 + 1（0 なら画像ではない）。
+    /// z, w: 画像の id の下と上の 32 ビット（変わった所を見つける要約に入れる）
     pub extra: [f32; 4],
 }
 
 impl Quad {
     pub fn is_glyph(&self) -> bool {
-        self.uv[2] > 0.0
+        self.uv[2] > 0.0 && self.extra[1] == 0.0
+    }
+    /// 画像なら DrawList::images の番号
+    pub fn image_index(&self) -> Option<usize> {
+        (self.extra[1] > 0.0).then(|| self.extra[1] as usize - 1)
     }
     pub fn bounds(&self) -> Rect {
         Rect::new(self.rect[0], self.rect[1], self.rect[2], self.rect[3])
@@ -52,6 +58,8 @@ pub(crate) struct Layer {
 pub(crate) struct DrawList {
     pub quads: Vec<Quad>,
     pub layers: Vec<Layer>,
+    /// このフレームで描く画像（Quad::image_index が指す）
+    pub images: Vec<Image>,
     stack: Vec<(IRect, Option<Scroll>)>,
 }
 
@@ -60,6 +68,7 @@ impl DrawList {
     pub fn begin(&mut self, window: IRect) {
         self.quads.clear();
         self.layers.clear();
+        self.images.clear();
         self.stack.clear();
         self.stack.push((window, None));
         self.open();
@@ -121,6 +130,18 @@ impl DrawList {
     }
 
     /// 文字の形 1 つ。x, y は形の左上（整数の画素）、ax, ay は表の中の位置
+    /// 画像を r に引き伸ばして描く
+    pub fn image(&mut self, r: Rect, image: &Image) {
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        self.images.push(image.clone());
+        let n = self.images.len() as f32;
+        let id = image.0.id;
+        let extra = [0.0, n, f32::from_bits(id as u32), f32::from_bits((id >> 32) as u32)];
+        self.quads.push(Quad { rect: [r.x, r.y, r.w, r.h], color: [1.0; 4], uv: [0.0, 0.0, image.width() as f32, image.height() as f32], extra });
+    }
+
     pub fn glyph(&mut self, x: f32, y: f32, w: f32, h: f32, ax: f32, ay: f32, color: Color) {
         self.quads.push(Quad { rect: [x, y, w, h], color, uv: [ax, ay, w, h], extra: [0.0; 4] });
     }

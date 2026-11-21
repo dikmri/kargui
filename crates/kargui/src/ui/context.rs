@@ -14,6 +14,8 @@ use crate::theme::Theme;
 use crate::ui::{Id, OverlayKind};
 use crate::ime::{Clauses, ImeField};
 use crate::ui::edit::EditState;
+use crate::icon::Icon;
+use crate::text::Slot;
 use crate::wake::Waker;
 
 /// クリップボードの読み書き（窓では OS のもの、試験台では手元の文字列）
@@ -144,6 +146,9 @@ pub(crate) struct Context {
     pub wake_at: Option<Instant>,
     /// ほかのスレッドから窓を起こす係（Ui::waker）
     pub waker: Waker,
+    /// 形の表に入れたアイコン（アイコン, 画素の大きさ）。表を作り直したら（generation が変わったら）忘れる
+    icons: HashMap<(Icon, u32), Option<Slot>>,
+    icons_gen: u64,
     pub focus: Option<Id>,
     pub hover: Option<Id>,
     /// ポインターが今の部品に乗った時刻（ツールチップを出すまでの時間を数える）
@@ -211,6 +216,8 @@ impl Context {
             skew: Duration::ZERO,
             wake_at: None,
             waker: Waker::new(|| {}),
+            icons: HashMap::new(),
+            icons_gen: 0,
             focus: None,
             hover: None,
             hover_since: None,
@@ -272,6 +279,35 @@ impl Context {
         } else {
             TipState::Hidden
         }
+    }
+
+    /// size × size 画素のアイコンの、形の表の中の場所（初めてなら塗って入れる）
+    pub fn icon_slot(&mut self, icon: Icon, size: u32) -> Option<Slot> {
+        if self.icons_gen != self.text.atlas.generation {
+            self.icons.clear();
+            self.icons_gen = self.text.atlas.generation;
+        }
+        if let Some(s) = self.icons.get(&(icon, size)) {
+            return *s;
+        }
+        if size == 0 {
+            return None;
+        }
+        let px = crate::icon::rasterize(icon, size);
+        let slot = match self.text.atlas.alloc(size, size) {
+            Some((x, y)) => {
+                self.text.atlas.write(x, y, size, size, &px);
+                Some(Slot { x: x as u16, y: y as u16, w: size as u16, h: size as u16, left: 0, top: 0 })
+            }
+            None => {
+                // 表がいっぱいなら作り直す（次のフレームで文字もアイコンも入れ直す）
+                log::event("icon.atlas", &format!("icon={icon:?} size={size}"), "full; reset");
+                self.text.reset();
+                return None;
+            }
+        };
+        self.icons.insert((icon, size), slot);
+        slot
     }
 
     /// 今の時刻（試験台が進めた分を足す）

@@ -114,8 +114,8 @@ Not there yet:
 
 - **Widgets:** multi-line text input, password field, drop-down, radio buttons, menus (menu bar and
   context menu), open and save file dialogs, tabs, tree view, tables with column headers, progress
-  bar, images, a free drawing surface and links (disabled widgets, popups, in-window dialogs and
-  tooltips were added after 0.1).
+  bar, a free drawing surface and links (disabled widgets, popups, in-window dialogs, tooltips, icons
+  and images were added after 0.1; images are not drawn on the Direct3D 11 renderer yet).
 - **App mechanisms:** multiple windows, drag and drop, choosing fonts, window icon, minimum window
   size, confirming before close, and animation helpers (shortcuts, timers and waking from other
   threads were added after 0.1).
@@ -126,8 +126,8 @@ Not there yet:
 ### Linux and macOS
 
 They are planned. Everything that depends on the operating system (window, input, input method,
-text, putting pixels on screen, clipboard, screen-reader adapter) is kept in four files:
-`platform.rs`, `gdi.rs`, `gpu.rs` and `text/dwrite.rs`. The rest (widgets, layout, drawing, the
+text, putting pixels on screen, clipboard, screen-reader adapter) is kept in five files:
+`platform.rs`, `gdi.rs`, `gpu.rs`, `text/dwrite.rs` and `wic.rs` (reading image files). The rest (widgets, layout, drawing, the
 test harness) builds on Linux and macOS as well, with text laid out and drawn by parley and swash.
 Every push runs the tests on Windows, Linux and macOS (GitHub Actions). Windows cannot be opened
 there yet, so `kargui::run` returns an `Err` saying the system is not supported. Linux comes first.

@@ -236,7 +236,19 @@ impl Gpu {
     /// 一覧を全部描き、画面に出す（Present）。sync が 0 なら待たずに出す
     pub fn render(&mut self, list: &DrawList, atlas: &mut Atlas, background: Color, sync: u32) -> Result<()> {
         self.upload_atlas(atlas);
-        let n = list.quads.len();
+        // 画像はまだ GPU の道では描かない（シェーダーが画像を読めない）。番号の並びは崩さずに透明にする
+        let hidden: Vec<Quad>;
+        let quads: &[Quad] = if list.images.is_empty() {
+            &list.quads
+        } else {
+            static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::log::event("gpu.image", &format!("images={}", list.images.len()), "not drawn on the Direct3D 11 renderer yet");
+            }
+            hidden = list.quads.iter().map(|q| if q.image_index().is_some() { Quad { color: [0.0; 4], uv: [0.0; 4], extra: [0.0; 4], ..*q } } else { *q }).collect();
+            &hidden
+        };
+        let n = quads.len();
         if n > self.capacity {
             self.capacity = n.next_power_of_two();
             self.instances = buffer(&self.device, (self.capacity * size_of::<Quad>()) as u32, D3D11_BIND_VERTEX_BUFFER)?;
@@ -244,7 +256,7 @@ impl Gpu {
         unsafe {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.context.Map(&self.instances, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
-            std::ptr::copy_nonoverlapping(list.quads.as_ptr(), mapped.pData.cast::<Quad>(), n);
+            std::ptr::copy_nonoverlapping(quads.as_ptr(), mapped.pData.cast::<Quad>(), n);
             self.context.Unmap(&self.instances, 0);
 
             let frame = [self.width as f32, self.height as f32, atlas.size as f32, atlas.size as f32];

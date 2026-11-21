@@ -71,7 +71,7 @@ fn combine(acc: &mut u64, h: u64) {
 
 /// 一様な背景（不透明で角が丸くなく、範囲を覆う塗りつぶし）か。ずらしても崩れない
 fn is_uniform_cover(q: &crate::paint::Quad, clip: IRect) -> bool {
-    !q.is_glyph() && q.color[3] >= 1.0 && q.extra[0] <= 0.0 && {
+    !q.is_glyph() && q.image_index().is_none() && q.color[3] >= 1.0 && q.extra[0] <= 0.0 && {
         let r = IRect::covering(q.bounds());
         r.x <= clip.x && r.y <= clip.y && r.right() >= clip.right() && r.bottom() >= clip.bottom()
     }

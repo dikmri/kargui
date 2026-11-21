@@ -166,6 +166,15 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Decrement);
                 n
             }
+            // 名前の無いアイコンは飾りなので、読み上げない
+            Kind::Icon { .. } | Kind::Image { .. } => {
+                let mut n = Node::new(Role::Image);
+                match &info.label {
+                    Some(l) => n.set_label(l.clone()),
+                    None => n.set_hidden(),
+                }
+                n
+            }
             Kind::Overlay { kind, title } => match kind {
                 OverlayKind::Popup => Node::new(Role::Pane),
                 OverlayKind::Dialog => {

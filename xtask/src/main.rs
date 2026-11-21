@@ -286,6 +286,47 @@ fn shots() -> Vec<Shot> {
             setup: no_setup,
         },
         Shot {
+            name: "icons",
+            size: (520.0, 110.0),
+            view: |ui| {
+                ui.row(|ui| {
+                    for icon in kargui::Icon::ALL {
+                        ui.icon(icon);
+                    }
+                });
+                ui.row(|ui| {
+                    ui.button("New task").icon(kargui::Icon::Plus).primary();
+                    ui.button("Search").icon(kargui::Icon::Search);
+                    ui.icon_button(kargui::Icon::More, "More");
+                    ui.icon_button(kargui::Icon::Close, "Close");
+                    ui.icon(kargui::Icon::Info).size(20.0).weak();
+                    ui.label("Saved").weak();
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "image",
+            size: (360.0, 120.0),
+            view: |ui| {
+                // 左上が赤、右下が青の、だんだん変わる 32×16 の絵（試しの画像。ファイルを読まずに作る）
+                let (w, h) = (32u32, 16u32);
+                let mut px = Vec::with_capacity((w * h * 4) as usize);
+                for y in 0..h {
+                    for x in 0..w {
+                        px.extend([(255 - x * 8) as u8, (y * 16) as u8, (x * 8) as u8, 255]);
+                    }
+                }
+                let img = kargui::Image::from_rgba(w, h, px).unwrap();
+                ui.row(|ui| {
+                    ui.image(&img);
+                    ui.image(&img).size(128.0, 64.0).label("Gradient");
+                    ui.label("32 × 16 and 4×");
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
             name: "tooltip",
             size: (320.0, 100.0),
             view: |ui| {

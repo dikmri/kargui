@@ -22,6 +22,14 @@
   `Waker` that wakes the window from any thread (merged until the window reads it). Alt+F4 and F10
   keep their Windows behaviour, and Alt+letter no longer beeps. Tests: `Harness::hover(name)` and
   `Harness::wait(duration)` (time moves without sleeping).
+- Icons: 18 built-in vector icons (`Icon`, `Icon::ALL`) drawn sharply at any size by kargui's own
+  rasterizer into the text atlas (so both renderers draw them), shown with `Ui::icon`,
+  `Button::icon` and `Ui::icon_button(icon, name)`. The check box mark is now this icon instead of a
+  font glyph. Unnamed icons are hidden from screen readers.
+- Images: `Image` (`from_rgba`, `from_bytes`, `open`, `width`, `height`) and `Ui::image(&image)`
+  with `.size(..)` and `.label(..)`. Files are decoded with Windows Imaging Component (no new
+  dependencies); on other systems `from_bytes` returns an error for now. Drawn by the CPU renderer
+  (bilinear scaling); the Direct3D 11 renderer does not draw images yet.
 - Linux and macOS (preparation): kargui now builds on them, and its tests (widgets, layout,
   drawing, the test harness) pass there. Text on these systems is laid out with parley and drawn
   with swash; Windows keeps DirectWrite and gains no dependencies. Windows cannot be opened there

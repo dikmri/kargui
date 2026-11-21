@@ -1,5 +1,5 @@
-<!-- source: ja/02-widgets.md fnv=77999a55f8f9e50c -->
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Toggled::changed Toggled::strike Slider::changed sig=0af435d8eecb0df6 -->
+<!-- source: ja/02-widgets.md fnv=ff99b86bd2e590fa -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Ui::icon Ui::icon_button Button::icon Ui::image Image::from_rgba Image::open Toggled::changed Toggled::strike Slider::changed sig=611901922cf6e15f -->
 # Widgets
 
 Widgets are created with methods on `ui`. Widgets that change a value take the state with `&mut`; ask the return value what happened.
@@ -155,3 +155,42 @@ Give a widget a description with `.tooltip("text")`. It appears below the widget
 ui.button("Save").tooltip("Saves the current content to the file");
 # });
 ```
+
+## Icons and images
+
+kargui has 18 common icons (`Icon::Check`, `Icon::Close`, `Icon::ChevronDown`, `Icon::Search` and so on). They are drawn sharply at any size, in the text color. Put one before a button's text with `.icon(..)`; make an icon-only button with `ui.icon_button(icon, name)`. An icon-only button has no text, so always pass a name (what screen readers say).
+
+```rust
+use kargui::Icon;
+# kargui::test::example(|ui| {
+ui.row(|ui| {
+    ui.button("New task").icon(Icon::Plus).primary();
+    ui.icon_button(Icon::Close, "Close");
+    ui.icon(Icon::Info).weak();
+    ui.label("Saved automatically");
+});
+# });
+```
+
+Load a picture into an `Image`, then show it with `ui.image(&image)`. Loading takes time, so do it once when you create the app's state, not in `view`. Its size is its pixel count (in logical pixels); change it with `.size(width, height)`.
+
+```rust
+use kargui::{App, Image, Ui};
+
+struct Album {
+    photo: Image,
+}
+
+impl App for Album {
+    fn view(&mut self, ui: &mut Ui) {
+        ui.image(&self.photo).size(320.0, 240.0).label("The office at night");
+    }
+}
+
+// from a file: Image::open("photo.jpg") (on Windows). Here, from pixels
+let photo = Image::from_rgba(4, 3, vec![120; 48]).unwrap();
+let h = kargui::test::Harness::new(Album { photo });
+assert!(h.find("The office at night").is_some());
+```
+
+Icons and images without a name are treated as decoration, and screen readers skip them. Describe pictures that carry information with `.label(..)`. Image files can be read only on Windows for now (PNG, JPEG, GIF, BMP and more); on other systems, create images from pixels with `Image::from_rgba`. The Direct3D 11 renderer (not the default) does not draw images yet.

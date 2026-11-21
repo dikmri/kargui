@@ -52,7 +52,7 @@ impl Atlas {
     }
 
     /// w×h の場所を取る。形どうしがにじまないよう 1 画素あける
-    fn alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+    pub(crate) fn alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
         if w + 1 > self.size || h + 1 > self.size {
             return None;
         }
@@ -70,7 +70,7 @@ impl Atlas {
         Some(at)
     }
 
-    fn write(&mut self, x: u32, y: u32, w: u32, h: u32, src: &[u8]) {
+    pub(crate) fn write(&mut self, x: u32, y: u32, w: u32, h: u32, src: &[u8]) {
         for row in 0..h {
             let d = ((y + row) * self.size + x) as usize;
             let s = (row * w) as usize;

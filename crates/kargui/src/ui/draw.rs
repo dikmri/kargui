@@ -8,6 +8,7 @@ use crate::ui::context::{Context, Hit, ListInfo, OverlayInfo, Prev};
 use crate::ui::edit;
 use crate::ui::layout::{self, Dir, Size};
 use crate::ui::{Kind, Overlay, OverlayKind, TextKind, Tree};
+use crate::icon::Icon;
 
 /// 論理ピクセルの大きさ（拡大率を掛ける前）
 mod sz {
@@ -18,6 +19,8 @@ mod sz {
     pub const BUTTON_MIN_W: f32 = 56.0;
     pub const BOX: f32 = 16.0;
     pub const BOX_GAP: f32 = 8.0;
+    /// ボタンの中のアイコンと文字の間
+    pub const ICON_GAP: f32 = 6.0;
     pub const TRACK_W: f32 = 36.0;
     pub const TRACK_H: f32 = 20.0;
     pub const SEGMENT_H: f32 = 30.0;
@@ -56,13 +59,21 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             let laid = cx.text.layout(text, st, if *wrap { max_w } else { None });
             (if *wrap { 0.0 } else { laid.width.ceil() }, laid.height.ceil())
         }
-        Kind::Button { text, small, .. } => {
+        Kind::Button { text, small, icon, .. } => {
+            let h = p(if *small { sz::BUTTON_SMALL_H } else { sz::BUTTON_H });
+            // アイコンだけのボタンは正方形
+            if text.is_empty() && icon.is_some() {
+                return Some((h, h));
+            }
             let st = style(cx, if *small { TextKind::Small } else { TextKind::Body }, false);
             let laid = cx.text.layout(text, st, None);
             let pad = p(if *small { sz::BUTTON_SMALL_PAD } else { sz::BUTTON_PAD });
             let min = p(if *small { sz::BUTTON_MIN_W * 0.8 } else { sz::BUTTON_MIN_W });
-            ((laid.width.ceil() + 2.0 * pad).max(min), p(if *small { sz::BUTTON_SMALL_H } else { sz::BUTTON_H }))
+            let lead = icon.map_or(0.0, |_| p(button_icon(*small)) + p(sz::ICON_GAP));
+            ((laid.width.ceil() + lead + 2.0 * pad).max(min), h)
         }
+        Kind::Icon { size, .. } => (p(*size as f32), p(*size as f32)),
+        Kind::Image { w, h, .. } => (p(*w as f32), p(*h as f32)),
         Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => {
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
             let lead = p(if matches!(kind, Kind::Toggle { .. }) { sz::TRACK_W } else { sz::BOX });
@@ -77,6 +88,11 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
         Kind::Slider { .. } => (p(sz::SLIDER_W), p(sz::SLIDER_H)),
         _ => return None,
     })
+}
+
+/// ボタンの中のアイコンの大きさ（論理ピクセル）
+fn button_icon(small: bool) -> f32 {
+    if small { 14.0 } else { 16.0 }
 }
 
 /// スクロールの入れ物の右に空ける幅（論理ピクセル。棒の幅と、棒の左右のすき間）
@@ -269,6 +285,13 @@ impl Painter<'_> {
         }
     }
 
+    /// アイコンを (x, y) から s × s 画素で描く（形の表に入れて、文字と同じく色を付けて描く）
+    fn icon(&mut self, icon: Icon, x: f32, y: f32, s: f32, color: Color) {
+        if let Some(slot) = self.cx.icon_slot(icon, s as u32) {
+            self.d.glyph(x, y, slot.w as f32, slot.h as f32, slot.x as f32, slot.y as f32, color);
+        }
+    }
+
     fn focus_ring(&mut self, tree: &Tree, i: usize, radius: f32) {
         if self.cx.focus_visible && self.cx.focus == Some(tree.info[i].id) {
             let r = tree.layout[i].rect;
@@ -340,7 +363,7 @@ impl Painter<'_> {
                     self.node(tree, c);
                 }
             }
-            Kind::Button { text, primary, small } => {
+            Kind::Button { text, primary, small, icon } => {
                 let radius = self.px(sz::RADIUS);
                 self.focus_ring(tree, i, radius);
                 let t = self.cx.theme.clone();
@@ -373,8 +396,32 @@ impl Painter<'_> {
                 } else {
                     t.text
                 };
-                put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
+                // アイコンと文字をひとまとまりにして、真ん中に置く
+                let (is, gap) = match icon {
+                    Some(_) => (self.px(button_icon(*small)), if text.is_empty() { 0.0 } else { self.px(sz::ICON_GAP) }),
+                    None => (0.0, 0.0),
+                };
+                let x0 = (r.x + (r.w - (is + gap + laid.width)) / 2.0).round();
+                if let Some(ic) = icon {
+                    self.icon(*ic, x0, (r.y + (r.h - is) / 2.0).round(), is, color);
+                }
+                put(self.d, &laid, x0 + is + gap, (r.y + (r.h - laid.height) / 2.0).round(), color);
                 self.hit(tree, i, true, false);
+            }
+            Kind::Image { image, .. } => {
+                self.d.image(r, image);
+            }
+            Kind::Icon { icon, size, weak } => {
+                let t = &self.cx.theme;
+                let color = if tree.info[i].disabled {
+                    t.done_text
+                } else if *weak {
+                    t.weak_text
+                } else {
+                    t.text
+                };
+                let s = self.px(*size as f32);
+                self.icon(*icon, (r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round(), s, color);
             }
             Kind::Checkbox { checked, text, strike } => {
                 let t = self.cx.theme.clone();
@@ -389,8 +436,8 @@ impl Painter<'_> {
                 let off = tree.info[i].disabled;
                 if *checked {
                     self.d.fill(bx, if off { t.border } else { t.accent }, radius);
-                    let mark = self.cx.text.layout("✓", TextStyle { size: (13.0 * self.cx.scale).round(), bold: true }, None);
-                    put(self.d, &mark, (bx.x + (bx.w - mark.width) / 2.0).round(), (bx.y + (bx.h - mark.height) / 2.0).round(), t.on_accent);
+                    let m = (bx.w * 0.85).round();
+                    self.icon(Icon::Check, (bx.x + (bx.w - m) / 2.0).round(), (bx.y + (bx.h - m) / 2.0).round(), m, t.on_accent);
                 } else {
                     let border = if !off && self.cx.hover == Some(id) { t.accent } else { t.border };
                     self.d.boxed(bx, t.field, border, line, radius);

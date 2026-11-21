@@ -215,6 +215,42 @@ A large, bold title. Screen readers announce it as a heading.
 ui.heading("Tasks");
 ```
 
+### `pub fn icon(&mut self, icon: Icon) -> IconView<'_>`
+
+A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
+screen readers skip it unless you give it a name with `.label(..)`.
+
+```
+use kargui::Icon;
+ui.row(|ui| {
+    ui.icon(Icon::Info).weak();
+    ui.label("Changes are saved automatically.");
+});
+```
+
+### `pub fn image(&mut self, image: &Image) -> ImageView<'_>`
+
+A picture, as large as it has pixels (in logical pixels) unless you set `.size(..)`. Screen
+readers skip it unless you give it a description with `.label(..)`. On the optional
+Direct3D 11 renderer, images are not drawn yet.
+
+```
+use kargui::Image;
+ui.image(&photo).size(160.0, 80.0).label("The office at night");
+```
+
+### `pub fn icon_button(&mut self, icon: Icon, name: impl Into<String>) -> Button<'_>`
+
+A square button that shows only an icon. `name` is what screen readers say and is required,
+because the icon has no text. Ask [`Button::clicked`] whether it was clicked.
+
+```
+use kargui::Icon;
+if ui.icon_button(Icon::Close, "Close").clicked() {
+    open = false;
+}
+```
+
 ### `pub fn button(&mut self, text: impl Into<String>) -> Button<'_>`
 
 A button. Ask [`Button::clicked`] whether it was clicked (by pointer, keyboard or screen reader).
@@ -710,6 +746,15 @@ Whether the button was clicked.
 if ui.button("Add one").clicked() {
     count += 1;
 }
+```
+
+### `pub fn icon(mut self, icon: Icon) -> Self`
+
+Shows `icon` before the text.
+
+```
+use kargui::Icon;
+ui.button("New task").icon(Icon::Plus).primary();
 ```
 
 ### `pub fn enabled(mut self, enabled: bool) -> Self`

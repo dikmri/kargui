@@ -1,4 +1,4 @@
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Toggled::changed Toggled::strike Slider::changed sig=0af435d8eecb0df6 -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Ui::icon Ui::icon_button Button::icon Ui::image Image::from_rgba Image::open Toggled::changed Toggled::strike Slider::changed sig=611901922cf6e15f -->
 # 部品
 
 部品は `ui` のメソッドで作ります。値を変える部品には `&mut` で状態を渡し、戻り値で何が起きたかを聞きます。
@@ -154,3 +154,42 @@ if close {
 ui.button("保存").tooltip("今の内容をファイルに保存します");
 # });
 ```
+
+## アイコンと画像
+
+kargui は、よく使う 18 個のアイコン（`Icon::Check`・`Icon::Close`・`Icon::ChevronDown`・`Icon::Search` など）を持っています。どの大きさでもくっきり描き、色は文字に合わせます。ボタンの文字の前に付ける時は `.icon(..)`、アイコンだけのボタンは `ui.icon_button(アイコン, 名前)` です。アイコンだけのボタンには文字が無いので、名前（読み上げの名前）を必ず渡します。
+
+```rust
+use kargui::Icon;
+# kargui::test::example(|ui| {
+ui.row(|ui| {
+    ui.button("新しいタスク").icon(Icon::Plus).primary();
+    ui.icon_button(Icon::Close, "閉じる");
+    ui.icon(Icon::Info).weak();
+    ui.label("自動で保存します");
+});
+# });
+```
+
+画像は `Image` に読み込んでから `ui.image(&画像)` で出します。読み込みは時間がかかるので、`view` の中ではなく、アプリの状態を作る時に 1 回だけ行います。大きさは画像の画素数（論理ピクセル）で、`.size(幅, 高さ)` で変えられます。
+
+```rust
+use kargui::{App, Image, Ui};
+
+struct Album {
+    photo: Image,
+}
+
+impl App for Album {
+    fn view(&mut self, ui: &mut Ui) {
+        ui.image(&self.photo).size(320.0, 240.0).label("夜の事務所");
+    }
+}
+
+// ファイルからは Image::open("photo.jpg")（Windows）。ここでは画素から作る
+let photo = Image::from_rgba(4, 3, vec![120; 48]).unwrap();
+let h = kargui::test::Harness::new(Album { photo });
+assert!(h.find("夜の事務所").is_some());
+```
+
+アイコンも画像も、名前を付けない時は飾りとして扱い、読み上げソフトは読みません。内容を伝える画像には `.label(..)` で説明を付けます。画像のファイルを読めるのは今は Windows だけで（PNG・JPEG・GIF・BMP など）、ほかの OS では `Image::from_rgba` で画素から作ります。GPU の道（既定ではない）では、画像はまだ描きません。

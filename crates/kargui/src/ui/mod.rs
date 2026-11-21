@@ -61,6 +61,8 @@ use layout::{Dir, LayoutNode};
 
 use crate::input::{Event, Key, Mods};
 use crate::wake::Waker;
+use crate::icon::Icon;
+use crate::image::Image;
 use std::time::{Duration, Instant};
 use crate::theme::Theme;
 
@@ -126,7 +128,11 @@ pub(crate) enum Kind {
     Column,
     Stack,
     Label { text: String, size: TextKind, bold: bool, weak: bool, strike: bool, wrap: bool, right: bool },
-    Button { text: String, primary: bool, small: bool },
+    Button { text: String, primary: bool, small: bool, icon: Option<Icon> },
+    /// アイコン（大きさは論理ピクセル）
+    Icon { icon: Icon, size: u32, weak: bool },
+    /// 画像（大きさは論理ピクセル）
+    Image { image: Image, w: u32, h: u32 },
     Checkbox { checked: bool, text: String, strike: bool },
     Toggle { on: bool, text: String },
     Segment { text: String, selected: bool },
@@ -614,7 +620,69 @@ impl<'a> Ui<'a> {
         Label(self.handle(idx, id))
     }
 
+    /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
+    /// screen readers skip it unless you give it a name with `.label(..)`.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.icon(Icon::Info).weak();
+    ///     ui.label("Changes are saved automatically.");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn icon(&mut self, icon: Icon) -> IconView<'_> {
+        let (idx, id) = self.add(Kind::Icon { icon, size: 16, weak: false }, Dir::Leaf);
+        // 決めた大きさにして、伸ばす並べ方（列）の中でも広がらないようにする
+        let s = Size::Fixed(self.px(16.0));
+        (self.tree.layout[idx].width, self.tree.layout[idx].height) = (s, s);
+        IconView(self.handle(idx, id))
+    }
+
+    /// A picture, as large as it has pixels (in logical pixels) unless you set `.size(..)`. Screen
+    /// readers skip it unless you give it a description with `.label(..)`. On the optional
+    /// Direct3D 11 renderer, images are not drawn yet.
+    ///
+    /// ```
+    /// use kargui::Image;
+    /// # let photo = Image::from_rgba(4, 2, vec![200; 32]).unwrap();
+    /// # kargui::test::example(|ui| {
+    /// ui.image(&photo).size(160.0, 80.0).label("The office at night");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn image(&mut self, image: &Image) -> ImageView<'_> {
+        let kind = Kind::Image { image: image.clone(), w: image.width(), h: image.height() };
+        let (idx, id) = self.add(kind, Dir::Leaf);
+        // 決めた大きさにして、伸ばす並べ方（列）の中でもゆがまないようにする
+        self.tree.layout[idx].width = Size::Fixed(self.px(image.width() as f32));
+        self.tree.layout[idx].height = Size::Fixed(self.px(image.height() as f32));
+        ImageView(self.handle(idx, id))
+    }
+
     // ---- 押す物 ----
+
+    /// A square button that shows only an icon. `name` is what screen readers say and is required,
+    /// because the icon has no text. Ask [`Button::clicked`] whether it was clicked.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # let mut open = true;
+    /// # kargui::test::example(|ui| {
+    /// if ui.icon_button(Icon::Close, "Close").clicked() {
+    ///     open = false;
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn icon_button(&mut self, icon: Icon, name: impl Into<String>) -> Button<'_> {
+        let (idx, id) = self.add(Kind::Button { text: String::new(), primary: false, small: false, icon: Some(icon) }, Dir::Leaf);
+        self.tree.info[idx].label = Some(name.into());
+        let clicked = !self.disabled && self.cx.clicked == Some(id);
+        Button { h: self.handle(idx, id), clicked }
+    }
 
     /// A button. Ask [`Button::clicked`] whether it was clicked (by pointer, keyboard or screen reader).
     ///
@@ -629,7 +697,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn button(&mut self, text: impl Into<String>) -> Button<'_> {
-        let (idx, id) = self.add(Kind::Button { text: text.into(), primary: false, small: false }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::Button { text: text.into(), primary: false, small: false, icon: None }, Dir::Leaf);
         let clicked = !self.disabled && self.cx.clicked == Some(id);
         Button { h: self.handle(idx, id), clicked }
     }
@@ -1449,6 +1517,122 @@ macro_rules! common {
 /// ```
 pub struct Label<'t>(Handle<'t>);
 
+/// A picture. See [`Ui::image`].
+///
+/// ```
+/// # let logo = kargui::Image::from_rgba(2, 2, vec![255; 16]).unwrap();
+/// # kargui::test::example(|ui| {
+/// ui.image(&logo).size(32.0, 32.0).label("Company logo");
+/// # });
+/// ```
+pub struct ImageView<'t>(Handle<'t>);
+
+impl ImageView<'_> {
+    /// Shows the picture at `width` × `height` logical pixels (stretched to fit; keep the ratio of
+    /// the picture's sides to avoid distortion).
+    ///
+    /// ```
+    /// # let photo = kargui::Image::from_rgba(4, 3, vec![200; 48]).unwrap();
+    /// # kargui::test::example(|ui| {
+    /// ui.image(&photo).size(120.0, 90.0);
+    /// # });
+    /// ```
+    pub fn size(mut self, width: f32, height: f32) -> Self {
+        let (width, height) = (width.max(1.0).round(), height.max(1.0).round());
+        if let Kind::Image { w, h, .. } = self.0.kind() {
+            *w = width as u32;
+            *h = height as u32;
+        }
+        ImageView(self.0.width(Size::Fixed(width)).height(Size::Fixed(height)))
+    }
+    /// Describes the picture for screen readers (so it is read instead of skipped).
+    ///
+    /// ```
+    /// # let chart = kargui::Image::from_rgba(2, 2, vec![255; 16]).unwrap();
+    /// # kargui::test::example(|ui| {
+    /// ui.image(&chart).label("Sales rose 12% in March");
+    /// # });
+    /// ```
+    pub fn label(self, description: impl Into<String>) -> Self {
+        ImageView(self.0.label(description))
+    }
+    /// Shows a tooltip. See [`Handle::tooltip`].
+    ///
+    /// ```
+    /// # let map = kargui::Image::from_rgba(2, 2, vec![255; 16]).unwrap();
+    /// # kargui::test::example(|ui| {
+    /// ui.image(&map).tooltip("Drawn on 21 November");
+    /// # });
+    /// ```
+    pub fn tooltip(self, text: impl Into<String>) -> Self {
+        ImageView(self.0.tooltip(text))
+    }
+}
+
+/// An icon. See [`Ui::icon`].
+///
+/// ```
+/// use kargui::Icon;
+/// # kargui::test::example(|ui| {
+/// ui.icon(Icon::Warning).size(20.0).label("Warning");
+/// # });
+/// ```
+pub struct IconView<'t>(Handle<'t>);
+
+impl IconView<'_> {
+    /// Sets the size in logical pixels (the default is 16).
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.icon(Icon::Search).size(24.0);
+    /// # });
+    /// ```
+    pub fn size(mut self, px: f32) -> Self {
+        let px = px.max(1.0).round();
+        if let Kind::Icon { size, .. } = self.0.kind() {
+            *size = px as u32;
+        }
+        IconView(self.0.width(Size::Fixed(px)).height(Size::Fixed(px)))
+    }
+    /// Draws in the weaker text color.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.icon(Icon::Info).weak();
+    /// # });
+    /// ```
+    pub fn weak(mut self) -> Self {
+        if let Kind::Icon { weak, .. } = self.0.kind() {
+            *weak = true;
+        }
+        self
+    }
+    /// Gives the icon a name, so screen readers read it as a picture instead of skipping it.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.icon(Icon::Warning).label("Warning");
+    /// # });
+    /// ```
+    pub fn label(self, name: impl Into<String>) -> Self {
+        IconView(self.0.label(name))
+    }
+    /// Shows a tooltip. See [`Handle::tooltip`].
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.icon(Icon::Info).tooltip("Saved every minute");
+    /// # });
+    /// ```
+    pub fn tooltip(self, text: impl Into<String>) -> Self {
+        IconView(self.0.tooltip(text))
+    }
+}
+
 impl Label<'_> {
     fn text_kind(mut self, f: impl FnOnce(&mut TextKind, &mut bool, &mut bool, &mut bool, &mut bool)) -> Self {
         if let Kind::Label { size, bold, weak, strike, wrap, .. } = self.0.kind() {
@@ -1644,6 +1828,20 @@ impl Button<'_> {
     /// ```
     pub fn clicked(&self) -> bool {
         self.clicked
+    }
+    /// Shows `icon` before the text.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.button("New task").icon(Icon::Plus).primary();
+    /// # });
+    /// ```
+    pub fn icon(mut self, icon: Icon) -> Self {
+        if let Kind::Button { icon: i, .. } = self.h.kind() {
+            *i = Some(icon);
+        }
+        self
     }
     /// Disables the button when `enabled` is false, as [`Ui::enabled`] does for a group: drawn
     /// dimmed, not clickable, skipped by Tab, and announced as unavailable. Call it before

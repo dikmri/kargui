@@ -15,12 +15,18 @@
 //! 部品を作る関数には動く例が要る（cargo run -p xtask -- doc-check）。
 #![deny(missing_docs)]
 
+// 窓の道（platform.rs）はまだ Windows だけなので、Windows 以外では、窓の道からだけ使う物（変わった所の要約・
+// 日本語入力の問い合わせ・読み上げの木など）が「使っていない」になる。Linux と macOS の窓の道を作るまで、その警告を出さない
+#![cfg_attr(not(windows), allow(dead_code))]
+
 mod app;
 mod cpu_frame;
 mod damage;
 #[cfg(windows)]
 mod gdi;
 mod geom;
+mod icon;
+mod image;
 #[cfg(windows)]
 mod gpu;
 mod ime;
@@ -30,16 +36,23 @@ mod paint;
 // OS との境目（窓・入力・日本語入力・画面に出す・クリップボード・読み上げの橋渡し）。文字の OS ごとの道は text の中
 #[cfg(windows)]
 mod platform;
+// 画像のファイルを読む Windows の道
+#[cfg(windows)]
+mod wic;
 mod raster;
 mod runtime;
 pub mod test;
 mod text;
 mod theme;
+// アイコンの形を塗る（OS に頼らない）
+mod vector;
 pub mod ui;
 mod wake;
 
 pub use app::{App, Frame, Options, Renderer, run};
 pub use geom::{Color, IRect, Rect, rgb};
+pub use icon::Icon;
+pub use image::Image;
 pub use input::{Key, Mods};
 pub use log::set_logger;
 pub use theme::Theme;

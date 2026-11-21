@@ -2261,5 +2261,146 @@ mod tests {
         w.wake();
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2, "読んだ後はまた知らせる");
     }
+
+    /// アイコンの見本
+    #[derive(Default)]
+    struct Icons {
+        closed: u32,
+        done: bool,
+    }
+
+    impl App for Icons {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.row(|ui| {
+                ui.icon(crate::Icon::Info);
+                ui.icon(crate::Icon::Warning).size(24.0).label("Warning");
+                if ui.icon_button(crate::Icon::Close, "Close").clicked() {
+                    self.closed += 1;
+                }
+                ui.button("Add").icon(crate::Icon::Plus);
+                ui.button("Plain");
+                ui.checkbox(&mut self.done, "Done");
+            });
+        }
+    }
+
+    #[test]
+    fn icon_buttons_have_names_and_decorative_icons_are_hidden() {
+        let mut h = Harness::new(Icons::default());
+        h.click("Close");
+        assert_eq!(h.app().closed, 1);
+        let close = h.find("Close").unwrap();
+        assert_eq!(close.w, close.h, "アイコンだけのボタンは正方形");
+        // 文字の前にアイコンがあるボタンは、同じ文字の長さのボタンより広い
+        assert!(h.find("Add").unwrap().w >= h.find("Plain").unwrap().w);
+        let built = a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new());
+        let images: Vec<&accesskit::Node> = built.update.nodes.iter().filter(|(_, n)| n.role() == accesskit::Role::Image).map(|(_, n)| n).collect();
+        assert_eq!(images.len(), 2);
+        assert_eq!(images.iter().filter(|n| n.is_hidden()).count(), 1, "名前の無いアイコンは読み上げない");
+        assert!(images.iter().any(|n| n.label() == Some("Warning") && !n.is_hidden()));
+        assert_eq!(built.unlabeled, 0, "アイコンだけのボタンにも名前がある");
+    }
+
+    #[test]
+    fn icons_and_the_check_mark_are_drawn() {
+        fn ink(h: &mut Harness<Icons>, name: Option<&str>, r: crate::geom::Rect) -> u32 {
+            let _ = name;
+            let image = h.render();
+            let bg = image.rgb(r.x as u32, r.y as u32);
+            let mut n = 0;
+            for y in r.y as u32..(r.y + r.h) as u32 {
+                for x in r.x as u32..(r.x + r.w) as u32 {
+                    if image.rgb(x, y) != bg {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        }
+        let mut h = Harness::new(Icons::default());
+        let warning = h.find("Warning").unwrap();
+        assert!(ink(&mut h, None, warning) > 40, "アイコンが描かれる");
+        let done = h.find("Done").unwrap();
+        let box_ = crate::geom::Rect::new(done.x, done.y, done.h, done.h);
+        let before = ink(&mut h, None, box_);
+        h.click("Done");
+        let after = ink(&mut h, None, box_);
+        assert!(after > before + 20, "チェックの印が描かれる: {before} → {after}");
+    }
+
+    /// 画像の見本: 2×1（赤と、半分すけた青）を等倍と 10 倍で出す
+    struct Pictures {
+        img: crate::Image,
+    }
+
+    impl App for Pictures {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.image(&self.img);
+            ui.image(&self.img).size(20.0, 10.0).label("Flag");
+        }
+    }
+
+    fn pictures() -> Harness<Pictures> {
+        let img = crate::Image::from_rgba(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 128]).unwrap();
+        Harness::new(Pictures { img })
+    }
+
+    #[test]
+    fn images_are_drawn_at_their_size_scaled_and_blended() {
+        let mut h = pictures();
+        let image = h.render();
+        let bg = image.rgb(1, 1);
+        assert_eq!(bg, 0xffffff);
+        // 等倍: 左上の余白（16, 12）から 2 画素
+        let at = |x: u32, y: u32| image.rgb(x, y);
+        let small = h.rt.tree.layout.iter().zip(&h.rt.tree.info).filter(|(_, n)| matches!(n.kind, crate::ui::Kind::Image { .. })).map(|(l, _)| l.rect).collect::<Vec<_>>();
+        assert_eq!((small[0].w, small[0].h), (2.0, 1.0));
+        assert_eq!((small[1].w, small[1].h), (20.0, 10.0));
+        let (x0, y0) = (small[0].x as u32, small[0].y as u32);
+        assert_eq!(at(x0, y0), 0xff0000, "赤はそのまま");
+        // 半分すけた青は、白の上で薄い青
+        let c = at(x0 + 1, y0);
+        assert!((c & 0xff) > 200 && ((c >> 16) & 0xff) > 100 && ((c >> 16) & 0xff) < 160, "{c:06x}");
+        // 10 倍: 左の端は赤、右の端は薄い青
+        let r = small[1];
+        assert_eq!(at(r.x as u32 + 1, r.y as u32 + 5), 0xff0000);
+        let c = at((r.x + r.w) as u32 - 2, r.y as u32 + 5);
+        assert!((c & 0xff) > 200 && ((c >> 16) & 0xff) < 160, "{c:06x}");
+    }
+
+    #[test]
+    fn images_without_a_description_are_hidden_from_screen_readers() {
+        let h = pictures();
+        let built = a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new());
+        let images: Vec<&accesskit::Node> = built.update.nodes.iter().filter(|(_, n)| n.role() == accesskit::Role::Image).map(|(_, n)| n).collect();
+        assert_eq!(images.len(), 2);
+        assert_eq!(images.iter().filter(|n| n.is_hidden()).count(), 1);
+        assert!(images.iter().any(|n| n.label() == Some("Flag")));
+    }
+
+    /// 2×1 の PNG（赤と、半分すけた青）
+    const TINY_PNG: [u8; 71] = [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 1, 8, 6, 0, 0, 0, 244, 34, 127, 138, 0, 0, 0, 14,
+        73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 0, 66, 13, 0, 15, 122, 3, 126, 119, 233, 127, 151, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+        96, 130,
+    ];
+
+    #[cfg(windows)]
+    #[test]
+    fn image_files_are_decoded_on_windows() {
+        let img = crate::Image::from_bytes(&TINY_PNG).unwrap();
+        assert_eq!((img.width(), img.height()), (2, 1));
+        assert_eq!(&img.0.pixels[..4], &[255, 0, 0, 255]);
+        // 乗算済み: 青 255 × 不透明度 128
+        assert_eq!(img.0.pixels[7], 128);
+        assert!((img.0.pixels[6] as i32 - 128).abs() <= 1, "{:?}", &img.0.pixels[4..]);
+        assert!(crate::Image::from_bytes(b"not an image").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn image_files_need_rgba_outside_windows_for_now() {
+        assert!(crate::Image::from_bytes(&TINY_PNG).is_err());
+    }
 }
 
