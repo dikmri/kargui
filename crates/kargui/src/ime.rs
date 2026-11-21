@@ -3,7 +3,7 @@
 //!
 //! - 文字の位置（IMR_QUERYCHARPOSITION）: 変換中の文字の境目ごとの x を描く時に覚えておき、そのまま答える
 //! - 前後の文字（IMR_DOCUMENTFEED）: 入力欄の文字（変換中の文字をキャレットの位置に入れた物）と変換中の範囲。
-//!   IME はこれを見て、前後の文に合った候補を選ぶ
+//!   IME はこれを見て、前後の文に合った候補を選ぶ。変換中でなく選んでいる文字があれば、その範囲を答える
 //! - 再変換（IMR_RECONVERTSTRING と IMR_CONFIRMRECONVERTSTRING）: 選んでいる文字を変換し直す。
 //!   IME が範囲を直したら、その範囲を選び直す
 //!
@@ -77,8 +77,12 @@ pub(crate) fn char_x(f: &ImeField, char_pos: usize) -> Option<f32> {
     f.preedit_xs.get(char_pos).or(f.preedit_xs.last()).copied()
 }
 
-/// IMR_DOCUMENTFEED の答え
+/// IMR_DOCUMENTFEED の答え。変換中でなく選んでいる文字があれば、その範囲を変換する範囲として知らせる
+/// （Chromium と同じ。Google 日本語入力はこの答えから再変換する文字を知る）
 pub(crate) fn document_feed(f: &ImeField, preedit: &str) -> Reconvert {
+    if let Some(r) = reconvert(f, preedit) {
+        return r;
+    }
     let at = f.cursor.min(f.value.len());
     let shown = format!("{}{}{}", &f.value[..at], preedit, &f.value[at..]);
     let start = utf16_of(&f.value, at);
@@ -160,6 +164,17 @@ mod tests {
         let r = document_feed(&f, "");
         assert_eq!(s(&r.text), value);
         assert_eq!(r.comp, (3, 0));
+    }
+
+    #[test]
+    fn document_feed_tells_the_selection_when_not_composing() {
+        // 「牛乳」を選んでいる。IME（Google 日本語入力など）はこの答えから再変換する文字を知る
+        let value = "牛乳を買う";
+        let f = field(value, "牛乳".len(), 0);
+        let r = document_feed(&f, "");
+        assert_eq!(s(&r.text), value);
+        assert_eq!(r.comp, (0, 2));
+        assert_eq!(r.target, (0, 2));
     }
 
     #[test]

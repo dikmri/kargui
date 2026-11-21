@@ -5,9 +5,10 @@
 #   (3) 変換中の文字が入力欄の中に出る（記録の ime.preedit と写真）
 #   (4) 候補の窓が文字の位置に出る（IME に答えた文字の位置と、新しく出た窓の位置を比べる）
 #   (5) 変換の途中で焦点を移しても、変換中の文字が消えない（元の入力欄に確定される）
-#   (6) 再変換: 確定した文字を選んで変換キーを押すと、変換し直せる
+#   (6) 再変換: 確定した文字を選んで変換キーを押すと、変換し直せる（変換キーは道具が送るので、キーボードに無くてよい）
 #   あわせて、変換中の文字の文節（区切りと変換中の文節）が IME から届いているかを数える
-# 注意: キー入力は前面の窓に届く。走らせている間（約 20 秒）はキーボードとマウスに触らない。
+#   候補はいつも 1 番目で確定する（IME の学習で、利用者の候補の順番を変えないため）
+# 注意: キー入力は前面の窓に届く。走らせている間（約 30 秒）はキーボードとマウスに触らない。
 #   タスク帳が前面でなくなったら、その時点で止める（ほかの窓に文字を打たないため）。
 # 使い方: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ime-check.ps1 [-Pos -1410,200]
 param(
@@ -37,9 +38,12 @@ public static class K {
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
   delegate bool EnumProc(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+  // 矢印・Home・End・PgUp・PgDn・Insert・Delete は拡張キーの印を付けて送る。
+  // 印が無いとテンキーのキーとして扱われ、NumLock が入っていると Shift を押していても離れた状態で届く
   public static void Key(ushort vk, bool up) {
     var i = new INPUT[1];
-    i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = up ? 2u : 0u;
+    bool ext = (vk >= 0x21 && vk <= 0x28) || vk == 0x2D || vk == 0x2E;
+    i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = (up ? 2u : 0u) | (ext ? 1u : 0u);
     SendInput(1, i, Marshal.SizeOf(typeof(INPUT)));
   }
   public static List<string> Visible() {
@@ -103,24 +107,31 @@ Tap 0x20; Start-Sleep -Milliseconds 700   # 候補の窓
 Shot '2-candidates'
 $after = [K]::Visible()
 $new = @($after | Where-Object { $before -notcontains $_ })
+# 1 番目の候補に戻してから確定する（2 番目を確定すると、IME がそれを覚えて次から先に出す）
+Tap 0x26; Start-Sleep -Milliseconds 300   # ↑
 Tap 0x0D; Start-Sleep -Milliseconds 400   # 確定
 $addsAfterCommit = LogCount 'event=add '
 Tap 0x0D; Start-Sleep -Milliseconds 400   # 追加
 $addsAfterSubmit = LogCount 'event=add '
-# (6) 再変換: 「牛乳を買う」を確定し、Home と Shift+→ 2 回で「牛乳」を選んで変換キーを押す
+# (6) 再変換: 「牛乳を買う」を確定し、Ctrl+A で全部を選んで変換キーを押す。
+#   変換し直した 1 番目の候補を確定して追加し、選んでいた文字と置き換わったか（二重にならないか）を見る
 TypeRoma 'gyuunyuuwokau'; Start-Sleep -Milliseconds 300
 Tap 0x20; Start-Sleep -Milliseconds 500   # 変換
 Tap 0x0D; Start-Sleep -Milliseconds 400   # 確定（まだ追加しない）
-Tap 0x24                                   # Home
-Guard; [K]::Key(0x10, $false); Tap 0x27; Tap 0x27; [K]::Key(0x10, $true)   # Shift+→ を 2 回
+$text6 = if ((Get-Content $log -Encoding UTF8 | Where-Object { $_ -match 'event=ime.commit args="text=' } | Select-Object -Last 1) -match 'text=(.*?)"') { $Matches[1] } else { '' }
+Guard; [K]::Key(0x11, $false); Tap 0x41; [K]::Key(0x11, $true)   # Ctrl+A で全部を選ぶ
 Start-Sleep -Milliseconds 300
+$selected = LogCount 'key=A mods=Mods \{ shift: false, ctrl: true'
 $startsBefore = LogCount 'event=ime.start'
+$linesBefore = (Get-Content $log -Encoding UTF8).Count
 Tap 0x1C; Start-Sleep -Milliseconds 800   # 変換キー（VK_CONVERT）
 Shot '4-reconvert'
 $reconvStarted = (LogCount 'event=ime.start') -gt $startsBefore
-Tap 0x20; Start-Sleep -Milliseconds 500   # 次の候補
-Tap 0x0D; Start-Sleep -Milliseconds 400   # 確定
+$afterConvert = @(Get-Content $log -Encoding UTF8 | Select-Object -Skip $linesBefore)
+Tap 0x0D; Start-Sleep -Milliseconds 400   # 1 番目の候補で確定
 Shot '5-after-reconvert'
+Tap 0x0D; Start-Sleep -Milliseconds 400   # 追加
+$added6 = if ((Get-Content $log -Encoding UTF8 | Where-Object { $_ -match 'event=add args="text=' } | Select-Object -Last 1) -match 'text=(.*?)"') { $Matches[1] } else { '' }
 # 欄を空にする（Ctrl+A と Delete）
 Guard; [K]::Key(0x11, $false); Tap 0x41; [K]::Key(0x11, $true); Tap 0x2E
 Start-Sleep -Milliseconds 300
@@ -143,7 +154,8 @@ Tap 0x1A   # VK_IME_OFF
 $lines = Get-Content $log -Encoding UTF8
 $commit = @($lines | Where-Object { $_ -match 'event=ime.commit args="text=' } | Select-Object -First 1)
 $add = @($lines | Where-Object { $_ -match 'event=add args="text=' } | Select-Object -First 1)
-$pos = @($lines | Where-Object { $_ -match 'imr=QUERYCHARPOSITION' -and $_ -match 'answered=true' })
+# 名前を $pos にしない（引数の $Pos と同じ変数になり、文字列 1 つにまとめられてしまう）
+$charPos = @($lines | Where-Object { $_ -match 'imr=QUERYCHARPOSITION' -and $_ -match 'answered=true' })
 $preedit = @($lines | Where-Object { $_ -match 'event=ime.preedit' })
 $focusCommit = @($lines | Where-Object { $_ -match 'event=ime.commit_on_focus' })
 $reconv = @($lines | Where-Object { $_ -match 'imr=RECONVERTSTRING' })
@@ -156,11 +168,15 @@ $out += "    確定: $commit"
 $out += "    追加: $add"
 $out += "(2) 変換中は絞り込みが走らない: 変換前 $filtersBefore 回 → 変換中 $filtersComposing 回 → 確定後 $filtersCommitted 回 → " + $(if ($filtersComposing -eq $filtersBefore -and $filtersCommitted -gt $filtersComposing) { '合格' } else { '不合格' })
 $out += "(3) 変換中の文字: ime.preedit $($preedit.Count) 件（写真 1-composing.png で下線を見る） → " + $(if ($preedit.Count -gt 0) { '記録は合格' } else { '不合格' })
-$out += "(4) 文字の位置の答え $($pos.Count) 件。最後: $($pos | Select-Object -Last 1)"
+$out += "(4) 文字の位置の答え $($charPos.Count) 件。最後: $($charPos | Select-Object -Last 1)"
 $out += "    候補の窓で新しく出た窓: " + $(if ($new.Count) { $new -join ' / ' } else { 'なし' }) + "（写真 2-candidates.png）"
 $out += "(5) 焦点を移した時の確定: " + $(if ($focusCommit.Count) { "$($focusCommit[0]) → 合格" } else { 'ime.commit_on_focus が無い → 不合格' })
-$out += "(6) 再変換: 変換が始まった=$reconvStarted、RECONVERTSTRING $($reconv.Count) 件、範囲の確定 $($confirm.Count) 件 → " + $(if ($reconvStarted -and $confirm.Count -gt 0) { '合格' } else { '不合格' })
-$reconv + $confirm | Select-Object -First 6 | ForEach-Object { $out += "    $_" }
+# 選んだ文字と置き換わっていれば、追加した文字は確定した文字と同じくらいの長さ（二重なら倍近くになる）
+$notDoubled = $added6.Length -gt 0 -and $added6.Length -le $text6.Length + 2
+$out += "(6) 再変換: Ctrl+A で選んだ=$($selected -gt 0)、変換が始まった=$reconvStarted、選ぶ前「$text6」→ 追加「$added6」 → " + $(if ($selected -gt 0 -and $reconvStarted -and $notDoubled) { '合格' } else { '不合格' })
+$out += "    変換キーの後の IME の問い合わせ（前後の文字・再変換・範囲の確定）:"
+$afterConvert | Where-Object { $_ -match 'imr=(DOCUMENTFEED|RECONVERTSTRING|CONFIRMRECONVERTSTRING)' -or $_ -match 'event=ime.start' } | Select-Object -First 8 | ForEach-Object { $out += "    $_" }
+$out += "    全体で RECONVERTSTRING $($reconv.Count) 件、CONFIRMRECONVERTSTRING $($confirm.Count) 件"
 $out += "文節: 2 つ以上に分かれて届いた ime.preedit $($split.Count) 件、変換中の文節があった $($targeted.Count) 件（写真 2-candidates.png で太い下線を見る）"
 $out | Set-Content -Path (Join-Path $OutDir 'summary.txt') -Encoding UTF8
 $out

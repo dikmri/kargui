@@ -629,6 +629,33 @@ mod tests {
     }
 
     #[test]
+    fn the_candidate_window_does_not_cover_the_thick_underline() {
+        // 段階 2 の 2 回目の写真で、候補の窓の上の縁が太い下線の下の 1 画素を隠し、細い下線と見分けられなかった。
+        // IME は候補の窓を、答えた位置（preedit_rect の上）から答えた行の高さ（切り捨て）だけ下に出す
+        let mut h = book(0);
+        h.click("New item");
+        let clauses = Event::ImeClauses { bounds: vec![0, 3, 6, 8], target: Some((3, 6)), cursor: Some(6) };
+        h.send(vec![Event::ImePreedit("明日は東京に行く".into()), clauses]);
+        let f = h.rt.cx.ime_field.clone().unwrap();
+        let p = h.rt.cx.preedit_rect.unwrap();
+        let img = h.render();
+        let window_top = p.y as u32 + p.h.max(1.0) as u32;
+        let dark = |x: u32, y: u32| {
+            let c = img.rgb(x, y);
+            765 - (((c >> 16) & 0xff) + ((c >> 8) & 0xff) + (c & 0xff))
+        };
+        // 文節の幅いっぱいにほぼ黒い行が下線（文字の線は幅いっぱいにはならない）
+        let solid_rows = |a: usize, b: usize| -> Vec<u32> {
+            let (x1, x2) = (f.preedit_xs[a] as u32 + 1, f.preedit_xs[b] as u32 - 3);
+            (p.y as u32..window_top + 4).filter(|&y| (x1..x2).all(|x| dark(x, y) > 500)).collect()
+        };
+        let (thin, thick) = (solid_rows(0, 3), solid_rows(3, 6));
+        assert_eq!(thin.len(), 1, "細い下線は 1 行: {thin:?}");
+        assert_eq!(thick.len(), 2, "太い下線は 2 行: {thick:?}");
+        assert!(thick.iter().all(|&y| y < window_top), "候補の窓（{window_top} 行目から）が下線 {thick:?} を隠す");
+    }
+
+    #[test]
     fn ime_field_remembers_where_each_composing_character_is() {
         let mut h = book(0);
         h.click("New item").type_text("ab");

@@ -326,6 +326,10 @@ impl Painter<'_> {
         let laid = self.cx.text.layout(&shown, st, None);
         let line_h = laid.height.max(st.size * 1.3);
         let ty = (r.y + (r.h - line_h) / 2.0).round();
+        // 変換中の下線は画素にそろえて行の下端に引く（太い下線は 2 本分で、下端まで）
+        let underline_y = (ty + line_h).round() - 2.0 * line;
+        // IME に答える行の高さ。候補の窓はこの下に出るので、太い下線の下に 1 本分あける
+        let ime_h = underline_y + 3.0 * line - ty;
         let caret_byte = cursor + preedit.len();
         // 変換中は、IME が示した位置にキャレットを置く（無ければ変換中の文字の終わり）
         let clauses = if preedit.is_empty() { None } else { self.cx.preedit_clauses.clone() };
@@ -374,9 +378,9 @@ impl Painter<'_> {
                 let x1 = laid.x_of(start16 + a);
                 let x2 = laid.x_of(start16 + b) - if b < n16 { gap } else { 0.0 };
                 let h = if thick { 2.0 * line } else { line };
-                self.d.fill(Rect::new(x0 + x1, ty + line_h - 2.0 * line, (x2 - x1).max(0.0), h), t.text, 0.0);
+                self.d.fill(Rect::new((x0 + x1).round(), underline_y, (x2 - x1).max(0.0).round(), h), t.text, 0.0);
             }
-            self.cx.preedit_rect = Some(Rect::new((x0 + xa).round(), ty, xb - xa, line_h));
+            self.cx.preedit_rect = Some(Rect::new((x0 + xa).round(), ty, xb - xa, ime_h));
         }
         let caret = Rect::new((x0 + caret_x).round(), ty, (1.5 * self.cx.scale).round().max(1.0), line_h.round());
         if focused {
@@ -387,7 +391,7 @@ impl Painter<'_> {
             self.cx.caret = Some(caret);
             self.cx.input_rect = Some(r);
             if preedit.is_empty() {
-                self.cx.preedit_rect = Some(Rect::new(caret.x, caret.y, 0.0, caret.h));
+                self.cx.preedit_rect = Some(Rect::new(caret.x, caret.y, 0.0, ime_h));
             }
         }
         self.d.pop_clip();
