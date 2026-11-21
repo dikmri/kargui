@@ -1,0 +1,50 @@
+{
+  "note": "rustdoc --show-coverage の Total。examples_pct は例の対象になる項目（examples_eligible）に対する割合で、全項目に対する割合ではない。 2026-11-21 測定。",
+  "crates": {
+    "kargui": {
+      "version": "0.0.1",
+      "items": 176,
+      "documented": 176,
+      "documented_pct": 100,
+      "examples": 26,
+      "examples_pct": 27.4,
+      "examples_eligible": 95
+    },
+    "egui": {
+      "version": "0.37.0",
+      "items": 2003,
+      "documented": 1577,
+      "documented_pct": 78.7,
+      "examples": 69,
+      "examples_pct": 10.3,
+      "examples_eligible": 672
+    },
+    "gpui-pre": {
+      "version": "0.3.12",
+      "items": 4870,
+      "documented": 4870,
+      "documented_pct": 100,
+      "examples": 16,
+      "examples_pct": 27.1,
+      "examples_eligible": 59
+    },
+    "gpui-kit": {
+      "version": "0.10.0",
+      "items": 4,
+      "documented": 4,
+      "documented_pct": 100,
+      "examples": 1,
+      "examples_pct": 33.3,
+      "examples_eligible": 3
+    },
+    "tauri": {
+      "version": "2.12.7",
+      "items": 681,
+      "documented": 681,
+      "documented_pct": 100,
+      "examples": 38,
+      "examples_pct": 10,
+      "examples_eligible": 379
+    }
+  }
+}
