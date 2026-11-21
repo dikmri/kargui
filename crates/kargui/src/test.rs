@@ -410,6 +410,70 @@ mod tests {
     }
 
     #[test]
+    fn drawing_only_changes_matches_drawing_everything_while_scrolling() {
+        // 作者の手の確かめで、スクロールするとスクロールバーのつまみが何個も出た。
+        // CPU の道の「変わった所だけ描く」絵が、毎フレーム「全部描き直した」絵と同じかを比べる
+        let mut h = book(100);
+        let (w, hh) = (h.rt.cx.width as i32, h.rt.cx.height as i32);
+        let mut px = vec![0u32; (w * hh) as usize];
+        let mut summary = crate::damage::Summary::default();
+        let mut step = |h: &mut Harness<Book>, what: &str| {
+            let bg = h.rt.cx.theme.background;
+            let out = crate::cpu_frame::draw(&mut px, w, hh, &h.rt.draw, &h.rt.cx.text.atlas, bg, &summary, false);
+            summary = out.summary;
+            let full = h.render();
+            let mut diff = 0;
+            let mut area = IRect::default();
+            for (i, (a, b)) in px.iter().zip(&full.pixels).enumerate() {
+                if a != b {
+                    diff += 1;
+                    area = area.union(&IRect::new(i as i32 % w, i as i32 / w, 1, 1));
+                }
+            }
+            let thumb = h.rt.draw.quads.iter().rev().find(|q| q.rect[0] > (w - 20) as f32).map(|q| q.rect);
+            assert_eq!(diff, 0, "{what}: {diff} 画素が違う。範囲 {area:?}、今のつまみ {thumb:?}（{}）", out.mode);
+        };
+        step(&mut h, "最初");
+        let list = h.rt.cx.prev.lists[0].rect;
+        let (x, y) = (list.x + list.w / 2.0, list.y + list.h / 2.0);
+        for k in 0..20 {
+            h.send(vec![Event::Wheel { x, y, dy: 96.0 }]);
+            step(&mut h, &format!("下へ {} 回目", k + 1));
+        }
+        for k in 0..10 {
+            h.send(vec![Event::Wheel { x, y, dy: -64.0 }]);
+            step(&mut h, &format!("上へ {} 回目", k + 1));
+        }
+        // スクロールの途中で、ほかの操作も混ぜる
+        let first_row = h.names().into_iter().find(|n| n.starts_with("Item ")).unwrap();
+        h.click(&first_row);
+        step(&mut h, "チェック");
+        let delete = h.names().into_iter().find(|n| n.starts_with("Delete Item")).unwrap();
+        h.click(&delete);
+        step(&mut h, "削除");
+        let add = h.find("Add").unwrap();
+        h.rt.cx.hover = h.rt.hover_at(add.x + 2.0, add.y + 2.0);
+        h.frame();
+        step(&mut h, "ホバー");
+        h.click("New item").type_text("milk");
+        step(&mut h, "文字");
+        h.ime_compose("ぎゅうにゅう");
+        step(&mut h, "変換中");
+        h.ime_commit("牛乳");
+        step(&mut h, "確定");
+        h.click("Open");
+        step(&mut h, "絞り込み");
+        h.send(vec![Event::Wheel { x, y, dy: 2000.0 }]);
+        step(&mut h, "大きなスクロール");
+        h.click("All");
+        h.app_mut().items.extend((0..300).map(|i| (format!("More {i}"), false)));
+        h.frame();
+        step(&mut h, "件数を増やす");
+        h.send(vec![Event::Wheel { x, y, dy: 96.0 }]);
+        step(&mut h, "増やしたあとのスクロール");
+    }
+
+    #[test]
     fn clicks_just_outside_a_small_checkbox_still_hit_it() {
         // 作者の手の確かめ（3 回目）で、箱の左の端から 2 画素外と、文字の終わりから 10 画素右のクリックが当たらなかった
         struct Rows {

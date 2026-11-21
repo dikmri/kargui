@@ -29,13 +29,14 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, HSTRING, w};
 
 use crate::app::{App, Frame, Options, Renderer};
-use crate::damage::{self, Summary};
+use crate::cpu_frame;
+use crate::damage::Summary;
 use crate::gdi::Gdi;
 use crate::geom::{Color, IRect};
 use crate::gpu::Gpu;
 use crate::input::{A11yAction, Event, Key, Mods};
 use crate::log;
-use crate::raster::Canvas;
+
 use crate::runtime::Runtime;
 use crate::text::{ATLAS_SIZE, Text};
 use crate::ui::Id;
@@ -352,34 +353,14 @@ impl State {
                 }
             }
             Some(Surface::Cpu(c)) => {
-                let cur = damage::summarize(&self.rt.draw, (w, h));
-                let mut plan = damage::plan(&self.summary, &cur);
-                if bg != self.background {
-                    plan.full = true;
-                }
+                // 背景の色が変わったとき（明暗の切り替え）は、要約に背景が入らないので全部描き直す
+                let full = bg != self.background;
                 self.background = bg;
                 let atlas = &self.rt.cx.text.atlas;
-                let mut canvas = Canvas { px: c.pixels(), width: w, height: h };
-                let mut present = Vec::new();
-                if plan.full {
-                    let all = IRect::new(0, 0, w, h);
-                    canvas.draw(&self.rt.draw, &atlas.pixels, atlas.size, all, bg);
-                    present.push(all);
-                } else {
-                    for (r, dy) in &plan.blits {
-                        canvas.scroll_up(*r, *dy);
-                        present.push(*r);
-                    }
-                    for r in &plan.damage {
-                        canvas.draw(&self.rt.draw, &atlas.pixels, atlas.size, *r, bg);
-                        if !present.iter().any(|p| p.intersect(r) == Some(*r)) {
-                            present.push(*r);
-                        }
-                    }
-                    mode = format!("blits={} damage={}", plan.blits.len(), plan.damage.len());
-                }
-                c.present(&present);
-                self.summary = cur;
+                let out = cpu_frame::draw(c.pixels(), w, h, &self.rt.draw, atlas, bg, &self.summary, full);
+                c.present(&out.present);
+                self.summary = out.summary;
+                mode = out.mode;
             }
             None => return,
         }

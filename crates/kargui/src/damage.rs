@@ -190,9 +190,14 @@ pub(crate) fn plan(prev: &Summary, cur: &Summary) -> Plan {
                     let strip =
                         if dy > 0 { IRect::new(clip.x, clip.bottom() - dy, clip.w, dy) } else { IRect::new(clip.x, clip.y, clip.w, -dy) };
                     p.damage.push(strip);
-                    for r in ps.sticky.iter().chain(cs.sticky.iter()) {
-                        if !p.damage.contains(r) {
-                            p.damage.push(*r);
+                    // 重なる物（スクロールバーのつまみなど）は、前の位置・今の位置に加えて、
+                    // 絵と一緒にずれた先（前の位置から dy だけ上）も描き直す。ここを描き直さないと、
+                    // 古いつまみの絵がずれた先に残る（2026-11-21 につまみが何個も出た原因）
+                    let moved = ps.sticky.iter().filter_map(|r| IRect::new(r.x, r.y - dy, r.w, r.h).intersect(&clip));
+                    let all: Vec<IRect> = ps.sticky.iter().chain(cs.sticky.iter()).copied().chain(moved).collect();
+                    for r in all {
+                        if !p.damage.contains(&r) {
+                            p.damage.push(r);
                         }
                     }
                 }
@@ -333,6 +338,8 @@ mod tests {
         let p = plan(&a, &b);
         assert_eq!(p.blits.len(), 1);
         assert!(p.damage.contains(&IRect::new(200, 100, 20, 20)), "{:?}", p.damage);
+        // 絵と一緒に上へ 20 画素ずれた先（古い重なりの絵が残る所）も描き直す
+        assert!(p.damage.contains(&IRect::new(200, 80, 20, 20)), "{:?}", p.damage);
     }
 
     #[test]

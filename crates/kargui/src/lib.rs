@@ -16,6 +16,7 @@
 #![deny(missing_docs)]
 
 mod app;
+mod cpu_frame;
 mod damage;
 mod gdi;
 mod geom;
