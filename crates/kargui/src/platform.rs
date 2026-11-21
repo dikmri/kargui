@@ -198,11 +198,18 @@ fn system_dark() -> bool {
 }
 
 /// システムのファイルのダイアログを出して、選んだファイルを返す（取り消したら空）。モーダルなので借りの外で呼ぶ
+/// 記録にはパスを残さない（利用者のフォルダーの名前が入るため）。数と取り消しだけを残す
 fn show_file_dialog(owner: HWND, d: &crate::file_dialog::FileDialog) -> Vec<std::path::PathBuf> {
+    let args = format!("save={} multiple={} filters={} title={:?}", d.save, d.multiple, d.filters.len(), d.title.as_deref().unwrap_or(""));
+    log::event("file_dialog.show", &args, "start");
     match file_dialog_inner(owner, d) {
-        Ok(files) => files,
+        Ok(files) => {
+            // file_dialog_inner が空を返すのは取り消した時だけ
+            log::event("file_dialog.result", &args, &if files.is_empty() { "cancelled".to_string() } else { format!("files={}", files.len()) });
+            files
+        }
         Err(e) => {
-            log::event("file_dialog.error", &format!("save={}", d.save), &format!("{e:?}"));
+            log::event("file_dialog.error", &args, &format!("{e:?}"));
             Vec::new()
         }
     }
