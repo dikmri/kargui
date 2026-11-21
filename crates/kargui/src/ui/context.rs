@@ -144,8 +144,13 @@ pub(crate) struct Context {
     pub scrolls: HashMap<Id, f32>,
     /// このフレームの時刻（Ui::now。試験台は skew で進める）
     pub now: Instant,
+    /// 動く部品（進み具合・輪）の位相の起点
+    pub epoch: Instant,
     /// 試験台が進めた時間（Harness::wait）
     pub skew: Duration,
+    /// 試験台の止めた時計（起点からの時間）。Some なら本当の時刻を使わず、Harness::wait で進めた分だけ進む
+    /// （写真と試験が毎回同じになるように）
+    pub frozen: Option<Duration>,
     /// 次に起こす時刻（Ui::request_frame_after とツールチップ）。窓はタイマーで起きる
     pub wake_at: Option<Instant>,
     /// ほかのスレッドから窓を起こす係（Ui::waker）
@@ -219,7 +224,9 @@ impl Context {
             edit_scroll: HashMap::new(),
             scrolls: HashMap::new(),
             now: Instant::now(),
+            epoch: Instant::now(),
             skew: Duration::ZERO,
+            frozen: None,
             wake_at: None,
             waker: Waker::new(|| {}),
             icons: HashMap::new(),
@@ -319,7 +326,10 @@ impl Context {
 
     /// 今の時刻（試験台が進めた分を足す）
     pub fn clock(&self) -> Instant {
-        Instant::now() + self.skew
+        match self.frozen {
+            Some(t) => self.epoch + t,
+            None => Instant::now() + self.skew,
+        }
     }
 
     /// t までに起こしてもらう（早い方を残す）

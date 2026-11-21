@@ -312,6 +312,42 @@ fn shots() -> Vec<Shot> {
             },
         },
         Shot {
+            name: "more_widgets",
+            size: (560.0, 330.0),
+            view: |ui| {
+                ui.row(|ui| {
+                    ui.column(|ui| {
+                        let mut size = 1;
+                        ui.radio_group(&mut size, &[(0, "Small"), (1, "Medium"), (2, "Large")]);
+                        ui.separator();
+                        ui.checkbox(&mut false, "Select all").mixed(true);
+                        ui.row(|ui| {
+                            ui.toggle_button(&mut true, "Bold");
+                            ui.toggle_button(&mut false, "Italic");
+                        });
+                        ui.link("How do backups work?");
+                    })
+                    .width(Size::Fixed(220.0));
+                    ui.separator();
+                    ui.column(|ui| {
+                        ui.group("Upload", |ui| {
+                            ui.progress(0.4).label("Upload");
+                            ui.row(|ui| {
+                                ui.spinner().label("Loading");
+                                ui.label("Connecting…").weak();
+                            });
+                        });
+                        let mut open = true;
+                        ui.expander(&mut open, "Advanced", |ui| {
+                            ui.password(&mut String::from("hunter2")).hint("Password").grow();
+                        });
+                    })
+                    .grow();
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
             name: "icons",
             size: (520.0, 110.0),
             view: |ui| {

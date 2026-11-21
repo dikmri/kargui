@@ -84,7 +84,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                     n.set_size_of_set(count);
                     n.set_position_in_set(l.row_index + 1);
                     n
-                } else if tree.layout[i].children.iter().any(|&c| matches!(tree.info[c].kind, Kind::Segment { .. })) {
+                } else if tree.layout[i].children.iter().any(|&c| matches!(tree.info[c].kind, Kind::Segment { .. } | Kind::Radio { .. })) {
                     Node::new(Role::RadioGroup)
                 } else {
                     Node::new(Role::GenericContainer)
@@ -108,9 +108,15 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Focus);
                 n
             }
-            Kind::Checkbox { checked, .. } => {
+            Kind::Checkbox { checked, mixed, .. } => {
                 let mut n = Node::new(Role::CheckBox);
-                n.set_toggled(if *checked { Toggled::True } else { Toggled::False });
+                n.set_toggled(if *mixed {
+                    Toggled::Mixed
+                } else if *checked {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                });
                 n.add_action(Action::Click);
                 n.add_action(Action::Focus);
                 n
@@ -129,9 +135,12 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Focus);
                 n
             }
-            Kind::TextInput { value, hint } => {
-                let mut n = Node::new(Role::TextInput);
-                n.set_value(value.clone());
+            Kind::TextInput { value, hint, password } => {
+                // パスワードは値を出さない
+                let mut n = Node::new(if *password { Role::PasswordInput } else { Role::TextInput });
+                if !*password {
+                    n.set_value(value.clone());
+                }
                 if !hint.is_empty() {
                     n.set_placeholder(hint.clone());
                 }
@@ -173,6 +182,58 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Focus);
                 n.add_action(Action::Increment);
                 n.add_action(Action::Decrement);
+                n
+            }
+            Kind::Radio { selected, .. } => {
+                let mut n = Node::new(Role::RadioButton);
+                n.set_toggled(if *selected { Toggled::True } else { Toggled::False });
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::Separator => {
+                let mut n = Node::new(Role::GenericContainer);
+                n.set_hidden();
+                n
+            }
+            Kind::Progress { value, .. } => {
+                let mut n = Node::new(Role::ProgressIndicator);
+                if let Some(v) = value {
+                    n.set_numeric_value((*v as f64 * 100.0).round());
+                    n.set_min_numeric_value(0.0);
+                    n.set_max_numeric_value(100.0);
+                }
+                if let Some(l) = &info.label {
+                    n.set_label(l.clone());
+                }
+                n
+            }
+            Kind::Card { title } => match title {
+                Some(t) => {
+                    let mut n = Node::new(Role::Group);
+                    n.set_label(t.clone());
+                    n
+                }
+                None => Node::new(Role::GenericContainer),
+            },
+            Kind::Expander { open, .. } => {
+                let mut n = Node::new(Role::Button);
+                n.set_expanded(*open);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::Link { .. } => {
+                let mut n = Node::new(Role::Link);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::ToggleButton { on, .. } => {
+                let mut n = Node::new(Role::Button);
+                n.set_toggled(if *on { Toggled::True } else { Toggled::False });
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
                 n
             }
             // 名前の無いアイコンは飾りなので、読み上げない

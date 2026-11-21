@@ -215,6 +215,124 @@ A large, bold title. Screen readers announce it as a heading.
 ui.heading("Tasks");
 ```
 
+### `pub fn radio_group<T: Copy + PartialEq>(&mut self, value: &mut T, options: &[(T, &str)]) -> bool`
+
+A group of radio buttons, one below another, of which exactly one is selected. Returns
+whether the selection changed. Tab stops once in the group (at the selected button); the
+arrow keys move through the group and select as they go, wrapping at the ends. For a
+compact row of choices, see [`Ui::segmented`].
+
+```
+#[derive(Clone, Copy, PartialEq)]
+enum Size { Small, Medium, Large }
+ui.radio_group(&mut size, &[(Size::Small, "Small"), (Size::Medium, "Medium"), (Size::Large, "Large")]);
+```
+
+### `pub fn separator(&mut self)`
+
+A thin line between parts of a column (horizontal) or a row (vertical).
+
+```
+ui.label("Account");
+ui.separator();
+ui.label("Privacy");
+```
+
+### `pub fn progress(&mut self, fraction: f32) -> Handle<'_>`
+
+A progress bar from 0.0 (nothing done) to 1.0 (finished). Give it a name with `.label(..)`
+so screen readers can say what is progressing.
+
+```
+ui.progress(done as f32 / total as f32).label("Uploading photos");
+```
+
+### `pub fn progress_busy(&mut self) -> Handle<'_>`
+
+A progress bar for work whose end is unknown: a moving stripe. It draws about 30 times a
+second while it is on screen.
+
+```
+ui.progress_busy().label("Connecting");
+```
+
+### `pub fn spinner(&mut self) -> Handle<'_>`
+
+A small spinning ring for work whose end is unknown. It draws about 30 times a second
+while it is on screen.
+
+```
+ui.row(|ui| {
+    ui.spinner().label("Loading");
+    ui.label("Loading…");
+});
+```
+
+### `pub fn card(&mut self, f: impl FnOnce(&mut Ui)) -> Handle<'_>`
+
+A card: the widgets created in `f`, one below another, on a box with a border.
+
+```
+ui.card(|ui| {
+    ui.heading("Storage");
+    ui.label("12 GB of 64 GB used").weak();
+});
+```
+
+### `pub fn group(&mut self, title: impl Into<String>, f: impl FnOnce(&mut Ui)) -> Handle<'_>`
+
+A card with a title, for a group of related settings. Screen readers announce it as a
+group named by the title.
+
+```
+ui.group("Notifications", |ui| {
+    ui.checkbox(&mut sound, "Play a sound");
+    ui.checkbox(&mut vibrate, "Vibrate");
+});
+```
+
+### `pub fn expander(&mut self, open: &mut bool, title: impl Into<String>, f: impl FnOnce(&mut Ui)) -> bool`
+
+A section that opens and closes: a header with an arrow, and the widgets created in `f`
+below it while `*open` is true. Clicking the header (or Enter / Space on it) flips `*open`.
+Returns whether it was flipped. Screen readers hear whether it is expanded.
+
+```
+ui.expander(&mut more, "Advanced", |ui| {
+    ui.checkbox(&mut proxy, "Use a proxy");
+});
+```
+
+### `pub fn link(&mut self, text: impl Into<String>) -> Button<'_>`
+
+A text link. Ask [`Button::clicked`] whether it was clicked (to open a page or another
+screen; opening web pages is up to the app).
+
+```
+if ui.link("How do backups work?").clicked() {
+    help = true;
+}
+```
+
+### `pub fn toggle_button(&mut self, on: &mut bool, text: impl Into<String>) -> Toggled<'_>`
+
+A button that stays pressed while `*on` is true (for example Bold in a text editor).
+Clicking it flips `*on`.
+
+```
+ui.toggle_button(&mut bold, "Bold");
+```
+
+### `pub fn password(&mut self, text: &mut String) -> TextInput<'_>`
+
+A one-line field for passwords: it shows dots instead of the text, does not copy or cut,
+and does not give the text to screen readers. Pasting works. Otherwise it is like
+[`Ui::text_input`].
+
+```
+ui.password(&mut password).hint("Password").grow();
+```
+
 ### `pub fn icon(&mut self, icon: Icon) -> IconView<'_>`
 
 A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
@@ -795,6 +913,18 @@ Whether it was clicked (and the value flipped).
 if ui.toggle(&mut sound, "Sound").changed() {
     // save the setting
 }
+```
+
+### `pub fn mixed(mut self, mixed: bool) -> Self`
+
+Shows a check box as partly checked (a dash) when `mixed` is true, for example for "select
+all" when only some items are selected. Screen readers hear "mixed". Clicking still flips
+the value; decide in your code what it means.
+
+```
+let mut all = items.iter().all(|&c| c);
+let some = items.iter().any(|&c| c);
+ui.checkbox(&mut all, "Select all").mixed(some && !all);
 ```
 
 ### `pub fn strike(mut self, on: bool) -> Self`

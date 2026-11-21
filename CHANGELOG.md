@@ -30,6 +30,11 @@
   with `.size(..)` and `.label(..)`. Files are decoded with Windows Imaging Component (no new
   dependencies); on other systems `from_bytes` returns an error for now. Drawn by the CPU renderer
   (bilinear scaling); the Direct3D 11 renderer does not draw images yet.
+- More widgets: `Ui::radio_group` (one Tab stop, arrows select and wrap), `Ui::separator`,
+  `Ui::progress`, `Ui::progress_busy` and `Ui::spinner` (the moving ones wake about 30 times a second
+  with a timer, not every frame), `Ui::card`, `Ui::group` (a titled group for screen readers),
+  `Ui::expander` (reports expanded), `Ui::link`, `Ui::toggle_button`, `Ui::password` (dots, no copy
+  or cut, no value for screen readers) and `Toggled::mixed` for partly checked boxes.
 - Multi-line text: `Ui::text_area(&mut text)` with `.hint`, `.rows(n)`, `.changed`, `.composing`.
   Enter inserts a new line (Ctrl+Enter reaches the app), long lines wrap, the field scrolls (wheel,
   scroll bar, and to the caret after typing or moving), and Up/Down (keeping the column),

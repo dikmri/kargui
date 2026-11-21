@@ -144,6 +144,8 @@ impl<A: App> Harness<A> {
         let text = Text::new().expect("the text engine starts");
         let mut rt = Runtime::new(text, false, Box::new(MemoryClipboard::default()), "test".into());
         rt.resize((width * scale).round(), (height * scale).round(), scale);
+        // 試験台の時計は止めておき、wait で進める（動く部品の写真と試験を毎回同じにする）
+        rt.cx.frozen = Some(std::time::Duration::ZERO);
         let mut h = Self { app, rt };
         h.frame();
         h
@@ -424,7 +426,10 @@ impl<A: App> Harness<A> {
     /// assert!(h.find("1 s").is_some());
     /// ```
     pub fn wait(&mut self, time: std::time::Duration) -> &mut Self {
-        self.rt.cx.skew += time;
+        match &mut self.rt.cx.frozen {
+            Some(t) => *t += time,
+            None => self.rt.cx.skew += time,
+        }
         self.frame()
     }
 
@@ -2502,5 +2507,131 @@ mod tests {
         h.press(Key::Tab);
         assert_eq!(focused_name(&h).as_deref(), Some("After"));
     }
-}
 
+    /// 1 群の A 組の見本: ラジオ・区切り線・進み具合・枠・開閉・リンク・押したままのボタン・パスワード
+    #[derive(Default)]
+    struct Parts {
+        size: u8,
+        sound: bool,
+        advanced: bool,
+        bold: bool,
+        secret: String,
+        clicks: u32,
+    }
+
+    impl App for Parts {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.radio_group(&mut self.size, &[(0, "Small"), (1, "Medium"), (2, "Large")]);
+            ui.separator();
+            ui.progress(0.4).label("Upload");
+            ui.spinner().label("Loading");
+            let mixed = !self.sound && self.bold;
+            ui.group("Sound", |ui| {
+                ui.checkbox(&mut self.sound, "Play sounds").mixed(mixed);
+            });
+            ui.expander(&mut self.advanced, "Advanced", |ui| {
+                ui.label("Secret settings");
+            });
+            if ui.link("Learn more").clicked() {
+                self.clicks += 1;
+            }
+            ui.toggle_button(&mut self.bold, "Bold");
+            ui.password(&mut self.secret).hint("Password");
+        }
+    }
+
+    fn a11y_nodes<A: App>(h: &Harness<A>) -> Vec<accesskit::Node> {
+        a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new()).update.nodes.into_iter().map(|(_, n)| n).collect()
+    }
+
+    fn a11y_node<A: App>(h: &Harness<A>, name: &str) -> accesskit::Node {
+        let id = id_named(h, name);
+        a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new()).update.nodes.into_iter().find(|(n, _)| n.0 == id.0).unwrap().1
+    }
+
+    #[test]
+    fn radio_groups_select_with_clicks_and_arrows_and_stop_tab_once() {
+        let mut h = Harness::new(Parts::default());
+        h.click("Large");
+        assert_eq!(h.app().size, 2);
+        // Tab は選んだ 1 つにだけ止まる
+        h.rt.cx.focus = None;
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("Large"));
+        // 矢印は選びながら移り、端で折り返す
+        h.press(Key::Down);
+        assert_eq!((h.app().size, focused_name(&h).as_deref()), (0, Some("Small")));
+        h.press(Key::Up);
+        assert_eq!((h.app().size, focused_name(&h).as_deref()), (2, Some("Large")));
+        h.press(Key::Left);
+        assert_eq!(h.app().size, 1);
+        // 次の Tab はグループの外へ
+        h.press(Key::Tab);
+        assert_ne!(focused_name(&h).as_deref(), Some("Small"));
+        assert_ne!(focused_name(&h).as_deref(), Some("Large"));
+        let nodes = a11y_nodes(&h);
+        assert_eq!(nodes.iter().filter(|n| n.role() == accesskit::Role::RadioButton).count(), 3);
+        assert!(nodes.iter().any(|n| n.role() == accesskit::Role::RadioGroup));
+        assert_eq!(a11y_node(&h, "Medium").toggled(), Some(accesskit::Toggled::True));
+    }
+
+    #[test]
+    fn expanders_show_their_content_when_open() {
+        let mut h = Harness::new(Parts::default());
+        assert!(h.find("Secret settings").is_none());
+        assert_eq!(a11y_node(&h, "Advanced").is_expanded(), Some(false));
+        h.click("Advanced");
+        assert!(h.app().advanced);
+        assert!(h.find("Secret settings").is_some());
+        assert_eq!(a11y_node(&h, "Advanced").is_expanded(), Some(true));
+        // 焦点がある時は Enter でも閉じる
+        h.press(Key::Enter);
+        assert!(!h.app().advanced);
+    }
+
+    #[test]
+    fn links_toggle_buttons_groups_and_mixed_check_boxes() {
+        let mut h = Harness::new(Parts::default());
+        h.click("Learn more");
+        assert_eq!(h.app().clicks, 1);
+        assert_eq!(a11y_node(&h, "Learn more").role(), accesskit::Role::Link);
+        h.click("Bold");
+        assert!(h.app().bold);
+        assert_eq!(a11y_node(&h, "Bold").toggled(), Some(accesskit::Toggled::True));
+        // 音が無くて太字なら、チェックは「一部」の状態（見本の決まり）
+        assert_eq!(a11y_node(&h, "Play sounds").toggled(), Some(accesskit::Toggled::Mixed));
+        let group = a11y_nodes(&h).into_iter().find(|n| n.role() == accesskit::Role::Group).expect("枠");
+        assert_eq!(group.label(), Some("Sound"));
+    }
+
+    #[test]
+    fn password_fields_hide_the_text_and_do_not_copy_it() {
+        let mut h = Harness::new(Parts::default());
+        h.click("Password").type_text("hunter2");
+        assert_eq!(h.app().secret, "hunter2");
+        let n = a11y_node(&h, "Password");
+        assert_eq!(n.role(), accesskit::Role::PasswordInput);
+        assert_ne!(n.value(), Some("hunter2"), "読み上げに値を出さない");
+        h.rt.cx.clipboard.set("before");
+        h.press_with(Key::A, Mods::CTRL).press_with(Key::C, Mods::CTRL).press_with(Key::X, Mods::CTRL);
+        assert_eq!(h.rt.cx.clipboard.get().as_deref(), Some("before"), "写さない");
+        assert_eq!(h.app().secret, "hunter2", "切り取らない");
+        h.press_with(Key::V, Mods::CTRL);
+        assert_eq!(h.app().secret, "before", "貼り付けはできる（全部を選んでいたので置き換わる）");
+        // 画面には ● だけを描く: 文字の数だけの ● の幅で、元の文字を並べた幅とは違う
+        let field = h.find("Password").unwrap();
+        assert!(field.w > 0.0);
+    }
+
+    #[test]
+    fn progress_reports_its_value_and_the_spinner_animates_with_a_timer() {
+        let mut h = Harness::new(Parts::default());
+        let p = a11y_node(&h, "Upload");
+        assert_eq!(p.role(), accesskit::Role::ProgressIndicator);
+        assert_eq!(p.numeric_value(), Some(40.0));
+        assert_eq!(a11y_node(&h, "Loading").numeric_value(), None, "終わりが分からない物は値を持たない");
+        let out = h.rt.frame(&mut h.app, Vec::new());
+        assert!(!out.want_frame, "描き直しを続けない");
+        assert!(out.wake_after.is_some_and(|d| d <= std::time::Duration::from_millis(40)), "{:?}", out.wake_after);
+    }
+}

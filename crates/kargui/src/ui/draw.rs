@@ -75,6 +75,25 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             ((laid.width.ceil() + lead + 2.0 * pad).max(min), h)
         }
         Kind::Icon { size, .. } => (p(*size as f32), p(*size as f32)),
+        Kind::Radio { text, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
+            (p(sz::BOX) + p(sz::BOX_GAP) + laid.width.ceil(), laid.height.ceil().max(p(sz::TRACK_H)))
+        }
+        Kind::Separator => (1.0, 1.0),
+        Kind::Progress { ring: false, .. } => (p(sz::INPUT_W), p(12.0)),
+        Kind::Progress { ring: true, .. } => (p(20.0), p(20.0)),
+        Kind::Expander { text, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, true), None);
+            (p(16.0) + p(sz::ICON_GAP) + laid.width.ceil() + p(8.0), p(sz::BUTTON_H))
+        }
+        Kind::Link { text } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
+            (laid.width.ceil(), laid.height.ceil())
+        }
+        Kind::ToggleButton { text, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
+            ((laid.width.ceil() + 2.0 * p(sz::BUTTON_PAD)).max(p(sz::BUTTON_MIN_W)), p(sz::BUTTON_H))
+        }
         Kind::Image { w, h, .. } => (p(*w as f32), p(*h as f32)),
         Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => {
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
@@ -438,6 +457,131 @@ impl Painter<'_> {
             Kind::Image { image, .. } => {
                 self.d.image(r, image);
             }
+            Kind::Radio { selected, text, tab_stop } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let b = self.px(sz::BOX);
+                let c = Rect::new(r.x, (r.y + (r.h - b) / 2.0).round(), b, b);
+                if self.cx.focus_visible && self.cx.focus == Some(id) {
+                    let w = self.px(2.0);
+                    self.d.fill(c.inset(-2.0 * w), t.accent, b / 2.0 + 2.0 * w);
+                    self.d.fill(c.inset(-w), t.background, b / 2.0 + w);
+                }
+                let ring = if off {
+                    t.border
+                } else if *selected || self.cx.hover == Some(id) {
+                    t.accent
+                } else {
+                    t.border
+                };
+                self.d.boxed(c, t.field, ring, if *selected { (b * 0.28).round() } else { line }, b / 2.0);
+                let st = style(self.cx, TextKind::Body, false);
+                text_mid(self.d, self.cx, text, st, r.x + b + self.px(sz::BOX_GAP), r, if off { t.done_text } else { t.text });
+                // Tab が止まるのはグループの中の 1 つだけ（矢印で移る）
+                let enabled = !off;
+                if let Some(v) = intersect(r, self.clip) {
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, multiline: false, enabled });
+                }
+                if !enabled {
+                    self.prev.disabled.insert(id);
+                } else if *tab_stop {
+                    self.prev.focus_order.push(id);
+                }
+            }
+            Kind::Separator => {
+                let t = &self.cx.theme;
+                self.d.fill(r, t.border, 0.0);
+            }
+            Kind::Progress { value, ring } => {
+                let t = self.cx.theme.clone();
+                let phase = (self.cx.now.saturating_duration_since(self.cx.epoch).as_secs_f32() % 1.2) / 1.2;
+                if *ring {
+                    // 8 つの点が回る輪（先頭の点ほど濃い）
+                    let s = r.w.min(r.h);
+                    let (cx_, cy_) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                    let dot = (s * 0.18).max(2.0);
+                    let rad = s / 2.0 - dot / 2.0;
+                    for k in 0..8 {
+                        let a = k as f32 / 8.0 * std::f32::consts::TAU;
+                        let age = ((phase * 8.0 - k as f32).rem_euclid(8.0)) / 8.0;
+                        let mut col = t.accent;
+                        col[3] = 1.0 - age * 0.85;
+                        let (x, y) = (cx_ + rad * a.cos() - dot / 2.0, cy_ + rad * a.sin() - dot / 2.0);
+                        self.d.fill(Rect::new(x, y, dot, dot), col, dot / 2.0);
+                    }
+                } else {
+                    let h = self.px(4.0);
+                    let track = Rect::new(r.x, (r.y + (r.h - h) / 2.0).round(), r.w, h);
+                    self.d.fill(track, t.separator, h / 2.0);
+                    match value {
+                        Some(v) => self.d.fill(Rect::new(track.x, track.y, (track.w * v).round(), h), t.accent, h / 2.0),
+                        None => {
+                            // 3 割の長さの帯が左から右へ流れる（両端で切る）
+                            let w = track.w * 0.3;
+                            let x0 = track.x + (phase * 1.3 - 0.3) * track.w;
+                            let (a, b) = (x0.max(track.x), (x0 + w).min(track.right()));
+                            if b > a {
+                                self.d.fill(Rect::new(a.round(), track.y, (b - a).round(), h), t.accent, h / 2.0);
+                            }
+                        }
+                    }
+                }
+            }
+            Kind::Card { .. } => {
+                let t = self.cx.theme.clone();
+                self.d.boxed(r, t.background, t.border, line, self.px(8.0));
+                for &c in &tree.layout[i].children {
+                    self.node(tree, c);
+                }
+            }
+            Kind::Expander { open, text } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(sz::RADIUS);
+                self.focus_ring(tree, i, radius);
+                if !off && (self.cx.hover == Some(id) || self.cx.pressed == Some(id)) {
+                    self.d.fill(r, t.button_hover, radius);
+                }
+                let color = if off { t.done_text } else { t.text };
+                let s = self.px(16.0);
+                let pad = self.px(4.0);
+                self.icon(if *open { Icon::ChevronDown } else { Icon::ChevronRight }, r.x + pad, (r.y + (r.h - s) / 2.0).round(), s, color);
+                text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, true), r.x + pad + s + self.px(sz::ICON_GAP), r, color);
+                self.hit(tree, i, true, false);
+            }
+            Kind::Link { text } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                self.focus_ring(tree, i, self.px(2.0));
+                let color = if off { t.done_text } else { t.accent };
+                let laid = text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x, r, color);
+                // 下線（乗った時は太く）
+                let thick = if !off && self.cx.hover == Some(id) { 2.0 * line } else { line };
+                let y = (r.y + (r.h + laid.height) / 2.0 - thick).round();
+                self.d.fill(Rect::new(r.x, y, laid.width.round(), thick), color, 0.0);
+                self.hit(tree, i, true, false);
+            }
+            Kind::ToggleButton { on, text } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(sz::RADIUS);
+                self.focus_ring(tree, i, radius);
+                let (bg, border, color) = if off {
+                    (t.button, t.border, t.done_text)
+                } else if *on {
+                    (t.selected, t.accent, t.accent)
+                } else if self.cx.pressed == Some(id) {
+                    (t.button_pressed, t.border, t.text)
+                } else if self.cx.hover == Some(id) {
+                    (t.button_hover, t.border, t.text)
+                } else {
+                    (t.button, t.border, t.text)
+                };
+                self.d.boxed(r, bg, border, line, radius);
+                let laid = self.cx.text.layout(text, style(self.cx, TextKind::Body, *on), None);
+                put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
+                self.hit(tree, i, true, false);
+            }
             Kind::Icon { icon, size, weak } => {
                 let t = &self.cx.theme;
                 let color = if tree.info[i].disabled {
@@ -450,7 +594,7 @@ impl Painter<'_> {
                 let s = self.px(*size as f32);
                 self.icon(*icon, (r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round(), s, color);
             }
-            Kind::Checkbox { checked, text, strike } => {
+            Kind::Checkbox { checked, text, strike, mixed } => {
                 let t = self.cx.theme.clone();
                 let b = self.px(sz::BOX);
                 let bx = Rect::new(r.x, (r.y + (r.h - b) / 2.0).round(), b, b);
@@ -461,10 +605,11 @@ impl Painter<'_> {
                     self.d.fill(bx.inset(-w), t.background, radius + w);
                 }
                 let off = tree.info[i].disabled;
-                if *checked {
+                if *checked || *mixed {
                     self.d.fill(bx, if off { t.border } else { t.accent }, radius);
                     let m = (bx.w * 0.85).round();
-                    self.icon(Icon::Check, (bx.x + (bx.w - m) / 2.0).round(), (bx.y + (bx.h - m) / 2.0).round(), m, t.on_accent);
+                    let mark = if *mixed { Icon::Minus } else { Icon::Check };
+                    self.icon(mark, (bx.x + (bx.w - m) / 2.0).round(), (bx.y + (bx.h - m) / 2.0).round(), m, t.on_accent);
                 } else {
                     let border = if !off && self.cx.hover == Some(id) { t.accent } else { t.border };
                     self.d.boxed(bx, t.field, border, line, radius);
@@ -524,7 +669,7 @@ impl Painter<'_> {
                 put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
                 self.hit(tree, i, true, false);
             }
-            Kind::TextInput { value, hint } => self.text_input(tree, i, value, hint),
+            Kind::TextInput { value, hint, password } => self.text_input(tree, i, value, hint, *password),
             Kind::TextArea { value, hint, .. } => self.text_area(tree, i, value, hint),
             Kind::List { count, separators, .. } => self.list(tree, i, *count, *separators),
             Kind::Scroll => self.scroll_area(tree, i),
@@ -592,7 +737,7 @@ impl Painter<'_> {
         let id = tree.info[i].id;
         if tree.info[i].disabled {
             self.prev.disabled.insert(id);
-        } else if tree.info[i].kind.interactive() {
+        } else if tree.info[i].kind.interactive() && !matches!(tree.info[i].kind, Kind::Radio { tab_stop: false, .. }) {
             if let Some(s) = self.scroller {
                 self.prev.rows.insert(id, (s, tree.layout[i].rect));
             }
@@ -656,7 +801,7 @@ impl Painter<'_> {
         }
     }
 
-    fn text_input(&mut self, tree: &Tree, i: usize, value: &str, hint: &str) {
+    fn text_input(&mut self, tree: &Tree, i: usize, value: &str, hint: &str, password: bool) {
         let r = tree.layout[i].rect;
         let id = tree.info[i].id;
         let t = self.cx.theme.clone();
@@ -669,6 +814,15 @@ impl Painter<'_> {
         let inner = Rect::new(r.x + pad, r.y, (r.w - 2.0 * pad).max(0.0), r.h);
         let st = style(self.cx, TextKind::Body, false);
         let (cursor, anchor) = self.cx.edits.get(&id).map_or((value.len(), value.len()), |e| (e.cursor.min(value.len()), e.anchor.min(value.len())));
+        // パスワードは点にして描く（位置も点の位置に直す）
+        let masked;
+        let (value, cursor, anchor) = if password {
+            masked = edit::mask(value);
+            let to = |b: usize| value[..b].chars().count() * edit::DOT.len_utf8();
+            (masked.as_str(), to(cursor), to(anchor))
+        } else {
+            (value, cursor, anchor)
+        };
         let preedit = if focused { self.cx.preedit.clone() } else { String::new() };
         // 変換中の文字はキャレットの位置に差し込んで描く（値にはまだ入れない）
         let shown = if preedit.is_empty() { value.to_string() } else { format!("{}{}{}", &value[..cursor], preedit, &value[cursor..]) };

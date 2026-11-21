@@ -72,6 +72,19 @@ pub(crate) fn utf16_of(s: &str, byte: usize) -> usize {
     s[..byte.min(s.len())].encode_utf16().count()
 }
 
+/// パスワードの 1 文字の代わりに出す点（U+2022。● より小さく、Windows の標準のパスワードの欄に近い）
+pub(crate) const DOT: char = '\u{2022}';
+
+/// パスワードを画面に出す形（1 文字を 1 つの点にする）
+pub(crate) fn mask(s: &str) -> String {
+    DOT.to_string().repeat(s.chars().count())
+}
+
+/// n 文字目の前の UTF-8 の位置（パスワードの ● の位置から元の文字の位置へ）
+pub(crate) fn byte_of_char(s: &str, n: usize) -> usize {
+    s.char_indices().nth(n).map_or(s.len(), |(b, _)| b)
+}
+
 /// UTF-16 の位置を UTF-8 の位置にする（文字の途中なら手前の境目）
 pub(crate) fn byte_of(s: &str, utf16: usize) -> usize {
     let mut n = 0;

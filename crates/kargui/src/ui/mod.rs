@@ -133,10 +133,24 @@ pub(crate) enum Kind {
     Icon { icon: Icon, size: u32, weak: bool },
     /// 画像（大きさは論理ピクセル）
     Image { image: Image, w: u32, h: u32 },
-    Checkbox { checked: bool, text: String, strike: bool },
+    /// ラジオボタン（tab_stop: グループの中で Tab が止まる 1 つ）
+    Radio { selected: bool, text: String, tab_stop: bool },
+    /// 区切り線
+    Separator,
+    /// 進み具合（value が None なら終わりが分からない。ring は輪）
+    Progress { value: Option<f32>, ring: bool },
+    /// カードと枠（title があれば枠の見出しで、読み上げの名前）
+    Card { title: Option<String> },
+    /// 開閉する節の見出し
+    Expander { open: bool, text: String },
+    /// リンク
+    Link { text: String },
+    /// 押したままにできるボタン
+    ToggleButton { on: bool, text: String },
+    Checkbox { checked: bool, text: String, strike: bool, mixed: bool },
     Toggle { on: bool, text: String },
     Segment { text: String, selected: bool },
-    TextInput { value: String, hint: String },
+    TextInput { value: String, hint: String, password: bool },
     /// 複数行の入力欄（rows は見える行の数）
     TextArea { value: String, hint: String, rows: u32 },
     Space,
@@ -182,6 +196,10 @@ impl Kind {
                 | Kind::TextArea { .. }
                 | Kind::Slider { .. }
                 | Kind::Item { .. }
+                | Kind::Radio { .. }
+                | Kind::Expander { .. }
+                | Kind::Link { .. }
+                | Kind::ToggleButton { .. }
         )
     }
 }
@@ -623,6 +641,293 @@ impl<'a> Ui<'a> {
         Label(self.handle(idx, id))
     }
 
+    /// A group of radio buttons, one below another, of which exactly one is selected. Returns
+    /// whether the selection changed. Tab stops once in the group (at the selected button); the
+    /// arrow keys move through the group and select as they go, wrapping at the ends. For a
+    /// compact row of choices, see [`Ui::segmented`].
+    ///
+    /// ```
+    /// #[derive(Clone, Copy, PartialEq)]
+    /// enum Size { Small, Medium, Large }
+    /// # let mut size = Size::Medium;
+    /// # kargui::test::example(|ui| {
+    /// ui.radio_group(&mut size, &[(Size::Small, "Small"), (Size::Medium, "Medium"), (Size::Large, "Large")]);
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn radio_group<T: Copy + PartialEq>(&mut self, value: &mut T, options: &[(T, &str)]) -> bool {
+        let (col, _) = self.add(Kind::Column, Dir::Column);
+        self.tree.layout[col].gap = self.px(6.0);
+        let disabled = self.disabled;
+        let tab = options.iter().position(|(v, _)| v == value).unwrap_or(0);
+        let mut changed = false;
+        let mut ids = Vec::with_capacity(options.len());
+        {
+            let mut ui = self.child(col);
+            for (k, (v, text)) in options.iter().enumerate() {
+                ui.salt = hash_of(k);
+                let (_, id) = ui.add(Kind::Radio { selected: *v == *value, text: text.to_string(), tab_stop: k == tab }, Dir::Leaf);
+                ids.push(id);
+                if !disabled && ui.cx.clicked == Some(id) && *v != *value {
+                    *value = *v;
+                    changed = true;
+                }
+            }
+        }
+        // 矢印: 焦点がこのグループのボタンにある時、選びながら移る（端で折り返す）
+        if let (false, Some(at)) = (disabled, self.cx.focus.and_then(|f| ids.iter().position(|&i| i == f))) {
+            let n = options.len();
+            let mut next = at;
+            for e in std::mem::take(&mut self.cx.keys) {
+                if let Event::Key { key, .. } = e {
+                    next = match key {
+                        Key::Down | Key::Right => (next + 1) % n,
+                        Key::Up | Key::Left => (next + n - 1) % n,
+                        _ => next,
+                    };
+                }
+            }
+            if next != at {
+                *value = options[next].0;
+                changed = true;
+                self.cx.focus = Some(ids[next]);
+            }
+        }
+        if changed {
+            let children = self.tree.layout[col].children.clone();
+            let tab = options.iter().position(|(v, _)| v == value).unwrap_or(0);
+            for (k, c) in children.into_iter().enumerate() {
+                if let Kind::Radio { selected, tab_stop, .. } = &mut self.tree.info[c].kind {
+                    *selected = options[k].0 == *value;
+                    *tab_stop = k == tab;
+                }
+            }
+        }
+        changed
+    }
+
+    /// A thin line between parts of a column (horizontal) or a row (vertical).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.label("Account");
+    /// ui.separator();
+    /// ui.label("Privacy");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn separator(&mut self) {
+        let (idx, _) = self.add(Kind::Separator, Dir::Leaf);
+        let (one, tall) = (Size::Fixed(self.px(1.0).max(1.0)), Size::Fixed(self.px(20.0)));
+        let in_row = self.parent_dir() == Dir::Row;
+        let l = &mut self.tree.layout[idx];
+        if in_row {
+            (l.width, l.height) = (one, tall);
+        } else {
+            l.height = one;
+        }
+    }
+
+    /// A progress bar from 0.0 (nothing done) to 1.0 (finished). Give it a name with `.label(..)`
+    /// so screen readers can say what is progressing.
+    ///
+    /// ```
+    /// # let (done, total) = (3, 10);
+    /// # kargui::test::example(|ui| {
+    /// ui.progress(done as f32 / total as f32).label("Uploading photos");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn progress(&mut self, fraction: f32) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::Progress { value: Some(fraction.clamp(0.0, 1.0)), ring: false }, Dir::Leaf);
+        self.handle(idx, id)
+    }
+
+    /// A progress bar for work whose end is unknown: a moving stripe. It draws about 30 times a
+    /// second while it is on screen.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.progress_busy().label("Connecting");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn progress_busy(&mut self) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::Progress { value: None, ring: false }, Dir::Leaf);
+        self.animate();
+        self.handle(idx, id)
+    }
+
+    /// A small spinning ring for work whose end is unknown. It draws about 30 times a second
+    /// while it is on screen.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.spinner().label("Loading");
+    ///     ui.label("Loading…");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn spinner(&mut self) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::Progress { value: None, ring: true }, Dir::Leaf);
+        let s = Size::Fixed(self.px(20.0));
+        (self.tree.layout[idx].width, self.tree.layout[idx].height) = (s, s);
+        self.animate();
+        self.handle(idx, id)
+    }
+
+    /// 動く部品のために、約 30 fps で起こしてもらう（毎フレームは描かない）
+    fn animate(&mut self) {
+        let t = self.cx.now + Duration::from_millis(33);
+        self.cx.wake_by(t);
+    }
+
+    /// A card: the widgets created in `f`, one below another, on a box with a border.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.card(|ui| {
+    ///     ui.heading("Storage");
+    ///     ui.label("12 GB of 64 GB used").weak();
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn card(&mut self, f: impl FnOnce(&mut Ui)) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::Card { title: None }, Dir::Column);
+        self.card_layout(idx);
+        f(&mut self.child(idx));
+        self.handle(idx, id)
+    }
+
+    /// A card with a title, for a group of related settings. Screen readers announce it as a
+    /// group named by the title.
+    ///
+    /// ```
+    /// # let (mut sound, mut vibrate) = (true, false);
+    /// # kargui::test::example(|ui| {
+    /// ui.group("Notifications", |ui| {
+    ///     ui.checkbox(&mut sound, "Play a sound");
+    ///     ui.checkbox(&mut vibrate, "Vibrate");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn group(&mut self, title: impl Into<String>, f: impl FnOnce(&mut Ui)) -> Handle<'_> {
+        let title = title.into();
+        let (idx, id) = self.add(Kind::Card { title: Some(title.clone()) }, Dir::Column);
+        self.card_layout(idx);
+        let mut ui = self.child(idx);
+        ui.label(title).bold();
+        f(&mut ui);
+        self.handle(idx, id)
+    }
+
+    fn card_layout(&mut self, idx: usize) {
+        let (px, py, gap) = (self.px(16.0), self.px(12.0), self.px(8.0));
+        let l = &mut self.tree.layout[idx];
+        l.pad = (px, py);
+        l.gap = gap;
+    }
+
+    /// A section that opens and closes: a header with an arrow, and the widgets created in `f`
+    /// below it while `*open` is true. Clicking the header (or Enter / Space on it) flips `*open`.
+    /// Returns whether it was flipped. Screen readers hear whether it is expanded.
+    ///
+    /// ```
+    /// # let (mut more, mut proxy) = (false, false);
+    /// # kargui::test::example(|ui| {
+    /// ui.expander(&mut more, "Advanced", |ui| {
+    ///     ui.checkbox(&mut proxy, "Use a proxy");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn expander(&mut self, open: &mut bool, title: impl Into<String>, f: impl FnOnce(&mut Ui)) -> bool {
+        let (col, _) = self.add(Kind::Column, Dir::Column);
+        self.tree.layout[col].gap = self.px(4.0);
+        let indent = self.px(24.0);
+        let mut ui = self.child(col);
+        let (hidx, hid) = ui.add(Kind::Expander { open: *open, text: title.into() }, Dir::Leaf);
+        let flipped = !ui.disabled && ui.cx.clicked == Some(hid);
+        if flipped {
+            *open = !*open;
+            if let Kind::Expander { open: o, .. } = &mut ui.tree.info[hidx].kind {
+                *o = *open;
+            }
+        }
+        if *open {
+            let (body, _) = ui.add(Kind::Column, Dir::Column);
+            ui.tree.layout[body].pad = (indent, 0.0);
+            ui.tree.layout[body].gap = ui.px(6.0);
+            f(&mut ui.child(body));
+        }
+        flipped
+    }
+
+    /// A text link. Ask [`Button::clicked`] whether it was clicked (to open a page or another
+    /// screen; opening web pages is up to the app).
+    ///
+    /// ```
+    /// # let mut help = false;
+    /// # kargui::test::example(|ui| {
+    /// if ui.link("How do backups work?").clicked() {
+    ///     help = true;
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn link(&mut self, text: impl Into<String>) -> Button<'_> {
+        let (idx, id) = self.add(Kind::Link { text: text.into() }, Dir::Leaf);
+        let clicked = !self.disabled && self.cx.clicked == Some(id);
+        Button { h: self.handle(idx, id), clicked }
+    }
+
+    /// A button that stays pressed while `*on` is true (for example Bold in a text editor).
+    /// Clicking it flips `*on`.
+    ///
+    /// ```
+    /// # let mut bold = false;
+    /// # kargui::test::example(|ui| {
+    /// ui.toggle_button(&mut bold, "Bold");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn toggle_button(&mut self, on: &mut bool, text: impl Into<String>) -> Toggled<'_> {
+        let (idx, id) = self.add(Kind::ToggleButton { on: *on, text: text.into() }, Dir::Leaf);
+        let changed = !self.disabled && self.cx.clicked == Some(id);
+        if changed {
+            *on = !*on;
+            if let Kind::ToggleButton { on: o, .. } = &mut self.tree.info[idx].kind {
+                *o = *on;
+            }
+        }
+        Toggled { h: self.handle(idx, id), changed }
+    }
+
+    /// A one-line field for passwords: it shows dots instead of the text, does not copy or cut,
+    /// and does not give the text to screen readers. Pasting works. Otherwise it is like
+    /// [`Ui::text_input`].
+    ///
+    /// ```
+    /// # let mut password = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.password(&mut password).hint("Password").grow();
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn password(&mut self, text: &mut String) -> TextInput<'_> {
+        let (idx, id) = self.add(Kind::TextInput { value: String::new(), hint: String::new(), password: true }, Dir::Leaf);
+        let (changed, submitted) = self.edit(id, text, Field::Password);
+        if let Kind::TextInput { value, .. } = &mut self.tree.info[idx].kind {
+            *value = text.clone();
+        }
+        let composing = (self.cx.focus == Some(id) && !self.cx.preedit.is_empty()).then(|| self.cx.preedit.clone());
+        TextInput { h: self.handle(idx, id), changed, submitted, composing }
+    }
+
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
     /// screen readers skip it unless you give it a name with `.label(..)`.
     ///
@@ -717,7 +1022,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn checkbox(&mut self, checked: &mut bool, text: impl Into<String>) -> Toggled<'_> {
-        let (idx, id) = self.add(Kind::Checkbox { checked: *checked, text: text.into(), strike: false }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::Checkbox { checked: *checked, text: text.into(), strike: false, mixed: false }, Dir::Leaf);
         let changed = !self.disabled && self.cx.clicked == Some(id);
         if changed {
             *checked = !*checked;
@@ -837,8 +1142,8 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn text_input(&mut self, text: &mut String) -> TextInput<'_> {
-        let (idx, id) = self.add(Kind::TextInput { value: String::new(), hint: String::new() }, Dir::Leaf);
-        let (changed, submitted) = self.edit(id, text, false);
+        let (idx, id) = self.add(Kind::TextInput { value: String::new(), hint: String::new(), password: false }, Dir::Leaf);
+        let (changed, submitted) = self.edit(id, text, Field::Line);
         if let Kind::TextInput { value, .. } = &mut self.tree.info[idx].kind {
             *value = text.clone();
         }
@@ -865,7 +1170,7 @@ impl<'a> Ui<'a> {
     #[track_caller]
     pub fn text_area(&mut self, text: &mut String) -> TextArea<'_> {
         let (idx, id) = self.add(Kind::TextArea { value: String::new(), hint: String::new(), rows: 4 }, Dir::Leaf);
-        let (changed, _) = self.edit(id, text, true);
+        let (changed, _) = self.edit(id, text, Field::Area);
         if let Kind::TextArea { value, .. } = &mut self.tree.info[idx].kind {
             *value = text.clone();
         }
@@ -873,8 +1178,10 @@ impl<'a> Ui<'a> {
         TextArea { h: self.handle(idx, id), changed, composing }
     }
 
-    /// 焦点のある入力欄に、この回の入力を当てる。(変わったか, 送信したか)。multiline は複数行の入力欄
-    fn edit(&mut self, id: Id, s: &mut String, multiline: bool) -> (bool, bool) {
+    /// 焦点のある入力欄に、この回の入力を当てる。(変わったか, 送信したか)
+    fn edit(&mut self, id: Id, s: &mut String, field: Field) -> (bool, bool) {
+        let multiline = field == Field::Area;
+        let password = field == Field::Password;
         if self.disabled {
             return (false, false);
         }
@@ -901,8 +1208,14 @@ impl<'a> Ui<'a> {
                     self.cx.reveal = Some(id);
                 } else if let Some(&(_, text_x)) = self.cx.prev.inputs.get(&id) {
                     let scroll = self.cx.edit_scroll.get(&id).copied().unwrap_or(0.0);
-                    let laid = self.cx.text.layout(s, style, None);
-                    let at = edit::byte_of(s, laid.index_at(x - text_x + scroll));
+                    let at = if password {
+                        // 画面の ● の何個目か → 元の文字の何文字目か
+                        let laid = self.cx.text.layout(&edit::mask(s), style, None);
+                        edit::byte_of_char(s, laid.index_at(x - text_x + scroll))
+                    } else {
+                        let laid = self.cx.text.layout(s, style, None);
+                        edit::byte_of(s, laid.index_at(x - text_x + scroll))
+                    };
                     self.cx.edits.get_mut(&id).unwrap().move_to(at, shift);
                 }
             }
@@ -970,6 +1283,8 @@ impl<'a> Ui<'a> {
                     Key::Home => st.move_to(0, mods.shift),
                     Key::End => st.move_to(s.len(), mods.shift),
                     Key::A if mods.ctrl => st.select_all(s),
+                    // パスワードは写さない・切り取らない
+                    Key::C | Key::X if mods.ctrl && password => {}
                     Key::C if mods.ctrl && st.has_selection() => {
                         let t = st.selected_text(s).to_string();
                         cx.clipboard.set(&t);
@@ -1960,6 +2275,24 @@ impl Toggled<'_> {
     pub fn changed(&self) -> bool {
         self.changed
     }
+    /// Shows a check box as partly checked (a dash) when `mixed` is true, for example for "select
+    /// all" when only some items are selected. Screen readers hear "mixed". Clicking still flips
+    /// the value; decide in your code what it means.
+    ///
+    /// ```
+    /// # let items = [true, false, true];
+    /// # kargui::test::example(|ui| {
+    /// let mut all = items.iter().all(|&c| c);
+    /// let some = items.iter().any(|&c| c);
+    /// ui.checkbox(&mut all, "Select all").mixed(some && !all);
+    /// # });
+    /// ```
+    pub fn mixed(mut self, mixed: bool) -> Self {
+        if let Kind::Checkbox { mixed: m, .. } = self.h.kind() {
+            *m = mixed;
+        }
+        self
+    }
     /// Draws a line through a check box's label and dims it when `on` is true, for example for
     /// finished tasks. The label stays clickable. Has no effect on switches.
     ///
@@ -2193,6 +2526,14 @@ impl TextArea<'_> {
     pub fn composing(&self) -> Option<&str> {
         self.composing.as_deref()
     }
+}
+
+/// 入力欄の種類（edit の振る舞いを変える）
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Line,
+    Area,
+    Password,
 }
 
 /// 複数行の入力欄で、上下の矢印と PageUp/PageDown の行き先（UTF-8 の位置）。行が変わらなければ None。
@@ -2455,7 +2796,7 @@ const ROW_PAD: f32 = 12.0;
 pub(crate) fn visible_text(kind: &Kind) -> Option<&str> {
     match kind {
         Kind::Label { text, .. } | Kind::Button { text, .. } | Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => Some(text),
-        Kind::Segment { text, .. } => Some(text),
+        Kind::Segment { text, .. } | Kind::Radio { text, .. } | Kind::Expander { text, .. } | Kind::Link { text } | Kind::ToggleButton { text, .. } => Some(text),
         _ => None,
     }
 }
