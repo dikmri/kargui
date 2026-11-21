@@ -142,6 +142,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.set_size_of_set(*count);
                 n
             }
+            Kind::Scroll => Node::new(Role::ScrollView),
             Kind::Space => unreachable!(),
         };
         if info.kind.interactive() || matches!(info.kind, Kind::List { .. }) {

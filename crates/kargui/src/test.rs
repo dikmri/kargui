@@ -651,6 +651,78 @@ mod tests {
         }
     }
 
+    /// 見出しの下に、窓より高い設定の並びをスクロールの入れ物に入れた画面
+    struct Settings {
+        options: Vec<bool>,
+    }
+
+    impl App for Settings {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.heading("Settings");
+            ui.scroll(|ui| {
+                for (i, on) in self.options.iter_mut().enumerate() {
+                    ui.checkbox(on, format!("Option {i}"));
+                }
+                ui.label("The end");
+            });
+        }
+    }
+
+    fn settings() -> Harness<Settings> {
+        let mut h = Harness::with_size(Settings { options: vec![false; 30] }, 400.0, 300.0, 1.0);
+        h.frame();
+        h
+    }
+
+    #[test]
+    fn scroll_moves_its_content_with_the_wheel_and_stops_at_the_end() {
+        let mut h = settings();
+        let area = h.rt.cx.prev.lists[0].rect;
+        let y0 = h.find("Option 1").unwrap().y;
+        h.scroll("Option 1", 100.0);
+        assert_eq!(h.find("Option 1").unwrap().y, y0 - 100.0);
+        // ずっと下まで回すと、最後の行が入れ物の下端で止まる
+        h.scroll("Option 5", 10_000.0);
+        let end = h.find("The end").unwrap();
+        assert!((end.bottom() - area.bottom()).abs() <= 1.0, "最後 {end:?} / 入れ物 {area:?}");
+        // 入れ物の上に隠れた行は押せない（見出しの所を押すと、見出しの下の行ではなく何も当たらない）
+        let heading = h.find("Settings").unwrap();
+        h.send(vec![Event::PointerDown { x: heading.x + 4.0, y: heading.y + 4.0, shift: false }, Event::PointerUp { x: heading.x + 4.0, y: heading.y + 4.0 }]);
+        assert!(h.app().options.iter().all(|o| !o), "隠れた行が押された: {:?}", h.app().options);
+    }
+
+    #[test]
+    fn tab_reaches_widgets_below_the_scroll_and_shows_them() {
+        let mut h = settings();
+        let area = h.rt.cx.prev.lists[0].rect;
+        for _ in 0..21 {
+            h.press(Key::Tab);
+        }
+        let r = h.find("Option 20").unwrap();
+        assert!(r.y >= area.y && r.bottom() <= area.bottom(), "Option 20 {r:?} が入れ物 {area:?} の中に見える");
+        h.press(Key::Space);
+        assert!(h.app().options[20], "焦点は Option 20 にある");
+    }
+
+    #[test]
+    fn drawing_only_changes_matches_drawing_everything_in_a_scroll() {
+        let mut h = settings();
+        let (w, hh) = (h.rt.cx.width as i32, h.rt.cx.height as i32);
+        let mut px = vec![0u32; (w * hh) as usize];
+        let mut summary = crate::damage::Summary::default();
+        let area = h.rt.cx.prev.lists[0].rect;
+        let (x, y) = (area.x + area.w / 2.0, area.y + area.h / 2.0);
+        for k in 0..16 {
+            let bg = h.rt.cx.theme.background;
+            let out = crate::cpu_frame::draw(&mut px, w, hh, &h.rt.draw, &h.rt.cx.text.atlas, bg, &summary, false);
+            summary = out.summary;
+            let full = h.render();
+            let diff = px.iter().zip(&full.pixels).filter(|(a, b)| a != b).count();
+            assert_eq!(diff, 0, "{k} 回目: {diff} 画素が違う（{}）", out.mode);
+            h.send(vec![Event::Wheel { x, y, dy: if k < 10 { 37.0 } else { -53.0 } }]);
+        }
+    }
+
     fn id_of(h: &Harness<Shelf>, name: &str) -> crate::ui::Id {
         let i = (0..h.rt.tree.info.len()).find(|&i| a11y::name_of(&h.rt.tree, i).as_deref() == Some(name)).unwrap();
         h.rt.tree.info[i].id

@@ -7,6 +7,8 @@
 //! - Column: 子を縦に並べる。横は align（既定は幅いっぱい）
 //! - Stack: 子を重ねる
 //! - List: 見えている行だけを、行の番号とスクロールの位置から置く
+//! - Scroll: 子を縦に並べ、スクロールの位置だけ上にずらす。中身の高さ（content）を覚える。
+//!   高さが Fill のときは、中身が高くても残りの高さだけを取る（Fill の基準を 0 にする）
 //! - Fill の子は、残りの長さを重みで分け合う
 
 use crate::geom::Rect;
@@ -42,6 +44,7 @@ pub(crate) enum Dir {
     Column,
     Stack,
     List,
+    Scroll,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +65,8 @@ pub(crate) struct LayoutNode {
     pub offset: f32,
     /// List の子のとき、何行目か
     pub row_index: usize,
+    /// Scroll の中身の高さ（余白を含む。物理ピクセル）
+    pub content: f32,
     // 結果
     pub measured: (f32, f32),
     pub rect: Rect,
@@ -81,6 +86,7 @@ impl LayoutNode {
             row_h: 0.0,
             offset: 0.0,
             row_index: 0,
+            content: 0.0,
             measured: (0.0, 0.0),
             rect: Rect::default(),
         }
@@ -105,9 +111,21 @@ fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
         Dir::Column => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).sum::<f32>() + gaps),
         Dir::Stack => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).fold(0.0, f32::max)),
         Dir::List => (0.0, 0.0),
+        Dir::Scroll => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).sum::<f32>() + gaps),
     };
     let (w, h) = if n.dir == Dir::Leaf { (w, h) } else { (w + 2.0 * n.pad.0, h + 2.0 * n.pad.1) };
-    let m = (fixed_or(n.width, w), fixed_or(n.height, h));
+    let (dir, width, height) = (n.dir, n.width, n.height);
+    let m = if dir == Dir::Scroll {
+        nodes[i].content = h;
+        let own_h = match height {
+            Size::Fixed(v) => v,
+            Size::Fill(_) => 0.0,
+            Size::Auto => h,
+        };
+        (fixed_or(width, w), own_h)
+    } else {
+        (fixed_or(width, w), fixed_or(height, h))
+    };
     nodes[i].measured = m;
     m
 }
@@ -160,11 +178,13 @@ fn arrange(nodes: &mut [LayoutNode], i: usize, rect: Rect) {
                 x += lens[k] + n.gap;
             }
         }
-        Dir::Column => {
+        Dir::Column | Dir::Scroll => {
             let sizes: Vec<Size> = n.children.iter().map(|&c| nodes[c].height).collect();
             let measured: Vec<f32> = n.children.iter().map(|&c| nodes[c].measured.1).collect();
-            let lens = distribute(&sizes, &measured, inner.h - gaps);
-            let mut y = inner.y;
+            // スクロールの中は、中身の高さと見える高さの大きいほうを分ける
+            let avail = if n.dir == Dir::Scroll { inner.h.max(n.content - 2.0 * n.pad.1) } else { inner.h };
+            let lens = distribute(&sizes, &measured, avail - gaps);
+            let mut y = if n.dir == Dir::Scroll { inner.y - n.offset } else { inner.y };
             for (k, &c) in n.children.iter().enumerate() {
                 let (at, w) = cross(nodes[c].width, nodes[c].measured.0, inner.w, n.align);
                 arrange(nodes, c, Rect::new(inner.x + at, y.round(), w, lens[k].round()));
@@ -249,6 +269,33 @@ mod tests {
         nodes[0].pad = (8.0, 4.0);
         layout(&mut nodes, 0, Rect::new(0.0, 0.0, 200.0, 100.0));
         assert_eq!(nodes[0].measured, (30.0 + 5.0 + 40.0 + 16.0, 20.0 + 8.0));
+    }
+
+    #[test]
+    fn scroll_takes_the_rest_and_shifts_its_content() {
+        // [見出し 30][スクロール（Fill）: 中身 3 つ（各 100、間 10）]、窓の高さ 200
+        let mut nodes = vec![LayoutNode::new(Dir::Column), leaf(100.0, 30.0), LayoutNode::new(Dir::Scroll), leaf(50.0, 100.0), leaf(50.0, 100.0), leaf(50.0, 100.0)];
+        nodes[0].children = vec![1, 2];
+        nodes[2].children = vec![3, 4, 5];
+        nodes[2].height = Size::Fill(1.0);
+        nodes[2].gap = 10.0;
+        nodes[2].offset = 40.0;
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 300.0, 200.0));
+        // 中身が高くても、スクロールは残りの高さだけを取る
+        assert_eq!(nodes[2].rect, Rect::new(0.0, 30.0, 300.0, 170.0));
+        assert_eq!(nodes[2].content, 320.0);
+        // 中身は幅いっぱいで、スクロールの位置だけ上にずれる
+        assert_eq!(nodes[3].rect, Rect::new(0.0, -10.0, 300.0, 100.0));
+        assert_eq!(nodes[5].rect, Rect::new(0.0, 210.0, 300.0, 100.0));
+    }
+
+    #[test]
+    fn scroll_with_short_content_lets_fill_children_grow() {
+        let mut nodes = vec![LayoutNode::new(Dir::Scroll), leaf(10.0, 20.0), leaf(10.0, 0.0)];
+        nodes[0].children = vec![1, 2];
+        nodes[2].height = Size::Fill(1.0);
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(nodes[2].rect, Rect::new(0.0, 20.0, 100.0, 80.0));
     }
 
     #[test]

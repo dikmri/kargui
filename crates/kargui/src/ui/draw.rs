@@ -98,6 +98,22 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
     if again {
         layout::layout(&mut tree.layout, 0, window);
     }
+    // 中身が短くなってスクロールの位置が端を越えたら、端に戻してもう一度置く
+    let mut clamped = false;
+    for i in 0..tree.info.len() {
+        if matches!(tree.info[i].kind, Kind::Scroll) {
+            let l = &mut tree.layout[i];
+            let max = (l.content - l.rect.h).max(0.0).round();
+            if l.offset > max {
+                l.offset = max;
+                cx.scrolls.insert(tree.info[i].id, max / cx.scale);
+                clamped = true;
+            }
+        }
+    }
+    if clamped {
+        layout::layout(&mut tree.layout, 0, window);
+    }
 }
 
 fn put(d: &mut DrawList, laid: &Laid, x: f32, y: f32, color: Color) {
@@ -123,6 +139,8 @@ struct Painter<'a> {
     clip: Rect,
     /// 今描いている一覧の行（一覧の id と行の範囲）
     row: Option<(crate::ui::Id, Rect)>,
+    /// 今描いているスクロールの入れ物（焦点が移った時に、見えるようにスクロールするため）
+    scroller: Option<crate::ui::Id>,
 }
 
 /// 画面の木を描く。次のフレームの当たり判定の情報を cx.prev に入れる
@@ -133,7 +151,7 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     cx.preedit_rect = None;
     cx.input_rect = None;
     cx.ime_field = None;
-    let mut p = Painter { cx, d, prev: Prev::default(), clip: window.to_rect(), row: None };
+    let mut p = Painter { cx, d, prev: Prev::default(), clip: window.to_rect(), row: None, scroller: None };
     p.node(tree, 0);
     p.d.finish();
     let prev = std::mem::take(&mut p.prev);
@@ -160,12 +178,16 @@ impl Painter<'_> {
     fn hit(&mut self, tree: &Tree, i: usize, focusable: bool, text_input: bool) {
         let r = tree.layout[i].rect;
         let id = tree.info[i].id;
-        if let Some(row) = self.row.filter(|_| focusable) {
-            self.prev.rows.insert(id, row);
+        if focusable {
+            if let Some(row) = self.row {
+                self.prev.rows.insert(id, row);
+            } else if let Some(s) = self.scroller {
+                self.prev.rows.insert(id, (s, r));
+            }
         }
         let Some(r) = intersect(r, self.clip) else {
-            // 一覧の見えない行（上下に 1 行ずつ作る）の部品は、押せないが Tab では移れる
-            if focusable && self.row.is_some() {
+            // 一覧の見えない行（上下に 1 行ずつ作る）とスクロールの外の部品は、押せないが Tab では移れる
+            if focusable && (self.row.is_some() || self.scroller.is_some()) {
                 self.prev.focus_order.push(id);
             }
             return;
@@ -305,6 +327,74 @@ impl Painter<'_> {
             }
             Kind::TextInput { value, hint } => self.text_input(tree, i, value, hint),
             Kind::List { count, separators, .. } => self.list(tree, i, *count, *separators),
+            Kind::Scroll => self.scroll_area(tree, i),
+        }
+    }
+
+    /// 見えない所にある部品は描かずに、Tab で移れるように覚えるだけにする
+    fn hidden(&mut self, tree: &Tree, i: usize) {
+        let id = tree.info[i].id;
+        if tree.info[i].kind.interactive() {
+            if let Some(s) = self.scroller {
+                self.prev.rows.insert(id, (s, tree.layout[i].rect));
+            }
+            self.prev.focus_order.push(id);
+        }
+        for &c in &tree.layout[i].children {
+            self.hidden(tree, c);
+        }
+    }
+
+    /// スクロールの棒のつまみと押せる範囲（中身が見える範囲より高いときだけ）
+    fn scrollbar_geometry(&self, r: Rect, content_h: f32, offset: f32) -> (Option<Rect>, Option<Rect>) {
+        if content_h <= r.h + 0.5 {
+            return (None, None);
+        }
+        let w = self.px(sz::SCROLLBAR_W);
+        let h = (r.h * r.h / content_h).max(self.px(24.0)).min(r.h);
+        let y = r.y + (offset / (content_h - r.h)).clamp(0.0, 1.0) * (r.h - h);
+        let x = r.right() - w - self.px(3.0);
+        let thumb = Rect::new(x, y, w, h);
+        let bar = Rect::new(x - self.px(sz::SCROLLBAR_SLOP), r.y, r.right() - x + self.px(sz::SCROLLBAR_SLOP), r.h);
+        (Some(thumb), Some(bar))
+    }
+
+    /// つまみを描く。ポインターが棒の上にある時とつかんでいる間は濃くする（つかめることが見て分かるように）
+    fn draw_thumb(&mut self, id: crate::ui::Id, thumb: Rect) {
+        let mut c = self.cx.theme.weak_text;
+        c[3] = if self.cx.drag.is_some_and(|d| d.list == id) {
+            0.85
+        } else if self.cx.bar_hover == Some(id) {
+            0.65
+        } else {
+            0.45
+        };
+        self.d.fill(Rect::new(thumb.x, thumb.y.round(), thumb.w, thumb.h.round()), c, thumb.w / 2.0);
+    }
+
+    /// スクロールの入れ物。見える範囲で切り取り、見えない子は描かない
+    fn scroll_area(&mut self, tree: &Tree, i: usize) {
+        let r = tree.layout[i].rect;
+        let id = tree.info[i].id;
+        let l = &tree.layout[i];
+        // 中の一覧より先に入れる（ホイールと棒は、後に入れた内側の物から探す）
+        let (thumb, bar) = self.scrollbar_geometry(r, l.content, l.offset);
+        self.prev.lists.push(ListInfo { id, rect: r, content_h: l.content, thumb, bar });
+        self.d.push_clip(IRect::covering(r), Some(Scroll { id: id.0, offset: l.offset as i32 }));
+        let outer = (self.clip, self.scroller);
+        self.clip = intersect(r, outer.0).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));
+        self.scroller = Some(id);
+        for &c in &l.children {
+            if intersect(tree.layout[c].rect, self.clip).is_some() {
+                self.node(tree, c);
+            } else {
+                self.hidden(tree, c);
+            }
+        }
+        (self.clip, self.scroller) = outer;
+        self.d.pop_clip();
+        if let Some(t) = thumb {
+            self.draw_thumb(id, t);
         }
     }
 
@@ -406,6 +496,8 @@ impl Painter<'_> {
         let content_h = count as f32 * l.row_h;
         let line = self.line();
         let sep = self.cx.theme.separator;
+        let (thumb, bar) = self.scrollbar_geometry(r, content_h, l.offset);
+        self.prev.lists.push(ListInfo { id, rect: r, content_h, thumb, bar });
         self.d.push_clip(IRect::covering(r), Some(Scroll { id: id.0, offset: l.offset as i32 }));
         let outer = self.clip;
         self.clip = intersect(r, outer).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));
@@ -422,26 +514,9 @@ impl Painter<'_> {
         self.clip = outer;
         self.d.pop_clip();
         // スクロールの位置を示す細い棒（中身が一覧より高いときだけ）
-        let (mut thumb, mut bar) = (None, None);
-        if content_h > r.h + 0.5 {
-            let w = self.px(sz::SCROLLBAR_W);
-            let h = (r.h * r.h / content_h).max(self.px(24.0)).min(r.h);
-            let y = r.y + (l.offset / (content_h - r.h)).clamp(0.0, 1.0) * (r.h - h);
-            let x = r.right() - w - self.px(3.0);
-            // ポインターが棒の上にある時とつかんでいる間は濃くする（つかめることが見て分かるように）
-            let mut c = self.cx.theme.weak_text;
-            c[3] = if self.cx.drag.is_some_and(|d| d.list == id) {
-                0.85
-            } else if self.cx.bar_hover == Some(id) {
-                0.65
-            } else {
-                0.45
-            };
-            self.d.fill(Rect::new(x, y.round(), w, h.round()), c, w / 2.0);
-            thumb = Some(Rect::new(x, y, w, h));
-            bar = Some(Rect::new(x - self.px(sz::SCROLLBAR_SLOP), r.y, r.right() - x + self.px(sz::SCROLLBAR_SLOP), r.h));
+        if let Some(t) = thumb {
+            self.draw_thumb(id, t);
         }
-        self.prev.lists.push(ListInfo { id, rect: r, content_h, thumb, bar });
     }
 }
 
