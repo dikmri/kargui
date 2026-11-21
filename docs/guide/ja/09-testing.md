@@ -1,4 +1,4 @@
-<!-- covers: test::Harness Harness::new Harness::with_size Harness::click Harness::type_text Harness::press Harness::ime_compose Harness::ime_commit Harness::find Harness::find_all Harness::names Harness::render Harness::app Harness::app_mut Harness::frame sig=cd306a0d6f61ebbd -->
+<!-- covers: test::Harness Harness::new Harness::with_size Harness::click Harness::type_text Harness::press Harness::ime_compose Harness::ime_commit Harness::find Harness::find_all Harness::enabled Harness::names Harness::render Harness::app Harness::app_mut Harness::frame sig=d5e26afc1914ac24 -->
 # 試験の書き方
 
 `kargui::test::Harness` は、窓を開かずにアプリを動かします。入力をまねて、結果を確かめます。
@@ -44,6 +44,7 @@ assert!(h.names().contains(&"牛乳".to_string()));
 | 日本語入力 | `ime_compose("へんかんちゅう")`、`ime_commit("確定")` |
 | ホイール | `scroll("名前", 96.0)` |
 | 場所 | `find("名前")`、同じ名前が何個もある時は `find_all("名前")` |
+| 押せるか | `enabled("名前")` が `Some(true)`・`Some(false)` を返す（部品が無ければ `None`） |
 | 絵 | `render()` で CPU で描いた絵を返す。`save_png(..)` で保存できる |
 | 状態 | `app()`、`app_mut()`。状態を直接変えたら `frame()` で描き直す |
 

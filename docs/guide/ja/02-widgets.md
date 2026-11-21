@@ -1,4 +1,4 @@
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Toggled::changed Toggled::strike Slider::changed sig=353c5bb94bedf66a -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Toggled::changed Toggled::strike Slider::changed sig=88f7d390ba1c570d -->
 # 部品
 
 部品は `ui` のメソッドで作ります。値を変える部品には `&mut` で状態を渡し、戻り値で何が起きたかを聞きます。
@@ -91,3 +91,24 @@ if ui.slider(&mut volume, 0.0..=1.0).label("音量").changed() {
 ```
 
 整数は 1 ずつ、小数はポインターで自由に、キーで範囲の 100 分の 1 ずつ動きます。スライダーは文字を持たないので、読み上げの名前を `.label(..)` で付けます。
+
+## 押せなくする
+
+条件がそろうまで使えない部品は、`ui.enabled(条件, |ui| ..)` の中に作ります。中の部品は薄く描かれ、ポインターもキーも受けず、Tab でも止まりません。読み上げソフトには「使用不可」と伝わります。ボタン 1 つだけなら `.enabled(条件)` を付けます。
+
+```rust
+# let (mut notify, mut sound, mut volume) = (false, true, 5);
+# let name = String::new();
+# kargui::test::example(|ui| {
+ui.checkbox(&mut notify, "通知する");
+ui.enabled(notify, |ui| {
+    ui.checkbox(&mut sound, "音を鳴らす");
+    ui.slider(&mut volume, 0..=10).label("音量");
+});
+if ui.button("送る").enabled(!name.is_empty()).clicked() {
+    // 送る
+}
+# });
+```
+
+焦点のある部品が押せなくなると、焦点は外れます。`ui.enabled` は行や列を作らないので、中の部品は今の行（列）にそのまま並びます。

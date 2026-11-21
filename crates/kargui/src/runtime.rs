@@ -114,6 +114,6 @@ impl Runtime {
 
     /// 前のフレームで (x, y) にあった押せる部品（ポインターが乗っている部品）
     pub fn hover_at(&self, x: f32, y: f32) -> Option<Id> {
-        self.cx.hit(x, y).map(|h| h.id)
+        self.cx.hit(x, y).filter(|h| h.enabled).map(|h| h.id)
     }
 }

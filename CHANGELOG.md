@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Disabled widgets: `Ui::enabled(bool, |ui| ..)` disables every widget created inside, and
+  `Button::enabled(bool)` disables one button. Disabled widgets are drawn dimmed, ignore the
+  pointer, the keyboard and screen-reader actions, are skipped by Tab, lose the focus, and are
+  announced as unavailable. `Harness::enabled(name)` tells whether a widget can be used.
+
 ## 0.1.0 (2026-11-21)
 
 The first version: the framework, four example apps, the guide (Japanese and English) and the checks

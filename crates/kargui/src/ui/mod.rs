@@ -158,6 +158,8 @@ pub(crate) struct NodeInfo {
     pub kind: Kind,
     /// 読み上げの名前（無ければ部品の文字を使う）
     pub label: Option<String>,
+    /// 押せない（Ui::enabled の範囲の中か、Button::enabled(false)）
+    pub disabled: bool,
 }
 
 /// ビュー 1 回分の画面の木。info と layout は同じ番号で並ぶ。親は子より前に入る
@@ -179,7 +181,7 @@ impl Tree {
         layout.align = Align::Stretch;
         layout.pad = ((16.0 * scale).round(), (12.0 * scale).round());
         layout.gap = (10.0 * scale).round();
-        Self { info: vec![NodeInfo { id: root, kind: Kind::Root, label: None }], layout: vec![layout], occurrences: HashMap::new() }
+        Self { info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false }], layout: vec![layout], occurrences: HashMap::new() }
     }
 }
 
@@ -205,11 +207,13 @@ pub struct Ui<'a> {
     pub(crate) tree: &'a mut Tree,
     pub(crate) parent: usize,
     pub(crate) salt: u64,
+    /// この Ui で作る部品は押せない（Ui::enabled）
+    pub(crate) disabled: bool,
 }
 
 impl<'a> Ui<'a> {
     pub(crate) fn new(cx: &'a mut Context, tree: &'a mut Tree) -> Self {
-        Self { cx, tree, parent: 0, salt: 0 }
+        Self { cx, tree, parent: 0, salt: 0, disabled: false }
     }
 
     fn px(&self, logical: f32) -> f32 {
@@ -230,14 +234,14 @@ impl<'a> Ui<'a> {
 
     fn push(&mut self, id: Id, kind: Kind, dir: Dir) -> (usize, Id) {
         let idx = self.tree.info.len();
-        self.tree.info.push(NodeInfo { id, kind, label: None });
+        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled });
         self.tree.layout.push(LayoutNode::new(dir));
         self.tree.layout[self.parent].children.push(idx);
         (idx, id)
     }
 
     fn child(&mut self, parent: usize) -> Ui<'_> {
-        Ui { cx: &mut *self.cx, tree: &mut *self.tree, parent, salt: 0 }
+        Ui { cx: &mut *self.cx, tree: &mut *self.tree, parent, salt: 0, disabled: self.disabled }
     }
 
     fn parent_dir(&self) -> Dir {
@@ -377,7 +381,31 @@ impl<'a> Ui<'a> {
     pub fn keyed<K: Hash>(&mut self, key: K, f: impl FnOnce(&mut Ui)) {
         let salt = hash_of((self.salt, key));
         let parent = self.parent;
-        f(&mut Ui { cx: &mut *self.cx, tree: &mut *self.tree, parent, salt });
+        let disabled = self.disabled;
+        f(&mut Ui { cx: &mut *self.cx, tree: &mut *self.tree, parent, salt, disabled });
+    }
+
+    /// Makes the widgets created in `f` disabled when `enabled` is false: they are drawn dimmed,
+    /// ignore the pointer and the keyboard, are skipped by Tab, and screen readers announce them
+    /// as unavailable. A widget that had the focus loses it. Nesting keeps the outer setting, so
+    /// `enabled(true, ..)` inside a disabled part stays disabled. The widgets are placed in the
+    /// current row or column, as if `f`'s code were written here.
+    ///
+    /// ```
+    /// # struct App { notify: bool, sound: bool, volume: u32 }
+    /// # let mut app = App { notify: false, sound: true, volume: 5 };
+    /// # kargui::test::example(|ui| {
+    /// ui.checkbox(&mut app.notify, "Notifications");
+    /// ui.enabled(app.notify, |ui| {
+    ///     ui.checkbox(&mut app.sound, "Play a sound");
+    ///     ui.slider(&mut app.volume, 0..=10).label("Volume");
+    /// });
+    /// # });
+    /// ```
+    pub fn enabled(&mut self, enabled: bool, f: impl FnOnce(&mut Ui)) {
+        let (parent, salt) = (self.parent, self.salt);
+        let disabled = self.disabled || !enabled;
+        f(&mut Ui { cx: &mut *self.cx, tree: &mut *self.tree, parent, salt, disabled });
     }
 
     /// Empty space that takes the rest of the row (or column), pushing the following widgets to the end.
@@ -465,7 +493,7 @@ impl<'a> Ui<'a> {
     #[track_caller]
     pub fn button(&mut self, text: impl Into<String>) -> Button<'_> {
         let (idx, id) = self.add(Kind::Button { text: text.into(), primary: false, small: false }, Dir::Leaf);
-        let clicked = self.cx.clicked == Some(id);
+        let clicked = !self.disabled && self.cx.clicked == Some(id);
         Button { h: self.handle(idx, id), clicked }
     }
 
@@ -482,7 +510,7 @@ impl<'a> Ui<'a> {
     #[track_caller]
     pub fn checkbox(&mut self, checked: &mut bool, text: impl Into<String>) -> Toggled<'_> {
         let (idx, id) = self.add(Kind::Checkbox { checked: *checked, text: text.into(), strike: false }, Dir::Leaf);
-        let changed = self.cx.clicked == Some(id);
+        let changed = !self.disabled && self.cx.clicked == Some(id);
         if changed {
             *checked = !*checked;
             if let Kind::Checkbox { checked: c, .. } = &mut self.tree.info[idx].kind {
@@ -505,7 +533,7 @@ impl<'a> Ui<'a> {
     #[track_caller]
     pub fn toggle(&mut self, on: &mut bool, text: impl Into<String>) -> Toggled<'_> {
         let (idx, id) = self.add(Kind::Toggle { on: *on, text: text.into() }, Dir::Leaf);
-        let changed = self.cx.clicked == Some(id);
+        let changed = !self.disabled && self.cx.clicked == Some(id);
         if changed {
             *on = !*on;
             if let Kind::Toggle { on: o, .. } = &mut self.tree.info[idx].kind {
@@ -532,7 +560,7 @@ impl<'a> Ui<'a> {
     pub fn dark_mode_switch(&mut self, text: impl Into<String>) -> Toggled<'_> {
         let dark = self.cx.dark;
         let (idx, id) = self.add(Kind::Toggle { on: dark, text: text.into() }, Dir::Leaf);
-        let changed = self.cx.clicked == Some(id);
+        let changed = !self.disabled && self.cx.clicked == Some(id);
         if changed {
             self.cx.set_dark(!dark);
             if let Kind::Toggle { on, .. } = &mut self.tree.info[idx].kind {
@@ -563,7 +591,7 @@ impl<'a> Ui<'a> {
                 ui.salt = hash_of(k);
                 let kind = Kind::Segment { text: text.to_string(), selected: *v == *value };
                 let (_, id) = ui.add(kind, Dir::Leaf);
-                if ui.cx.clicked == Some(id) && *v != *value {
+                if !ui.disabled && ui.cx.clicked == Some(id) && *v != *value {
                     *value = *v;
                     changed = true;
                 }
@@ -612,6 +640,9 @@ impl<'a> Ui<'a> {
 
     /// 焦点のある入力欄に、この回の入力を当てる。(変わったか, 送信したか)
     fn edit(&mut self, id: Id, s: &mut String) -> (bool, bool) {
+        if self.disabled {
+            return (false, false);
+        }
         let before = s.clone();
         let mut submitted = false;
         let style = crate::text::TextStyle { size: self.px(TextKind::Body.size()), bold: false };
@@ -722,7 +753,7 @@ impl<'a> Ui<'a> {
         let mut v = old;
         let (idx, id) = self.add(Kind::Slider { value: v, min, max, step }, Dir::Leaf);
         // ポインター: 押している間と、押して離した時は、その位置の値にする（場所は前のフレームの配置）
-        if self.cx.pressed == Some(id) || self.cx.released == Some(id) {
+        if !self.disabled && (self.cx.pressed == Some(id) || self.cx.released == Some(id)) {
             let rect = self.cx.prev.hits.iter().find(|h| h.id == id).map(|h| h.rect);
             if let (Some((x, _)), Some(r)) = (self.cx.pointer, rect) {
                 let (tx, tw) = draw::slider_track(r, self.cx.scale);
@@ -731,7 +762,7 @@ impl<'a> Ui<'a> {
             }
         }
         // キー: 焦点がある時だけ
-        if self.cx.focus == Some(id) {
+        if !self.disabled && self.cx.focus == Some(id) {
             for e in std::mem::take(&mut self.cx.keys) {
                 if let Event::Key { key, .. } = e {
                     v = match key {
@@ -1361,6 +1392,25 @@ impl Button<'_> {
     pub fn clicked(&self) -> bool {
         self.clicked
     }
+    /// Disables the button when `enabled` is false, as [`Ui::enabled`] does for a group: drawn
+    /// dimmed, not clickable, skipped by Tab, and announced as unavailable. Call it before
+    /// [`Button::clicked`], which then returns false.
+    ///
+    /// ```
+    /// # let mut selected: Option<usize> = None;
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Delete").enabled(selected.is_some()).clicked() {
+    ///     // delete the selected item
+    /// }
+    /// # });
+    /// ```
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        if !enabled {
+            self.clicked = false;
+            self.h.tree.info[self.h.idx].disabled = true;
+        }
+        self
+    }
 }
 
 /// A check box or switch. See [`Ui::checkbox`] and [`Ui::toggle`].
@@ -1717,13 +1767,14 @@ impl<'u> List<'u, '_> {
         let scale = cx.scale;
         // 選べる一覧: 押した行を選び、焦点がある時は矢印で選ぶ行を動かして、見えるようにスクロールする
         let mut sel = selection.as_deref().copied().flatten().filter(|&s| s < count);
+        let disabled = ui.disabled;
         if let Some(out) = selection.as_deref_mut() {
-            if let Some(&(list, i)) = cx.clicked.and_then(|c| cx.prev.items.get(&c)) {
+            if let Some(&(list, i)) = cx.clicked.filter(|_| !disabled).and_then(|c| cx.prev.items.get(&c)) {
                 if list == id && i < count {
                     sel = Some(i);
                 }
             }
-            let focused = cx.focus.and_then(|f| cx.prev.items.get(&f)).filter(|(l, _)| *l == id).map(|&(_, i)| i);
+            let focused = cx.focus.filter(|_| !disabled).and_then(|f| cx.prev.items.get(&f)).filter(|(l, _)| *l == id).map(|&(_, i)| i);
             if let (Some(at), true) = (focused, count > 0) {
                 let start = sel.unwrap_or(at.min(count - 1));
                 let mut next = start;

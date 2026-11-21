@@ -344,6 +344,32 @@ impl<A: App> Harness<A> {
             .collect()
     }
 
+    /// Whether the widget with this name can be used (`Some(false)` inside [`Ui::enabled`]`(false, ..)`
+    /// or after [`Button::enabled`](crate::Button::enabled)`(false)`), or `None` if there is no such widget.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Form {
+    ///     name: String,
+    /// }
+    ///
+    /// impl App for Form {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.text_input(&mut self.name).hint("Name");
+    ///         ui.button("Send").enabled(!self.name.is_empty());
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Form { name: String::new() });
+    /// assert_eq!(h.enabled("Send"), Some(false));
+    /// h.click("Name").type_text("Ada");
+    /// assert_eq!(h.enabled("Send"), Some(true));
+    /// ```
+    pub fn enabled(&self, name: &str) -> Option<bool> {
+        (0..self.rt.tree.info.len()).find(|&i| a11y::name_of(&self.rt.tree, i).as_deref() == Some(name)).map(|i| !self.rt.tree.info[i].disabled)
+    }
+
     fn center(&self, name: &str) -> (f32, f32) {
         let r = self.find(name).unwrap_or_else(|| panic!("no widget named {name:?}; on screen: {:?}", self.names()));
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
@@ -1697,6 +1723,155 @@ mod tests {
         }
         let h = Harness::with_size(Fixed, 400.0, 300.0, 1.5);
         assert_eq!(h.find("Wide").unwrap().w, 300.0);
+    }
+
+    /// 押せない部品の見本: Ui::enabled の範囲の 6 つの部品と、範囲の外のボタン、Button::enabled を付けたボタン
+    #[derive(Default)]
+    struct Locked {
+        locked: bool,
+        clicks: u32,
+        done: bool,
+        on: bool,
+        level: u32,
+        name: String,
+        pick: u8,
+        others: u32,
+        can_save: bool,
+        saves: u32,
+    }
+
+    impl App for Locked {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.enabled(!self.locked, |ui| {
+                if ui.button("Go").clicked() {
+                    self.clicks += 1;
+                }
+                ui.checkbox(&mut self.done, "Done");
+                ui.toggle(&mut self.on, "On");
+                ui.slider(&mut self.level, 0..=10).label("Level");
+                ui.text_input(&mut self.name).hint("Name");
+                ui.segmented(&mut self.pick, &[(0, "A"), (1, "B")]);
+            });
+            if ui.button("Other").clicked() {
+                self.others += 1;
+            }
+            if ui.button("Save").enabled(self.can_save).clicked() {
+                self.saves += 1;
+            }
+        }
+    }
+
+    use crate::input::A11yAction;
+
+    fn focused_name<A: App>(h: &Harness<A>) -> Option<String> {
+        let f = h.rt.cx.focus?;
+        (0..h.rt.tree.info.len()).find(|&i| h.rt.tree.info[i].id == f).and_then(|i| a11y::name_of(&h.rt.tree, i))
+    }
+
+    fn id_named<A: App>(h: &Harness<A>, name: &str) -> crate::ui::Id {
+        let i = (0..h.rt.tree.info.len()).find(|&i| a11y::name_of(&h.rt.tree, i).as_deref() == Some(name)).unwrap();
+        h.rt.tree.info[i].id
+    }
+
+    #[test]
+    fn disabled_widgets_ignore_pointer_and_keys() {
+        let mut h = Harness::new(Locked { locked: true, ..Default::default() });
+        h.click("Go").click("Done").click("On").click("Level").click("B");
+        h.click("Name").type_text("x");
+        let a = h.app();
+        assert_eq!((a.clicks, a.done, a.on, a.level, a.pick, a.name.as_str()), (0, false, false, 0, 0, ""));
+        // Tab は押せる部品（Other）だけに止まる。Save も押せない
+        for _ in 0..3 {
+            h.press(Key::Tab);
+            assert_eq!(focused_name(&h).as_deref(), Some("Other"));
+        }
+        h.press(Key::Space);
+        assert_eq!(h.app().others, 1);
+        assert_eq!(h.enabled("Go"), Some(false));
+        assert_eq!(h.enabled("Name"), Some(false));
+        assert_eq!(h.enabled("Other"), Some(true));
+        assert_eq!(h.enabled("Save"), Some(false));
+        assert_eq!(h.enabled("Missing"), None);
+    }
+
+    #[test]
+    fn enabling_again_restores_input() {
+        let mut h = Harness::new(Locked { locked: true, ..Default::default() });
+        h.app_mut().locked = false;
+        h.app_mut().can_save = true;
+        h.frame();
+        h.click("Go").click("Done").click("Save");
+        let a = h.app();
+        assert_eq!((a.clicks, a.done, a.saves), (1, true, 1));
+        assert_eq!(h.enabled("Go"), Some(true));
+    }
+
+    #[test]
+    fn focused_widget_that_becomes_disabled_loses_focus() {
+        let mut h = Harness::new(Locked { can_save: true, ..Default::default() });
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("Go"));
+        h.app_mut().locked = true;
+        h.frame();
+        assert_eq!(focused_name(&h), None);
+        h.press(Key::Enter);
+        assert_eq!(h.app().clicks, 0);
+        // Button::enabled でも同じ
+        h.click("Save");
+        assert_eq!(h.app().saves, 1);
+        h.app_mut().can_save = false;
+        h.frame();
+        assert_eq!(focused_name(&h), None);
+        h.press(Key::Space);
+        assert_eq!(h.app().saves, 1);
+    }
+
+    #[test]
+    fn screen_readers_see_disabled_widgets_and_cannot_use_them() {
+        let mut h = Harness::new(Locked { locked: true, ..Default::default() });
+        let built = a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new());
+        let node = |name: &str| {
+            let id = id_named(&h, name);
+            built.update.nodes.iter().find(|(n, _)| n.0 == id.0).map(|(_, n)| n.clone()).unwrap()
+        };
+        for name in ["Go", "Done", "On", "Level", "Name", "B"] {
+            let n = node(name);
+            assert!(n.is_disabled(), "{name} は押せないと伝える");
+            assert!(!n.supports_action(accesskit::Action::Click) && !n.supports_action(accesskit::Action::Focus), "{name} は操作を出さない");
+        }
+        assert!(!node("Other").is_disabled());
+        // 古い木を見た読み上げソフトから届いた操作も効かない
+        for (name, action) in [("Go", A11yAction::Click), ("Done", A11yAction::Click), ("Level", A11yAction::Increment), ("Name", A11yAction::Focus)] {
+            let target = id_named(&h, name);
+            h.send(vec![Event::A11y { target, action }]);
+        }
+        let a = h.app();
+        assert_eq!((a.clicks, a.done, a.level), (0, false, 0));
+        assert_eq!(focused_name(&h), None);
+    }
+
+    #[test]
+    fn disabled_widgets_are_drawn_dimmed() {
+        // 文字の一番濃い画素の明るさ（明るい表示なので、押せない方が薄い）
+        fn darkest(h: &mut Harness<Locked>, name: &str) -> u32 {
+            let r = h.find(name).unwrap();
+            let image = h.render();
+            let mut min = u32::MAX;
+            for y in r.y as u32..(r.y + r.h) as u32 {
+                for x in r.x as u32..(r.x + r.w) as u32 {
+                    let c = image.rgb(x, y);
+                    min = min.min(((c >> 16) & 0xff) + ((c >> 8) & 0xff) + (c & 0xff));
+                }
+            }
+            min
+        }
+        let mut on = Harness::new(Locked::default());
+        let mut off = Harness::new(Locked { locked: true, ..Default::default() });
+        for name in ["Go", "Done", "Name"] {
+            let (a, b) = (darkest(&mut on, name), darkest(&mut off, name));
+            // 入力欄は空なので、もともと薄い案内の文字を比べる（差が小さめ）
+            assert!(b >= a + 120, "{name}: 押せる {a}、押せない {b}");
+        }
     }
 }
 

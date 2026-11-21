@@ -180,6 +180,11 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 None => {}
             }
         }
+        // 押せない部品: 読み上げソフトに「使用不可」と伝え、操作を出さない
+        if info.disabled && info.kind.interactive() {
+            node.set_disabled();
+            node.clear_actions();
+        }
         if !matches!(info.kind, Kind::Root) {
             node.set_bounds(ak(l.rect));
         }

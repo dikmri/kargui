@@ -118,6 +118,22 @@ for (id, name) in [(7, "Milk"), (3, "Bread")] {
 }
 ```
 
+### `pub fn enabled(&mut self, enabled: bool, f: impl FnOnce(&mut Ui))`
+
+Makes the widgets created in `f` disabled when `enabled` is false: they are drawn dimmed,
+ignore the pointer and the keyboard, are skipped by Tab, and screen readers announce them
+as unavailable. A widget that had the focus loses it. Nesting keeps the outer setting, so
+`enabled(true, ..)` inside a disabled part stays disabled. The widgets are placed in the
+current row or column, as if `f`'s code were written here.
+
+```
+ui.checkbox(&mut app.notify, "Notifications");
+ui.enabled(app.notify, |ui| {
+    ui.checkbox(&mut app.sound, "Play a sound");
+    ui.slider(&mut app.volume, 0..=10).label("Volume");
+});
+```
+
 ### `pub fn fill(&mut self)`
 
 Empty space that takes the rest of the row (or column), pushing the following widgets to the end.
@@ -588,6 +604,18 @@ Whether the button was clicked.
 ```
 if ui.button("Add one").clicked() {
     count += 1;
+}
+```
+
+### `pub fn enabled(mut self, enabled: bool) -> Self`
+
+Disables the button when `enabled` is false, as [`Ui::enabled`] does for a group: drawn
+dimmed, not clickable, skipped by Tab, and announced as unavailable. Call it before
+[`Button::clicked`], which then returns false.
+
+```
+if ui.button("Delete").enabled(selected.is_some()).clicked() {
+    // delete the selected item
 }
 ```
 

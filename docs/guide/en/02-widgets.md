@@ -1,5 +1,5 @@
-<!-- source: ja/02-widgets.md fnv=9f28c2df951e37b7 -->
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Toggled::changed Toggled::strike Slider::changed sig=353c5bb94bedf66a -->
+<!-- source: ja/02-widgets.md fnv=db57685494c09b95 -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Toggled::changed Toggled::strike Slider::changed sig=88f7d390ba1c570d -->
 # Widgets
 
 Widgets are created with methods on `ui`. Widgets that change a value take the state with `&mut`; ask the return value what happened.
@@ -92,3 +92,24 @@ if ui.slider(&mut volume, 0.0..=1.0).label("Volume").changed() {
 ```
 
 Integers move in steps of 1; decimals move freely with the pointer and in hundredths of the range with the keyboard. A slider has no text of its own, so give it a screen-reader name with `.label(..)`.
+
+## Disabling widgets
+
+Create widgets that cannot be used until a condition holds inside `ui.enabled(condition, |ui| ..)`. They are drawn dimmed, ignore the pointer and the keyboard, and are skipped by Tab. Screen readers announce them as unavailable. For a single button, add `.enabled(condition)`.
+
+```rust
+# let (mut notify, mut sound, mut volume) = (false, true, 5);
+# let name = String::new();
+# kargui::test::example(|ui| {
+ui.checkbox(&mut notify, "Notify me");
+ui.enabled(notify, |ui| {
+    ui.checkbox(&mut sound, "Play a sound");
+    ui.slider(&mut volume, 0..=10).label("Volume");
+});
+if ui.button("Send").enabled(!name.is_empty()).clicked() {
+    // send
+}
+# });
+```
+
+A widget that has the focus loses it when it becomes disabled. `ui.enabled` does not create a row or column, so the widgets inside are placed in the current row (or column) as they are.

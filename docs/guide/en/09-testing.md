@@ -1,5 +1,5 @@
-<!-- source: ja/09-testing.md fnv=f2083561d9048ae4 -->
-<!-- covers: test::Harness Harness::new Harness::with_size Harness::click Harness::type_text Harness::press Harness::ime_compose Harness::ime_commit Harness::find Harness::find_all Harness::names Harness::render Harness::app Harness::app_mut Harness::frame sig=cd306a0d6f61ebbd -->
+<!-- source: ja/09-testing.md fnv=4064b0a9cd3aeeb8 -->
+<!-- covers: test::Harness Harness::new Harness::with_size Harness::click Harness::type_text Harness::press Harness::ime_compose Harness::ime_commit Harness::find Harness::find_all Harness::enabled Harness::names Harness::render Harness::app Harness::app_mut Harness::frame sig=d5e26afc1914ac24 -->
 # Writing tests
 
 `kargui::test::Harness` runs your app without a window. Imitate input, then check the result.
@@ -45,6 +45,7 @@ assert!(h.names().contains(&"Milk".to_string()));
 | Input method | `ime_compose("composing")`, `ime_commit("committed")` |
 | Wheel | `scroll("name", 96.0)` |
 | Positions | `find("name")`; when several widgets share a name, `find_all("name")` |
+| Can it be used | `enabled("name")` returns `Some(true)` or `Some(false)` (`None` if there is no such widget) |
 | Image | `render()` returns the screen drawn by the CPU renderer; save it with `save_png(..)` |
 | State | `app()`, `app_mut()`. After changing the state directly, redraw with `frame()` |
 

@@ -3,7 +3,7 @@
 //! クリックがどの部品に当たったかは、前のフレームの配置（ユーザーが見ていた画面）で決める。
 //! 入力はビューの 1 回目（入力を渡す回）で部品に届き、2 回目（描く回）は入力なしで描く。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::geom::Rect;
 use crate::input::{A11yAction, Event, Key, Mods};
@@ -44,6 +44,8 @@ pub(crate) struct Hit {
     pub text_input: bool,
     /// 焦点がある時に矢印などのキーを受ける（スライダー）
     pub arrows: bool,
+    /// 押せる。押せない部品も当たりには入れ、下の部品へクリックが抜けないようにする
+    pub enabled: bool,
 }
 
 /// 点 (x, y) から四角までの距離の 2 乗（中なら 0）
@@ -89,6 +91,8 @@ pub(crate) struct Prev {
     pub rows: HashMap<Id, (Id, Rect)>,
     /// 選べる一覧の行 → (一覧の id, 何行目)
     pub items: HashMap<Id, (Id, usize)>,
+    /// 押せない部品（読み上げソフトから届いた操作を捨てるため）
+    pub disabled: HashSet<Id>,
 }
 
 pub(crate) struct Context {
@@ -275,7 +279,8 @@ impl Context {
                         self.press_scrollbar(&l, y);
                         continue;
                     }
-                    let hit = self.hit(x, y).cloned();
+                    // 押せない部品の上では、何も無い所を押したのと同じ（下の部品にも届かない）
+                    let hit = self.hit(x, y).cloned().filter(|h| h.enabled);
                     self.pressed = hit.as_ref().map(|h| h.id);
                     self.pointer = Some((x, y));
                     self.focus_visible = false;
@@ -291,7 +296,7 @@ impl Context {
                         self.pressed = None;
                         continue;
                     }
-                    let hit = self.hit(x, y).map(|h| h.id);
+                    let hit = self.hit(x, y).filter(|h| h.enabled).map(|h| h.id);
                     if hit.is_some() && hit == self.pressed {
                         self.clicked = hit;
                     }
@@ -326,6 +331,10 @@ impl Context {
                     if self.focus.is_some_and(|f| !self.is_text_input(f)) =>
                 {
                     self.clicked = self.focus;
+                }
+                // 古い木を見た読み上げソフトから、押せない部品への操作が届くことがある
+                Event::A11y { target, .. } if self.prev.disabled.contains(&target) => {
+                    log::event("a11y.disabled", &format!("target={:x}", target.0), "ignored");
                 }
                 Event::A11y { target, action: A11yAction::Click } => {
                     self.commit_preedit("a11y");

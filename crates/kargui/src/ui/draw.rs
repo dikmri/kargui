@@ -191,6 +191,11 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     p.d.finish();
     let prev = std::mem::take(&mut p.prev);
     cx.prev = prev;
+    // 焦点のある部品が押せなくなったら、焦点を外す（Enter や Space が効かないように）
+    if let Some(f) = cx.focus.filter(|f| cx.prev.disabled.contains(f)) {
+        cx.focus = None;
+        crate::log::event("focus.lost", &format!("target={:x}", f.0), "disabled");
+    }
 }
 
 fn intersect(a: Rect, b: Rect) -> Option<Rect> {
@@ -213,6 +218,12 @@ impl Painter<'_> {
     fn hit(&mut self, tree: &Tree, i: usize, focusable: bool, text_input: bool) {
         let r = tree.layout[i].rect;
         let id = tree.info[i].id;
+        // 押せない部品は、焦点も文字の入力も受けない
+        let enabled = !tree.info[i].disabled;
+        let (focusable, text_input) = (focusable && enabled, text_input && enabled);
+        if !enabled {
+            self.prev.disabled.insert(id);
+        }
         if focusable {
             if let Some(row) = self.row {
                 self.prev.rows.insert(id, row);
@@ -231,8 +242,8 @@ impl Painter<'_> {
         let small = matches!(tree.info[i].kind, Kind::Checkbox { .. } | Kind::Toggle { .. });
         let (sx, sy) = if small { (self.px(sz::SLOP_X), self.px(sz::SLOP_Y)) } else { (0.0, 0.0) };
         let slop = intersect(Rect::new(r.x - sx, r.y - sy, r.w + 2.0 * sx, r.h + 2.0 * sy), self.clip).unwrap_or(r);
-        let arrows = matches!(tree.info[i].kind, Kind::Slider { .. });
-        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows });
+        let arrows = enabled && matches!(tree.info[i].kind, Kind::Slider { .. });
+        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, enabled });
         if focusable {
             self.prev.focus_order.push(id);
         }
@@ -261,7 +272,13 @@ impl Painter<'_> {
             }
             Kind::Label { text, size, bold, weak, strike, wrap, right } => {
                 let st = style(self.cx, *size, *bold);
-                let color = if *weak { self.cx.theme.weak_text } else { self.cx.theme.text };
+                let color = if tree.info[i].disabled {
+                    self.cx.theme.done_text
+                } else if *weak {
+                    self.cx.theme.weak_text
+                } else {
+                    self.cx.theme.text
+                };
                 let laid = self.cx.text.layout(text, st, if *wrap { Some(r.w) } else { None });
                 let y = if *wrap { r.y } else { (r.y + (r.h - laid.height) / 2.0).round() };
                 let x = if *right && !*wrap { (r.right() - laid.width).round() } else { r.x };
@@ -273,9 +290,10 @@ impl Painter<'_> {
             }
             Kind::Item { selected, tab_stop } => {
                 let t = self.cx.theme.clone();
+                let enabled = !tree.info[i].disabled;
                 if *selected {
                     self.d.fill(r, t.selected, 0.0);
-                } else if self.cx.hover == Some(id) {
+                } else if enabled && self.cx.hover == Some(id) {
                     self.d.fill(r, t.button_hover, 0.0);
                 }
                 if self.cx.focus_visible && self.cx.focus == Some(id) {
@@ -288,9 +306,12 @@ impl Painter<'_> {
                     self.prev.rows.insert(id, (list, row));
                 }
                 if let Some(v) = intersect(r, self.clip) {
-                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: true, text_input: false, arrows: true });
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, enabled });
                 }
-                if *tab_stop {
+                if !enabled {
+                    self.prev.disabled.insert(id);
+                }
+                if *tab_stop && enabled {
                     self.prev.focus_order.push(id);
                 }
                 for &c in &tree.layout[i].children {
@@ -301,7 +322,10 @@ impl Painter<'_> {
                 let radius = self.px(sz::RADIUS);
                 self.focus_ring(tree, i, radius);
                 let t = self.cx.theme.clone();
-                let state_bg = if self.cx.pressed == Some(id) {
+                let off = tree.info[i].disabled;
+                let state_bg = if off {
+                    t.button
+                } else if self.cx.pressed == Some(id) {
                     t.button_pressed
                 } else if self.cx.hover == Some(id) {
                     t.button_hover
@@ -309,8 +333,9 @@ impl Painter<'_> {
                     t.button
                 };
                 if *primary {
-                    let mut bg = t.accent;
-                    if self.cx.pressed == Some(id) || self.cx.hover == Some(id) {
+                    // 押せない主のボタンは、アクセントの色の代わりに枠の色で塗る
+                    let mut bg = if off { t.border } else { t.accent };
+                    if !off && (self.cx.pressed == Some(id) || self.cx.hover == Some(id)) {
                         bg = [bg[0] * 0.88, bg[1] * 0.88, bg[2] * 0.88, 1.0];
                     }
                     self.d.fill(r, bg, radius);
@@ -319,7 +344,13 @@ impl Painter<'_> {
                 }
                 let st = style(self.cx, if *small { TextKind::Small } else { TextKind::Body }, *primary);
                 let laid = self.cx.text.layout(text, st, None);
-                let color = if *primary { t.on_accent } else { t.text };
+                let color = if *primary {
+                    t.on_accent
+                } else if off {
+                    t.done_text
+                } else {
+                    t.text
+                };
                 put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
                 self.hit(tree, i, true, false);
             }
@@ -333,18 +364,19 @@ impl Painter<'_> {
                     self.d.fill(bx.inset(-2.0 * w), t.accent, radius + 2.0 * w);
                     self.d.fill(bx.inset(-w), t.background, radius + w);
                 }
+                let off = tree.info[i].disabled;
                 if *checked {
-                    self.d.fill(bx, t.accent, radius);
+                    self.d.fill(bx, if off { t.border } else { t.accent }, radius);
                     let mark = self.cx.text.layout("✓", TextStyle { size: (13.0 * self.cx.scale).round(), bold: true }, None);
                     put(self.d, &mark, (bx.x + (bx.w - mark.width) / 2.0).round(), (bx.y + (bx.h - mark.height) / 2.0).round(), t.on_accent);
                 } else {
-                    let border = if self.cx.hover == Some(id) { t.accent } else { t.border };
+                    let border = if !off && self.cx.hover == Some(id) { t.accent } else { t.border };
                     self.d.boxed(bx, t.field, border, line, radius);
                 }
                 if !text.is_empty() {
                     let st = style(self.cx, TextKind::Body, false);
                     let x = r.x + b + self.px(sz::BOX_GAP);
-                    let color = if *strike { t.done_text } else { t.text };
+                    let color = if *strike || off { t.done_text } else { t.text };
                     let laid = text_mid(self.d, self.cx, text, st, x, r, color);
                     if *strike {
                         let y = (r.y + (r.h - laid.height) / 2.0 + laid.height * 0.55).round();
@@ -362,13 +394,19 @@ impl Painter<'_> {
                     self.d.fill(track.inset(-2.0 * w), t.accent, th);
                     self.d.fill(track.inset(-w), t.background, th);
                 }
-                self.d.fill(track, if *on { t.accent } else { t.border }, th / 2.0);
+                let off = tree.info[i].disabled;
+                let track_color = match (*on, off) {
+                    (true, false) => t.accent,
+                    (true, true) | (false, false) => t.border,
+                    (false, true) => t.separator,
+                };
+                self.d.fill(track, track_color, th / 2.0);
                 let k = th - self.px(6.0);
                 let kx = if *on { track.right() - self.px(3.0) - k } else { track.x + self.px(3.0) };
                 self.d.fill(Rect::new(kx, track.y + self.px(3.0), k, k), if *on { t.on_accent } else { t.field }, k / 2.0);
                 if !text.is_empty() {
                     let st = style(self.cx, TextKind::Body, false);
-                    text_mid(self.d, self.cx, text, st, r.x + tw + self.px(sz::BOX_GAP), r, t.text);
+                    text_mid(self.d, self.cx, text, st, r.x + tw + self.px(sz::BOX_GAP), r, if off { t.done_text } else { t.text });
                 }
                 self.hit(tree, i, true, false);
             }
@@ -376,7 +414,9 @@ impl Painter<'_> {
                 let t = self.cx.theme.clone();
                 let radius = self.px(sz::RADIUS);
                 self.focus_ring(tree, i, radius);
-                let (bg, border, color) = if *selected {
+                let (bg, border, color) = if tree.info[i].disabled {
+                    (if *selected { t.separator } else { t.button }, t.border, t.done_text)
+                } else if *selected {
                     (t.selected, t.accent, t.accent)
                 } else if self.cx.hover == Some(id) {
                     (t.button_hover, t.border, t.text)
@@ -399,19 +439,21 @@ impl Painter<'_> {
                 let ty = (r.y + (r.h - th) / 2.0).round();
                 let f = if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) as f32 } else { 0.0 };
                 let k = Rect::new((tx + f * tw - knob / 2.0).round(), (r.y + (r.h - knob) / 2.0).round(), knob, knob);
-                self.d.fill(Rect::new(tx, ty, tw, th), t.border, th / 2.0);
-                self.d.fill(Rect::new(tx, ty, (f * tw).round(), th), t.accent, th / 2.0);
+                let off = tree.info[i].disabled;
+                let (rail, filled) = if off { (t.separator, t.border) } else { (t.border, t.accent) };
+                self.d.fill(Rect::new(tx, ty, tw, th), rail, th / 2.0);
+                self.d.fill(Rect::new(tx, ty, (f * tw).round(), th), filled, th / 2.0);
                 if self.cx.focus_visible && self.cx.focus == Some(id) {
                     let w = self.px(2.0);
                     self.d.fill(k.inset(-2.0 * w), t.accent, knob / 2.0 + 2.0 * w);
                     self.d.fill(k.inset(-w), t.background, knob / 2.0 + w);
                 }
                 // つまみ: 白い丸の中にアクセントの色の丸。押している・乗っている時は中の丸を大きくする
-                let active = self.cx.pressed == Some(id) || self.cx.hover == Some(id);
+                let active = !off && (self.cx.pressed == Some(id) || self.cx.hover == Some(id));
                 self.d.boxed(k, t.field, t.border, line, knob / 2.0);
                 let inner = (knob * if active { 0.6 } else { 0.5 }).round();
                 let c = Rect::new(k.x + ((knob - inner) / 2.0).round(), k.y + ((knob - inner) / 2.0).round(), inner, inner);
-                self.d.fill(c, t.accent, inner / 2.0);
+                self.d.fill(c, filled, inner / 2.0);
                 self.hit(tree, i, true, false);
             }
         }
@@ -420,7 +462,9 @@ impl Painter<'_> {
     /// 見えない所にある部品は描かずに、Tab で移れるように覚えるだけにする
     fn hidden(&mut self, tree: &Tree, i: usize) {
         let id = tree.info[i].id;
-        if tree.info[i].kind.interactive() {
+        if tree.info[i].disabled {
+            self.prev.disabled.insert(id);
+        } else if tree.info[i].kind.interactive() {
             if let Some(s) = self.scroller {
                 self.prev.rows.insert(id, (s, tree.layout[i].rect));
             }
@@ -490,8 +534,9 @@ impl Painter<'_> {
         let t = self.cx.theme.clone();
         let line = self.line();
         let focused = self.cx.focus == Some(id);
+        let off = tree.info[i].disabled;
         let radius = self.px(sz::RADIUS);
-        self.d.boxed(r, t.field, if focused { t.accent } else { t.border }, if focused { 2.0 * line } else { line }, radius);
+        self.d.boxed(r, if off { t.button } else { t.field }, if focused { t.accent } else { t.border }, if focused { 2.0 * line } else { line }, radius);
         let pad = self.px(sz::INPUT_PAD);
         let inner = Rect::new(r.x + pad, r.y, (r.w - 2.0 * pad).max(0.0), r.h);
         let st = style(self.cx, TextKind::Body, false);
@@ -537,9 +582,9 @@ impl Painter<'_> {
         }
         if shown.is_empty() {
             let h = self.cx.text.layout(hint, st, None);
-            put(self.d, &h, x0, ty, t.weak_text);
+            put(self.d, &h, x0, ty, if off { t.done_text } else { t.weak_text });
         } else {
-            put(self.d, &laid, x0, ty, t.text);
+            put(self.d, &laid, x0, ty, if off { t.done_text } else { t.text });
         }
         if !preedit.is_empty() {
             let xa = laid.x_of(start16);
