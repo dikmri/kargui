@@ -664,6 +664,9 @@ impl<'a> Ui<'a> {
 
     /// A list that only creates the rows that are visible, so it stays fast with any number of
     /// rows. All rows have the same height (logical pixels). Finish with [`List::show`].
+    /// Each row is a [`Ui::row`] with 12 logical pixels of padding on the left and right, so a
+    /// header row placed above the list lines up when it has the same padding:
+    /// `ui.row(..).padding(12.0, 0.0)`.
     /// Users scroll it with the mouse wheel, by dragging the scroll bar, or by clicking the bar
     /// above or below the thumb to move one page.
     ///
@@ -1261,13 +1264,17 @@ impl<'u> List<'u, '_> {
             let (ridx, _) = list_ui.push(rid, kind, Dir::Row);
             list_ui.tree.layout[ridx].row_index = i;
             list_ui.tree.layout[ridx].gap = (8.0 * scale).round();
-            list_ui.tree.layout[ridx].pad = ((8.0 * scale).round(), 0.0);
+            // 左右 12: 右端に重なるスクロールの棒（端から 3〜9 px）に、行の中身がかからない
+            list_ui.tree.layout[ridx].pad = ((ROW_PAD * scale).round(), 0.0);
             let mut row_ui = list_ui.child(ridx);
             row(&mut row_ui, i);
         }
         id
     }
 }
+
+/// 一覧の行の左右の余白（論理ピクセル）
+const ROW_PAD: f32 = 12.0;
 
 /// 部品の文字（読み上げの名前の元）
 pub(crate) fn visible_text(kind: &Kind) -> Option<&str> {
