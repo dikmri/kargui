@@ -1,12 +1,16 @@
 # kargui
 
-A light native GUI framework for Rust (Windows 10/11, work in progress). The name comes from the
-Japanese word *karui* (light), Rust and GUI. [日本語の README](README.ja.md) (the original; this is a translation).
+A light native GUI framework for Rust (Windows 10/11; 0.1 is the first release). The name comes from
+the Japanese word *karui* (light), Rust and GUI. [日本語の README](README.ja.md) (the original; this is
+a translation).
 
-kargui started from an experiment that built the same app (a task book) with Tauri, egui and GPUI and
-measured them ([report, in Japanese](https://dikmri.github.io/ai-coding-notes/reports/rust-gui/)). It aims
-to keep their strengths and drop their weaknesses, and it is measured with the same tools and
-conditions, aiming to be 30% better than the best of the three on every axis.
+kargui grew out of an experiment that built the same app (a task book) with Tauri, egui and GPUI and
+measured them ([report, in Japanese](https://dikmri.github.io/ai-coding-notes/reports/rust-gui/)). Each
+of the three does something well: egui is easy to write, GPUI uses little memory, and Tauri draws
+smoothly even on a PC without a GPU. kargui aims to bring those together, and it is measured with the
+same tools and conditions as it grows. How it was built is written up in
+[a second report (in Japanese)](https://dikmri.github.io/ai-coding-notes/reports/kargui/). kargui
+learned a lot from the three frameworks and from their authors and contributors.
 
 ## Features
 
@@ -70,10 +74,16 @@ runs; kargui's own timer reports about 0.58 ms of work per scrolling frame.
 ## Run the examples
 
 ```powershell
-cargo run --release -p taskbook-kargui -- --items 10000
-cargo run --release -p settings-kargui
-cargo run --release -p reader-kargui
-cargo run --release -p table-kargui
+cargo run --release -p taskbook-kargui -- --items 10000   # the task book (same app as the comparison)
+cargo run --release -p settings-kargui                    # a settings screen
+cargo run --release -p reader-kargui                      # a long-text reader
+cargo run --release -p table-kargui                       # a 10,000-row table
+```
+
+Each app writes one line per event to `logs/<app>.log` (time, event, arguments, result).
+
+```text
+2026-11-21T12:17:48.204Z t_ms=1795263468204 app=kargui-table event=ready args="app=table items=10000" result="since_main_ms=34"
 ```
 
 ## Documentation
@@ -83,6 +93,37 @@ cargo run --release -p table-kargui
 - For AI: [docs/llms.txt](docs/llms.txt)
 - Working on kargui: [AGENTS.md](AGENTS.md)
 
+## Checks
+
+```powershell
+cargo test --workspace --exclude kargui-spike   # unit tests and the examples in the docs, guide and README
+cargo run -p xtask -- check                      # doc and example coverage, widget pictures, the AI index, guide freshness
+```
+
+The input method checks type into the foreground window, so they run only while the author is away
+(`tools/away-run.ps1`).
+
+## Status and next steps
+
+0.1 is the first release, and a lot is still missing for everyday apps. So far kargui has been tried
+with the task book and three apps of other shapes (a settings screen, a long-text reader and a
+10,000-row table). Next, we will build real apps with it, find the widgets and mechanisms they need,
+and add the most common ones first. Each addition is measured with the same tools to keep kargui light.
+
+Not there yet:
+
+- **Widgets:** multi-line text input, password field, drop-down, radio buttons, menus (menu bar and
+  context menu), tooltips, dialogs (including opening and saving files), tabs, tree view, tables with
+  column headers, progress bar, images, a free drawing surface, links, and disabled widgets.
+- **App mechanisms:** multiple windows, updating the screen from other threads or timers, receiving
+  keys in the app (shortcuts), drag and drop, choosing fonts, window icon, minimum window size,
+  confirming before close, and animations.
+- **Platforms:** Windows 10/11 only (no macOS or Linux). The Direct3D 11 renderer (not the default)
+  occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
+  NVDA. Apps cannot start a reconversion themselves.
+
+The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
-MIT OR Apache-2.0 ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
+MIT ([LICENSE](LICENSE)).

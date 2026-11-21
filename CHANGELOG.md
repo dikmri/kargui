@@ -1,9 +1,10 @@
 # Changelog
 
-## 0.1.0 (not released yet)
+## 0.1.0 (2026-11-21)
 
 The first version: the framework, four example apps, the guide (Japanese and English) and the checks
-that keep the documentation current.
+that keep the documentation current. Licensed under MIT. What is still missing is listed in the README
+("Status and next steps").
 
 - Widgets: heading, label (wrap, size, right alignment, strike), button (primary, small), check box,
   switch, dark mode switch, segmented choice, text input (input methods, undo, clipboard), slider,

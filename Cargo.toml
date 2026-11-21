@@ -4,7 +4,7 @@ members = ["crates/kargui", "examples/taskbook", "examples/hello", "examples/set
 
 [workspace.package]
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 rust-version = "1.95"
 
 # 前回の比べ（Tauri・egui・GPUI）と同じリリースの設定

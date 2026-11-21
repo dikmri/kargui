@@ -1,14 +1,18 @@
 [package]
 name = "kargui"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-publish = false
 description = "A light native GUI framework for Rust on Windows: immediate-mode code, CPU rendering that redraws only what changed, input methods and screen readers built in"
 readme = "../../README.md"
 repository = "https://github.com/dikmri/kargui"
 keywords = ["gui", "windows", "immediate-mode", "ime", "accessibility"]
 categories = ["gui"]
+
+# Windows だけの crate なので、docs.rs でも Windows 向けに説明を作る
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc"]
 
 [dependencies]
 accesskit = "=0.25.2"

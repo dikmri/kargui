@@ -75,7 +75,7 @@ impl From<windows::core::Error> for Error {
     }
 }
 
-/// ガイド（docs/guide/ の日本語と英語）のコードも、説明の試験（cargo test --doc）で動かす
+/// ガイド（docs/guide/ の日本語と英語）と README（リポジトリの直下）のコードも、説明の試験（cargo test --doc）で動かす
 #[cfg(doctest)]
 mod guide {
     #[doc = include_str!("../../../docs/guide/ja/01-first-app.md")]
@@ -118,4 +118,8 @@ mod guide {
     struct En09Testing;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
+    #[doc = include_str!("../../../README.md")]
+    struct RootReadme;
+    #[doc = include_str!("../../../README.ja.md")]
+    struct RootReadmeJa;
 }
