@@ -287,6 +287,424 @@ kargui otherwise draws only when something changes.
 ui.request_frame();
 ```
 
+## Every widget (methods of `Handle`; most widgets also have `width`, `grow`, `label`, `id`, `scroll_into_view`)
+
+### `pub fn width(self, size: Size) -> Self`
+
+Sets the width ([`Size::Fixed`] is in logical pixels).
+
+```
+ui.column(|ui| {
+    ui.label("Narrow");
+})
+.width(Size::Fixed(200.0));
+```
+
+### `pub fn height(self, size: Size) -> Self`
+
+Sets the height ([`Size::Fixed`] is in logical pixels).
+
+```
+ui.row(|ui| {
+    ui.label("Tall");
+})
+.height(Size::Fixed(48.0));
+```
+
+### `pub fn grow(self) -> Self`
+
+Takes the remaining space along the parent's direction (width in a row, height in a column).
+
+```
+ui.column(|ui| {
+    ui.label("Fills the height that is left.");
+})
+.grow();
+```
+
+### `pub fn gap(self, length: f32) -> Self`
+
+Space between the children (logical pixels).
+
+```
+ui.column(|ui| {
+    ui.label("One");
+    ui.label("Two");
+})
+.gap(2.0);
+```
+
+### `pub fn padding(self, x: f32, y: f32) -> Self`
+
+Space inside the edges (logical pixels): `x` left and right, `y` top and bottom.
+
+```
+ui.row(|ui| {
+    ui.label("Indented");
+})
+.padding(12.0, 0.0);
+```
+
+### `pub fn align(self, align: Align) -> Self`
+
+Where the children go across the main direction.
+
+```
+ui.column(|ui| {
+    ui.label("Centered");
+    ui.button("OK");
+})
+.align(Align::Center);
+```
+
+### `pub fn label(self, name: impl Into<String>) -> Self`
+
+The name screen readers use for this widget, when its visible text is not enough
+(for example an icon-only button).
+
+```
+ui.row(|ui| {
+    ui.button("+");
+    ui.button("-");
+})
+.label("Zoom");
+```
+
+### `pub fn id(&self) -> Id`
+
+The widget's identity.
+
+```
+let toolbar = ui.row(|ui| {
+    ui.button("Save");
+});
+let id = toolbar.id();
+assert_eq!(id, id);
+```
+
+### `pub fn scroll_into_view(self) -> Self`
+
+Scrolls the nearest [`Ui::scroll`] container that holds this widget so that the widget is at
+the top (or as close as the content allows), after this frame is laid out. Use it to jump to
+a chapter from a table of contents.
+
+```
+ui.scroll(|ui| {
+    for chapter in 0..5 {
+        let heading = ui.heading(format!("Chapter {chapter}"));
+        if jump_to == Some(chapter) {
+            heading.scroll_into_view();
+        }
+        ui.label("...").wrap();
+    }
+});
+jump_to = None;
+```
+
+## Text (`Label`, from `ui.label` and `ui.heading`)
+
+### `pub fn weak(self) -> Self`
+
+Draws in the less prominent text color.
+
+```
+ui.label("3 of 10 done").weak();
+```
+
+### `pub fn small(self) -> Self`
+
+Draws smaller.
+
+```
+ui.label("Saved a minute ago").small();
+```
+
+### `pub fn bold(self) -> Self`
+
+Draws bold.
+
+```
+ui.label("Total: 1,280").bold();
+```
+
+### `pub fn strike(self, on: bool) -> Self`
+
+Draws a line through the text (for example for finished tasks) when `on` is true.
+
+```
+let done = true;
+ui.label("Buy milk").strike(done);
+```
+
+### `pub fn wrap(self) -> Self`
+
+Wraps the text onto several lines to fit the width. In a row, the text also takes the
+remaining width.
+
+```
+ui.label("A long paragraph that does not fit on one line is wrapped to the width.").wrap();
+```
+
+### `pub fn size(self, size: f32) -> Self`
+
+Sets the text size in logical pixels (body text is 14, headings 21). Use it for text the
+user can enlarge, such as a reading view.
+
+```
+ui.label("Large text for reading.").size(font_size).wrap();
+```
+
+### `pub fn right(mut self) -> Self`
+
+Puts the text at the right end of its space (for example numbers in a table column).
+Give the label a width with [`Label::width`] or [`Label::grow`] for this to show.
+
+```
+ui.row(|ui| {
+    ui.label("Apples").grow();
+    ui.label("1,280").right().width(kargui::Size::Fixed(80.0));
+});
+```
+
+### `pub fn grow(self) -> Self`
+
+Takes the remaining space. See [`Handle::grow`].
+
+```
+ui.row(|ui| {
+    ui.label("Title").grow();
+    ui.button("Close");
+});
+```
+
+### `pub fn width(self, size: Size) -> Self`
+
+Sets the width. See [`Handle::width`].
+
+```
+ui.row(|ui| {
+    ui.label("Name").width(Size::Fixed(80.0));
+    ui.label("Ada");
+});
+```
+
+### `pub fn scroll_into_view(self) -> Self`
+
+Scrolls the nearest scroll container so this text is at its top. See [`Handle::scroll_into_view`].
+
+```
+ui.scroll(|ui| {
+    for i in 0..30 {
+        ui.label(format!("Line {i}"));
+    }
+    ui.label("The end").scroll_into_view();
+});
+```
+
+## Buttons (`Button`)
+
+### `pub fn primary(mut self) -> Self`
+
+Draws in the main color, for the most important action.
+
+```
+ui.button("Save").primary();
+```
+
+### `pub fn small(mut self) -> Self`
+
+Draws smaller (for buttons in list rows).
+
+```
+ui.row(|ui| {
+    ui.label("Milk");
+    ui.button("Delete").small();
+});
+```
+
+### `pub fn clicked(&self) -> bool`
+
+Whether the button was clicked.
+
+```
+if ui.button("Add one").clicked() {
+    count += 1;
+}
+```
+
+## Check boxes and switches (`Toggled`)
+
+### `pub fn changed(&self) -> bool`
+
+Whether it was clicked (and the value flipped).
+
+```
+if ui.toggle(&mut sound, "Sound").changed() {
+    // save the setting
+}
+```
+
+### `pub fn strike(mut self, on: bool) -> Self`
+
+Draws a line through a check box's label and dims it when `on` is true, for example for
+finished tasks. The label stays clickable. Has no effect on switches.
+
+```
+ui.checkbox(&mut done, "Buy milk").strike(done);
+```
+
+## Sliders (`Slider`)
+
+### `pub fn changed(&self) -> bool`
+
+Whether the value changed in this frame (by pointer, keyboard or screen reader).
+
+```
+if ui.slider(&mut volume, 0..=100).label("Volume").changed() {
+    // apply the new volume
+}
+```
+
+## Text fields (`TextInput`)
+
+### `pub fn hint(mut self, hint: impl Into<String>) -> Self`
+
+Text shown while the field is empty.
+
+```
+ui.text_input(&mut query).hint("Search");
+```
+
+### `pub fn changed(&self) -> bool`
+
+Whether the text changed. Composing with the input method does not count until committed.
+
+```
+if ui.text_input(&mut query).hint("Search").changed() {
+    // run the search
+}
+```
+
+### `pub fn submitted(&self) -> bool`
+
+Whether Enter was pressed (not the Enter that commits an input method conversion).
+
+```
+if ui.text_input(&mut query).submitted() {
+    // Enter was pressed
+}
+```
+
+### `pub fn composing(&self) -> Option<&str>`
+
+The text the input method is composing, if any (shown underlined in the field, not yet in the value).
+
+```
+let field = ui.text_input(&mut query);
+if let Some(kana) = field.composing() {
+    // the input method is converting `kana`
+    assert!(!kana.is_empty());
+}
+```
+
+## Lists (`List`, from `ui.list`)
+
+### `pub fn grow(self) -> Self`
+
+Takes the remaining space. See [`Handle::grow`].
+
+```
+ui.heading("Files");
+ui.list(100, 28.0).grow().show(|ui, i| {
+    ui.label(format!("File {i}"));
+});
+```
+
+### `pub fn height(self, size: Size) -> Self`
+
+Sets the height ([`Size::Fixed`] is in logical pixels).
+
+```
+ui.list(100, 28.0).height(Size::Fixed(200.0)).show(|ui, i| {
+    ui.label(format!("Row {i}"));
+});
+```
+
+### `pub fn separators(self, on: bool) -> Self`
+
+Draws lines between rows (on by default).
+
+```
+ui.list(100, 28.0).separators(false).show(|ui, i| {
+    ui.label(format!("Row {i}"));
+});
+```
+
+### `pub fn scroll_to(mut self, offset: f32) -> Self`
+
+Scrolls so that the content starts `offset` logical pixels above the top of the list.
+
+```
+// Jump back to the top.
+ui.list(100, 28.0).scroll_to(0.0).show(|ui, i| {
+    ui.label(format!("Row {i}"));
+});
+```
+
+### `pub fn scroll_offset(&self) -> f32`
+
+The current scroll position in logical pixels.
+
+```
+let list = ui.list(100, 28.0);
+assert_eq!(list.scroll_offset(), 0.0);
+list.show(|ui, i| {
+    ui.label(format!("Row {i}"));
+});
+```
+
+### `pub fn selection(mut self, selected: &'u mut Option<usize>) -> Self`
+
+Lets the user select one row: clicking a row selects it, the up and down arrows move the
+selection (Home and End jump to the ends), and the list scrolls to show it. `selected` holds
+the selected row's index. The whole list is one stop for the Tab key.
+
+```
+ui.list(files.len(), 28.0).grow().selection(&mut selected).show(|ui, i| {
+    ui.label(files[i]);
+});
+if let Some(i) = selected {
+    ui.label(format!("Selected: {}", files[i]));
+}
+```
+
+### `pub fn show(self, row: impl FnMut(&mut Ui, usize)) -> Id`
+
+Creates the visible rows. `row` is called with each visible row's index.
+
+Rows are told apart by their position, so when items are inserted or removed above,
+the rows below get new identities. If the items have ids of their own, use
+[`List::show_keyed`] instead.
+
+```
+let id = ui.list(100, 28.0).show(|ui, i| {
+    ui.label(format!("Row {i}"));
+});
+assert_eq!(id, id);
+```
+
+### `pub fn show_keyed<K: Hash>(self, key: impl Fn(usize) -> K, mut row: impl FnMut(&mut Ui, usize)) -> Id`
+
+Like [`List::show`], but rows are told apart by `key(index)` (for example a database id).
+Focus and other widget state then stay with the item when items are inserted or removed
+above it, and screen readers do not see every row change.
+
+```
+ui.list(tasks.len(), 32.0).grow().show_keyed(|i| tasks[i].id, |ui, i| {
+    ui.label(&tasks[i].text);
+});
+```
+
 ## Testing without a window
 
 Running an app without a window, for tests and documentation.

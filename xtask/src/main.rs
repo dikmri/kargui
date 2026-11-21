@@ -306,6 +306,24 @@ fn make_llms(check: bool) -> bool {
         out.push_str(&doc.join("\n"));
         out.push_str("\n\n");
     }
+    // 部品を作った後に続けて呼ぶメソッド（List::selection、TextInput::submitted など）も、AI が見つけられるように載せる
+    for (title, header) in [
+        ("Every widget (methods of `Handle`; most widgets also have `width`, `grow`, `label`, `id`, `scroll_into_view`)", "impl Handle<'_> {"),
+        ("Text (`Label`, from `ui.label` and `ui.heading`)", "impl Label<'_> {"),
+        ("Buttons (`Button`)", "impl Button<'_> {"),
+        ("Check boxes and switches (`Toggled`)", "impl Toggled<'_> {"),
+        ("Sliders (`Slider`)", "impl Slider<'_> {"),
+        ("Text fields (`TextInput`)", "impl TextInput<'_> {"),
+        ("Lists (`List`, from `ui.list`)", "impl<'u> List<'u, '_> {"),
+    ] {
+        out.push_str(&format!("## {title}\n\n"));
+        for it in items(&src, header) {
+            out.push_str(&format!("### `{}`\n\n", it.signature));
+            let doc: Vec<&str> = it.docs.iter().map(String::as_str).filter(|l| !l.starts_with("# ")).collect();
+            out.push_str(&doc.join("\n"));
+            out.push_str("\n\n");
+        }
+    }
     out.push_str("## Testing without a window\n\n");
     out.push_str(&test_doc.join("\n"));
     out.push('\n');
