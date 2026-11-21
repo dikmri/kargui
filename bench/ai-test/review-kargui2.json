@@ -1,0 +1,35 @@
+{
+  "framework": "kargui",
+  "runs": {
+    "kargui2-sonnet-1": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "8 点とも満たしている。絞り込みの結果は、版の番号・語・状態を鍵にして、変わった時だけ作り直している。"
+    },
+    "kargui2-sonnet-2": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "8 点とも満たしている。Store::filter をビューのたびに呼び直すが、渡すのは確定済みの文字だけなので、変換中の文字では絞り込まれない。"
+    },
+    "kargui2-sonnet-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "8 点とも満たしている。「Showing X of Y」を 3 行目ではなく次の行に置いているが、1 組目の採点と同じく減点していない。"
+    },
+    "kargui2-haiku-1": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 0.5],
+      "total": 7.5,
+      "notes": "TaskBook::default() が Store::default() を使うので next_id が 0 から始まり、起動直後に Add 10,000 を押すと generate の id - 1 が u32 の桁あふれになる（debug ビルドではパニック、release では最初の 1 件が 4294967296 番になる）。先に Add で 1 件足すか Clear all を押した後なら正しく動く。"
+    },
+    "kargui2-haiku-2": {
+      "scores": [1, 1, 1, 1, 0.5, 1, 1, 1],
+      "total": 7.5,
+      "notes": "選択肢の文字に Status::label() を使ったため、All・Active・Done ではなく「すべて・未完了・完了」と表示される。ほかの点は正しい。"
+    },
+    "kargui2-haiku-3": {
+      "scores": [1, 1, 1, 1, 0.5, 1, 1, 1],
+      "total": 7.5,
+      "notes": "選択肢の文字に Status::label() を使ったため、All・Active・Done ではなく「すべて・未完了・完了」と表示される。ほかの点は正しい。"
+    }
+  }
+}

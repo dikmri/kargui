@@ -1,0 +1,35 @@
+{
+  "framework": "egui 0.37 with eframe 0.37",
+  "runs": {
+    "egui-sonnet-1": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "8 項目とも満たしている。細かい点として、「Showing X of Y」は Filter の行ではなく一覧の上の別の行にあり、Store::filter を毎フレーム呼び直している（結果を保持しない）。"
+    },
+    "egui-sonnet-2": {
+      "scores": [1, 0.5, 1, 1, 1, 1, 1, 1],
+      "total": 7.5,
+      "notes": "起動時のテーマを設定していないので、egui の既定（ThemePreference::System）で OS のテーマに従う。Windows がダークのときは「Dark」が未チェックのまま暗い見た目で始まり、最初のクリックでは見た目が変わらない。"
+    },
+    "egui-sonnet-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "8 項目とも満たしている。絞り込み結果の保持を上のパネルで更新するため、下の行のボタンや行の操作の直後の 1 フレームだけ古い結果を表示する（store.get が範囲外を None で返すので壊れない）。"
+    },
+    "egui-haiku-1": {
+      "scores": [1, 1, 1, 1, 0.5, 1, 1, 1],
+      "total": 7.5,
+      "notes": "状態の選択肢に taskcore の Status::label() を使っているため、「All / Active / Done」ではなく「すべて / 未完了 / 完了」と表示する。「Showing X of Y」も Filter の行ではなく、その下の別の行にある。"
+    },
+    "egui-haiku-2": {
+      "scores": [1, 1, 1, 1, 0.5, 1, 1, 1],
+      "total": 7.5,
+      "notes": "状態の選択肢に taskcore の Status::label() を使っているため、「All / Active / Done」ではなく「すべて / 未完了 / 完了」と表示する。ほかの項目は正しい。"
+    },
+    "egui-haiku-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 0],
+      "total": 7,
+      "notes": "一覧の ScrollArea が auto_shrink([false, false]) で CentralPanel の残りの高さをすべて使うため、その後に置いた下の行（Add 10,000・Clear done・Clear all・件数）が窓の外に出て、見えず押せない。絞り込み語はフレームの最初に前のフレームの入力欄の文字を写すので 1 フレーム遅れる（変換中は更新しない）。"
+    }
+  }
+}

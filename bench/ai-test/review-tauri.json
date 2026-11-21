@@ -1,0 +1,35 @@
+{
+  "framework": "Tauri 2",
+  "runs": {
+    "tauri-sonnet-1": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている機能はない。窓は setup で WebviewWindowBuilder から作り（title と WINDOW_SIZE の inner_size）、数は Rust 側で taskcore::group にかけ、行は見えている範囲だけを rows コマンドで取り寄せる。"
+    },
+    "tauri-sonnet-2": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている機能はない。数の 3 桁区切りは taskcore::group を呼ばず JS の正規表現の写しで行うが、出る文字は同じ。"
+    },
+    "tauri-sonnet-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている機能はない。counts の span に書いた style 属性（margin-left:auto）は CSP（style-src が nonce だけ）で無効になり、右寄せにならないが、採点の項目には影響しない。"
+    },
+    "tauri-haiku-1": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている機能はない。DOM は見えている行だけを作るが、操作のたびに絞り込んだ全行を IPC で JS へ送る。数の区切りは taskcore::group ではなく JS の写しで行う（出る文字は同じ）。"
+    },
+    "tauri-haiku-2": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている機能はない。表示の文は Rust 側で taskcore::group を使って作り、行は見えている範囲だけを view コマンドで受け取る。スクロールのたびに間引かずに IPC を送るが、seq で古い応答を捨てている。"
+    },
+    "tauri-haiku-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている機能はない。DOM は見えている行だけを作るが、操作のたびに絞り込んだ全行を IPC で JS へ送る。"
+    }
+  }
+}

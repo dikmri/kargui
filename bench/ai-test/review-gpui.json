@@ -1,0 +1,35 @@
+{
+  "framework": "GPUI (gpui-kit 0.10.0, which re-exports gpui-pre 0.3.12)",
+  "runs": {
+    "gpui-sonnet-1": {
+      "scores": [1, 1, 1, 1, 1, 1, 0.5, 1],
+      "total": 7.5,
+      "notes": "一覧の行に w_full() がなく、uniform_list の行は中身の幅に縮むので、Delete ボタンが行の右端ではなく本文のすぐ後ろに並ぶ。IME の確定の Enter と変換中の絞り込みは、gpui-component の Input が出す PressEnter と Change の既定の動きで正しく扱われる。"
+    },
+    "gpui-sonnet-2": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている点はない。PressEnter と Change の処理で marked_text_range も確かめているが、Windows 版の GPUI は確定の Enter を VK_PROCESSKEY として捨て、Input は変換中に Change を出さないので、確認がなくても結果は同じになる。"
+    },
+    "gpui-sonnet-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている点はない。入力欄を EntityInputHandler で自作し、変換中は Changed を出さず、marked_range がある間の Enter も送らない（確定から 60 ms 以内の Enter も捨てるが、使う上で支障はない）。"
+    },
+    "gpui-haiku-1": {
+      "scores": [1, 1, 1, 1, 0.5, 1, 0.5, 1],
+      "total": 7,
+      "notes": "状態の選択肢が Status::label() のため「すべて・未完了・完了」と表示され、指定の All / Active / Done になっていない。一覧の行に w_full() がなく、Delete ボタンが行の右端ではなく本文のすぐ後ろに並ぶ（絞り込みを render のたびに全件で計算し直す点も、件数が多いと遅くなる）。"
+    },
+    "gpui-haiku-2": {
+      "scores": [1, 1, 1, 1, 0.5, 1, 1, 1],
+      "total": 7.5,
+      "notes": "状態の選択肢が Status::label() のため「すべて・未完了・完了」と表示され、指定の All / Active / Done になっていない。それ以外は、自作の入力欄が確定の Enter と変換中の絞り込みを正しく扱っている。"
+    },
+    "gpui-haiku-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "欠けている点はない。自作の入力欄は確定したテキストのときだけ Changed を出し、marked_range がある間は Enter で Submit を出さない。"
+    }
+  }
+}

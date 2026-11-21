@@ -1,0 +1,35 @@
+{
+  "framework": "kargui",
+  "runs": {
+    "kargui-sonnet-1": {
+      "scores": [1, 1, 1, 1, 0.5, 1, 1, 1],
+      "total": 7.5,
+      "notes": "「Showing X of Y」を絞り込み結果の作り直しより前に描くため、一覧や下の行の操作（Delete・Add 10,000・Clear all など）の後は X が古いまま画面に出る（例: Clear all の後に Showing 10,000 of 0）。ポインターが別の部品へ移るなどして次のフレームが描かれるまで直らない。"
+    },
+    "kargui-sonnet-2": {
+      "scores": [1, 0.5, 1, 1, 1, 1, 1, 1],
+      "total": 7.5,
+      "notes": "Dark の状態を false で始める一方、画面は Options.dark が None なので OS の設定に従う。OS がダークモードだとスイッチが見た目と逆を示し、最初の切り替えでは見た目が変わらない（Showing X of Y が 3 行目ではなく次の行にある点は減点していない）。"
+    },
+    "kargui-sonnet-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 0.5, 1],
+      "total": 7.5,
+      "notes": "一覧の行の中にもう 1 つ row を入れ、その中で fill を使っている。入れ子の row は中身の幅にしかならないので、Delete が行の右端ではなく本文のすぐ右に並ぶ。"
+    },
+    "kargui-haiku-1": {
+      "scores": [1, 1, 1, 1, 0.5, 1, 0.5, 1],
+      "total": 7,
+      "notes": "選択肢の文字に Status::label() を使ったため、All・Active・Done ではなく「すべて・未完了・完了」と表示される。一覧の行に fill も grow もなく、Delete が行の右端ではなく本文のすぐ右に並ぶ。"
+    },
+    "kargui-haiku-2": {
+      "scores": [1, 1, 1, 1, 1, 1, 0.5, 1],
+      "total": 7.5,
+      "notes": "一覧の行の中で store.remove を直接呼ぶので、同じ回の後ろの行が古い添字で tasks() を引き、絞り込みなしの短い一覧で最後以外の行の Delete を押すと添字が範囲外になってパニックする。さらに入れ子の row のせいで、Delete が右端ではなく本文のすぐ右に並ぶ。"
+    },
+    "kargui-haiku-3": {
+      "scores": [1, 1, 1, 1, 1, 1, 1, 1],
+      "total": 8,
+      "notes": "8 点とも満たしている。Store::filter を毎フレーム呼び直すが、渡すのは確定済みの文字だけなので、変換中の文字では絞り込まれない。"
+    }
+  }
+}

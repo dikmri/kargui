@@ -1,0 +1,854 @@
+{
+ "runs": {
+  "egui-haiku-1": {
+   "framework": "egui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 178,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "egui-haiku-2": {
+   "framework": "egui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 247,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "egui-haiku-3": {
+   "framework": "egui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 223,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "egui-pilot-1": {
+   "framework": "egui",
+   "model": "pilot",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 184,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "egui-sonnet-1": {
+   "framework": "egui",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 182,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "egui-sonnet-2": {
+   "framework": "egui",
+   "model": "sonnet",
+   "attempts": 2,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 198,
+   "reply": {
+    "done": true,
+    "attempts": 2,
+    "missing": []
+   }
+  },
+  "egui-sonnet-3": {
+   "framework": "egui",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 202,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "gpui-haiku-1": {
+   "framework": "gpui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 950,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "gpui-haiku-2": {
+   "framework": "gpui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 841,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "gpui-haiku-3": {
+   "framework": "gpui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 899,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "gpui-pilot-1": {
+   "framework": "gpui",
+   "model": "pilot",
+   "attempts": 5,
+   "clean": false,
+   "failed_builds": 2,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 220,
+   "reply": {
+    "done": true,
+    "attempts": 5,
+    "missing": []
+   }
+  },
+  "gpui-sonnet-1": {
+   "framework": "gpui",
+   "model": "sonnet",
+   "attempts": 2,
+   "clean": false,
+   "failed_builds": 1,
+   "first_build_ok": false,
+   "ok_at_attempt": 2,
+   "final_ok": true,
+   "first_errors": 2,
+   "lines": 233,
+   "reply": {
+    "done": true,
+    "attempts": 2,
+    "missing": []
+   }
+  },
+  "gpui-sonnet-2": {
+   "framework": "gpui",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 253,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "gpui-sonnet-3": {
+   "framework": "gpui",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 1014,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui-haiku-1": {
+   "framework": "kargui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 93,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui-haiku-2": {
+   "framework": "kargui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 123,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui-haiku-3": {
+   "framework": "kargui",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 107,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui-pilot-1": {
+   "framework": "kargui",
+   "model": "pilot",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 130,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui-sonnet-1": {
+   "framework": "kargui",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 135,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui-sonnet-2": {
+   "framework": "kargui",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 138,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui-sonnet-3": {
+   "framework": "kargui",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 126,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui2-haiku-1": {
+   "framework": "kargui2",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 83,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui2-haiku-2": {
+   "framework": "kargui2",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 80,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui2-haiku-3": {
+   "framework": "kargui2",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 101,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui2-sonnet-1": {
+   "framework": "kargui2",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 134,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui2-sonnet-2": {
+   "framework": "kargui2",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 87,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "kargui2-sonnet-3": {
+   "framework": "kargui2",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 89,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "tauri-haiku-1": {
+   "framework": "tauri",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 353,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "tauri-haiku-2": {
+   "framework": "tauri",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 284,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "tauri-haiku-3": {
+   "framework": "tauri",
+   "model": "haiku",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 363,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "tauri-pilot-1": {
+   "framework": "tauri",
+   "model": "pilot",
+   "attempts": 2,
+   "clean": false,
+   "failed_builds": 1,
+   "first_build_ok": false,
+   "ok_at_attempt": 2,
+   "final_ok": true,
+   "first_errors": 1,
+   "lines": 211,
+   "reply": {
+    "done": true,
+    "attempts": 2,
+    "missing": []
+   }
+  },
+  "tauri-sonnet-1": {
+   "framework": "tauri",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 233,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  },
+  "tauri-sonnet-2": {
+   "framework": "tauri",
+   "model": "sonnet",
+   "attempts": 2,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 212,
+   "reply": {
+    "done": true,
+    "attempts": 2,
+    "missing": []
+   }
+  },
+  "tauri-sonnet-3": {
+   "framework": "tauri",
+   "model": "sonnet",
+   "attempts": 1,
+   "clean": true,
+   "failed_builds": 0,
+   "first_build_ok": true,
+   "ok_at_attempt": 1,
+   "final_ok": true,
+   "first_errors": 0,
+   "lines": 218,
+   "reply": {
+    "done": true,
+    "attempts": 1,
+    "missing": []
+   }
+  }
+ },
+ "summary": {
+  "egui|haiku": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    178,
+    247,
+    223
+   ]
+  },
+  "egui|pilot": {
+   "runs": 1,
+   "clean": 1,
+   "failed_builds": [
+    0
+   ],
+   "first_build_ok": 1,
+   "final_ok": 1,
+   "attempts": [
+    1
+   ],
+   "lines": [
+    184
+   ]
+  },
+  "egui|sonnet": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    182,
+    198,
+    202
+   ]
+  },
+  "gpui|haiku": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    950,
+    841,
+    899
+   ]
+  },
+  "gpui|pilot": {
+   "runs": 1,
+   "clean": 0,
+   "failed_builds": [
+    2
+   ],
+   "first_build_ok": 1,
+   "final_ok": 1,
+   "attempts": [
+    1
+   ],
+   "lines": [
+    220
+   ]
+  },
+  "gpui|sonnet": {
+   "runs": 3,
+   "clean": 2,
+   "failed_builds": [
+    1,
+    0,
+    0
+   ],
+   "first_build_ok": 2,
+   "final_ok": 3,
+   "attempts": [
+    2,
+    1,
+    1
+   ],
+   "lines": [
+    233,
+    253,
+    1014
+   ]
+  },
+  "kargui|haiku": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    93,
+    123,
+    107
+   ]
+  },
+  "kargui|pilot": {
+   "runs": 1,
+   "clean": 1,
+   "failed_builds": [
+    0
+   ],
+   "first_build_ok": 1,
+   "final_ok": 1,
+   "attempts": [
+    1
+   ],
+   "lines": [
+    130
+   ]
+  },
+  "kargui|sonnet": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    135,
+    138,
+    126
+   ]
+  },
+  "kargui2|haiku": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    83,
+    80,
+    101
+   ]
+  },
+  "kargui2|sonnet": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    134,
+    87,
+    89
+   ]
+  },
+  "tauri|haiku": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    353,
+    284,
+    363
+   ]
+  },
+  "tauri|pilot": {
+   "runs": 1,
+   "clean": 0,
+   "failed_builds": [
+    1
+   ],
+   "first_build_ok": 0,
+   "final_ok": 1,
+   "attempts": [
+    2
+   ],
+   "lines": [
+    211
+   ]
+  },
+  "tauri|sonnet": {
+   "runs": 3,
+   "clean": 3,
+   "failed_builds": [
+    0,
+    0,
+    0
+   ],
+   "first_build_ok": 3,
+   "final_ok": 3,
+   "attempts": [
+    1,
+    1,
+    1
+   ],
+   "lines": [
+    233,
+    212,
+    218
+   ]
+  }
+ }
+}
