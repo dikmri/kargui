@@ -11,6 +11,7 @@ use crate::log;
 use crate::text::Text;
 use crate::theme::Theme;
 use crate::ui::Id;
+use crate::ime::ImeField;
 use crate::ui::edit::EditState;
 
 /// クリップボードの読み書き（窓では OS のもの、試験台では手元の文字列）
@@ -82,6 +83,8 @@ pub(crate) struct Prev {
     pub lists: Vec<ListInfo>,
     /// 入力欄の場所と、文字の左端の x（物理ピクセル）
     pub inputs: HashMap<Id, (Rect, f32)>,
+    /// 一覧の行の中の、焦点を持てる部品 → (一覧の id, 行の範囲)
+    pub rows: HashMap<Id, (Id, Rect)>,
 }
 
 pub(crate) struct Context {
@@ -115,6 +118,10 @@ pub(crate) struct Context {
     pub pointer_text: Option<(Id, f32, f32, bool)>,
     /// 変換中の文字（焦点のある入力欄の中に描く）
     pub preedit: String,
+    /// 焦点が移る前に、元の入力欄へ確定する変換中の文字（入力欄の id と文字）
+    pub pending_commit: Option<(Id, String)>,
+    /// IME の変換を取り消すように頼む（変換中の文字をこちらで確定した時）。窓の処理が読んで戻す
+    pub ime_cancel: bool,
     pub want_frame: bool,
     pub clipboard: Box<dyn Clipboard>,
     // ---- 描いた結果 ----
@@ -122,6 +129,8 @@ pub(crate) struct Context {
     pub caret: Option<Rect>,
     pub preedit_rect: Option<Rect>,
     pub input_rect: Option<Rect>,
+    /// 焦点のある入力欄の写し（IME の問い合わせに答えるため）
+    pub ime_field: Option<ImeField>,
 }
 
 impl Context {
@@ -147,11 +156,14 @@ impl Context {
             keys: Vec::new(),
             pointer_text: None,
             preedit: String::new(),
+            pending_commit: None,
+            ime_cancel: false,
             want_frame: false,
             clipboard,
             caret: None,
             preedit_rect: None,
             input_rect: None,
+            ime_field: None,
         }
     }
 
@@ -240,6 +252,7 @@ impl Context {
         for e in events {
             match e {
                 Event::PointerDown { x, y, shift } => {
+                    self.commit_preedit("pointer");
                     // 部品の本来の範囲が先。次にスクロールの棒、最後に部品の当たりの余白
                     if let Some(l) = self.scrollbar_at(x, y).cloned() {
                         self.pressed = None;
@@ -282,8 +295,10 @@ impl Context {
                     }
                 }
                 Event::Key { key: Key::Tab, mods } => {
+                    self.commit_preedit("tab");
                     self.focus_visible = true;
                     self.move_focus(mods.shift);
+                    self.reveal_focus();
                 }
                 Event::Key { key: Key::Enter | Key::Space, mods: Mods { ctrl: false, alt: false, .. } }
                     if self.focus.is_some_and(|f| !self.is_text_input(f)) =>
@@ -291,13 +306,22 @@ impl Context {
                     self.clicked = self.focus;
                 }
                 Event::A11y { target, action: A11yAction::Click } => {
+                    self.commit_preedit("a11y");
                     self.clicked = Some(target);
                 }
                 Event::A11y { target, action: A11yAction::Focus } => {
+                    self.commit_preedit("a11y");
                     self.focus = Some(target);
+                    self.reveal_focus();
                 }
-                Event::ImePreedit(s) => self.preedit = s,
-                e @ (Event::Key { .. } | Event::Char(_) | Event::ImeCommit(_)) => {
+                Event::ImePreedit(s) => {
+                    // 変換が始まった時に入力欄の選択を消すため、入力欄にも届ける
+                    if self.preedit.is_empty() && !s.is_empty() && self.focus.is_some_and(|f| self.is_text_input(f)) {
+                        self.keys.push(Event::ImePreedit(s.clone()));
+                    }
+                    self.preedit = s;
+                }
+                e @ (Event::Key { .. } | Event::Char(_) | Event::ImeCommit(_) | Event::ImeSelect { .. }) => {
                     if self.focus.is_some_and(|f| self.is_text_input(f)) {
                         if matches!(e, Event::ImeCommit(_)) {
                             self.preedit.clear();
@@ -309,8 +333,38 @@ impl Context {
         }
     }
 
+    /// 焦点のある部品が一覧の行の中にあって、行が全部は見えていなければ、見えるように一覧をスクロールする
+    fn reveal_focus(&mut self) {
+        let Some(f) = self.focus else { return };
+        let Some(&(list, row)) = self.prev.rows.get(&f) else { return };
+        let Some(l) = self.prev.lists.iter().find(|l| l.id == list).cloned() else { return };
+        let now = self.scrolls.get(&list).copied().unwrap_or(0.0);
+        let dy = if row.bottom() > l.rect.bottom() {
+            row.bottom() - l.rect.bottom()
+        } else if row.y < l.rect.y {
+            row.y - l.rect.y
+        } else {
+            return;
+        };
+        self.set_scroll(&l, now + dy / self.scale);
+    }
+
+    /// 変換の途中で焦点が動きそうな時（押す・Tab・読み上げソフトの操作）、変換中の文字を今の入力欄へ確定する。
+    /// IME の側の変換は取り消す（IME に確定させると、結果が届く前に焦点が移って別の入力欄に入るため）
+    fn commit_preedit(&mut self, why: &str) {
+        if self.preedit.is_empty() {
+            return;
+        }
+        let Some(f) = self.focus.filter(|&f| self.is_text_input(f)) else { return };
+        let t = std::mem::take(&mut self.preedit);
+        log::event("ime.commit_on_focus", &format!("why={why} text={t}"), "cancel_ime");
+        self.pending_commit = Some((f, t));
+        self.ime_cancel = true;
+    }
+
     /// ビューの 1 回目が終わったら、使わなかった入力を捨てる
     pub fn end_input(&mut self) {
+        self.pending_commit = None;
         self.clicked = None;
         self.keys.clear();
         self.pointer_text = None;

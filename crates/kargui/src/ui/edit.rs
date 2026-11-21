@@ -2,7 +2,9 @@
 //!
 //! 位置は UTF-8 のバイトの位置で、いつも文字の境目にある。
 //! DirectWrite の当たり判定は UTF-16 の位置を使うので、変換の関数も置く。
-//! 段階 1 では文字（char）単位で消す。結合文字や絵文字の並び（書記素）単位にするのは後の段階。
+//! 1 文字ずつ消す・動かす時は書記素（結合文字や、ZWJ でつないだ絵文字の並びを 1 つとした単位）で数える。
+
+use unicode_segmentation::UnicodeSegmentation;
 
 /// 入力欄 1 つの編集の状態。文字列そのものはアプリが持つ（&mut String で渡される）
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -46,12 +48,14 @@ fn class(c: char) -> Class {
     }
 }
 
+/// i より前の書記素の境目
 fn prev_boundary(s: &str, i: usize) -> usize {
-    s[..i].char_indices().next_back().map_or(0, |(p, _)| p)
+    s[..i].grapheme_indices(true).next_back().map_or(0, |(p, _)| p)
 }
 
+/// i より後の書記素の境目
 fn next_boundary(s: &str, i: usize) -> usize {
-    s[i..].chars().next().map_or(i, |c| i + c.len_utf8())
+    s[i..].graphemes(true).next().map_or(i, |g| i + g.len())
 }
 
 /// UTF-8 の位置を UTF-16 の位置にする
@@ -285,6 +289,31 @@ mod tests {
         assert_eq!(s, "豆乳を買う");
         assert_eq!(e.cursor, "豆乳".len());
         assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn backspace_delete_and_arrows_treat_a_grapheme_as_one_character() {
+        // 家族の絵文字（4 人を ZWJ でつないだ 7 つの文字）、肌の色つきの手（2 つ）、結合文字の「か」＋「゛」（2 つ）
+        let family = "👨\u{200D}👩\u{200D}👧\u{200D}👦";
+        let hand = "👍\u{1F3FD}";
+        let ga = "か\u{3099}";
+        let mut s = format!("a{family}{hand}{ga}");
+        let mut e = at(&s, s.len());
+        assert!(e.backspace(&mut s, false));
+        assert_eq!(s, format!("a{family}{hand}"));
+        assert!(e.backspace(&mut s, false));
+        assert_eq!(s, format!("a{family}"));
+        assert!(e.backspace(&mut s, false));
+        assert_eq!(s, "a");
+        // Delete と左右の移動も、並び全体を 1 文字として扱う（途中にキャレットを置かない）
+        let mut s = format!("{family}b");
+        let mut e = at(&s, 0);
+        e.move_right(&s, false, false);
+        assert_eq!(e.cursor, family.len());
+        e.move_left(&s, false, false);
+        assert_eq!(e.cursor, 0);
+        assert!(e.delete(&mut s, false));
+        assert_eq!(s, "b");
     }
 
     #[test]

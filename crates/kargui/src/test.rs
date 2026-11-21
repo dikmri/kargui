@@ -509,6 +509,111 @@ mod tests {
     }
 
     #[test]
+    fn tab_walks_through_list_rows_and_scrolls_them_into_view() {
+        // 段階 0 の宿題: Tab で一覧の行の部品へ移る。見えている行の下へも、1 行ずつスクロールして進む
+        let mut h = book(100);
+        h.click("New item");
+        let list = h.rt.cx.prev.lists[0].clone();
+        // Tab を押して、焦点のある部品の名前を返す。一覧の行の部品なら、全部見えていることも確かめる
+        let step = |h: &mut Harness<Book>, back: bool| -> String {
+            h.press_with(Key::Tab, Mods { shift: back, ..Default::default() });
+            let f = h.rt.cx.focus.expect("Tab で焦点がある");
+            let name = (0..h.rt.tree.info.len()).find(|&i| h.rt.tree.info[i].id == f).and_then(|i| a11y::name_of(&h.rt.tree, i)).unwrap();
+            if name.starts_with("Item ") || name.starts_with("Delete Item") {
+                let r = h.find(&name).unwrap();
+                assert!(r.y >= list.rect.y - 0.5 && r.bottom() <= list.rect.bottom() + 0.5, "{name} が見えていない: {r:?} {:?}", list.rect);
+            }
+            name
+        };
+        let seen: Vec<String> = (0..80).map(|_| step(&mut h, false)).collect();
+        // Add → All → Open → Item 0 → Delete Item 0 → Item 1 → … と、見えていた 16 行より先まで進む
+        assert_eq!(&seen[..5], &["Add", "All", "Open", "Item 0", "Delete Item 0"]);
+        assert!(seen.iter().any(|n| n == "Item 30"), "{seen:?}");
+        // Shift+Tab で戻ると、上の行も 1 行ずつ見えるようにスクロールして戻り、一覧の前の「Open」に着く
+        let back: Vec<String> = (0..80).map(|_| step(&mut h, true)).take_while(|n| n != "Open").collect();
+        assert_eq!(back.last().map(String::as_str), Some("Item 0"), "{back:?}");
+        assert!(h.find("Item 0").is_some());
+    }
+
+    struct TwoFields {
+        a: String,
+        b: String,
+    }
+
+    impl App for TwoFields {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.text_input(&mut self.a).hint("A");
+            ui.text_input(&mut self.b).hint("B");
+            ui.button("OK");
+        }
+    }
+
+    #[test]
+    fn composing_text_stays_in_its_field_when_focus_moves() {
+        // 計画 2.3 の日本語入力 (5): 変換の途中で別の部品を押しても、変換中の文字が消えない。
+        // 元の入力欄に確定し、IME の変換は取り消す（取り消しの知らせで何も変わらない）
+        let mut h = Harness::new(TwoFields { a: String::new(), b: String::new() });
+        h.click("A").ime_compose("ぎゅうにゅう");
+        assert_eq!(h.app().a, "");
+        h.click("B");
+        assert_eq!(h.app().a, "ぎゅうにゅう");
+        assert_eq!(h.app().b, "");
+        assert!(h.rt.cx.ime_cancel, "IME の変換を取り消すように頼む");
+        h.rt.cx.ime_cancel = false;
+        h.ime_compose("");
+        assert_eq!((h.app().a.as_str(), h.app().b.as_str()), ("ぎゅうにゅう", ""));
+        // ボタンを押した時も同じ
+        h.ime_compose("かう");
+        h.click("OK");
+        assert_eq!(h.app().b, "かう");
+        // 同じ入力欄の中を押した時も、確定してからキャレットを動かす
+        h.click("A").ime_compose("を");
+        h.click("A");
+        assert_eq!(h.app().a, "ぎゅうにゅうを");
+    }
+
+    #[test]
+    fn composing_over_a_selection_replaces_it() {
+        // 選んだ文字の上で変換を始めると、選んだ文字は消えて変換中の文字になる（再変換もこの形）
+        let mut h = book(0);
+        h.click("New item").type_text("牛乳を買う");
+        h.press_with(Key::A, Mods { ctrl: true, ..Default::default() });
+        h.ime_compose("とうにゅう");
+        assert_eq!(h.app().input, "");
+        h.ime_commit("豆乳");
+        assert_eq!(h.app().input, "豆乳");
+    }
+
+    #[test]
+    fn reconversion_selects_the_range_the_ime_confirmed() {
+        let mut h = book(0);
+        h.click("New item").type_text("牛乳を買う");
+        // IME が「牛乳」を変換し直すと決めた（UTF-8 の範囲で届く）
+        h.send(vec![Event::ImeSelect { start: 0, end: "牛乳".len() }]);
+        let f = h.rt.cx.ime_field.clone().expect("焦点のある入力欄の写し");
+        assert_eq!((f.anchor, f.cursor), (0, "牛乳".len()));
+        // その上で変換すると、選んだ所だけが置き換わる
+        h.ime_compose("とうにゅう").ime_commit("豆乳");
+        assert_eq!(h.app().input, "豆乳を買う");
+    }
+
+    #[test]
+    fn ime_field_remembers_where_each_composing_character_is() {
+        let mut h = book(0);
+        h.click("New item").type_text("ab");
+        h.ime_compose("かな");
+        let f = h.rt.cx.ime_field.clone().unwrap();
+        assert_eq!(f.value, "ab");
+        assert_eq!(f.cursor, 2);
+        assert_eq!(f.preedit_xs.len(), 3, "2 文字なら境目は 3 つ");
+        assert!(f.preedit_xs[0] < f.preedit_xs[1] && f.preedit_xs[1] < f.preedit_xs[2]);
+        // 境目の両端は、下線を引く範囲（変換中の文字の範囲）と同じ
+        let p = h.rt.cx.preedit_rect.unwrap();
+        assert_eq!(f.preedit_xs[0], p.x);
+        assert!((f.preedit_xs[2] - p.right()).abs() < 1.0, "{:?} {p:?}", f.preedit_xs);
+    }
+
+    #[test]
     fn dragging_the_scroll_thumb_moves_the_list() {
         // 作者の手の確かめ（5 回目）で、1 万件の一覧のつまみを押しても動かなかった（ホイールでしか動かせなかった）
         let mut h = book(10_000);

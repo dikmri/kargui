@@ -468,6 +468,11 @@ impl<'a> Ui<'a> {
         let mut submitted = false;
         let style = crate::text::TextStyle { size: self.px(TextKind::Body.size()), bold: false };
         self.cx.edits.entry(id).or_default().clamp(s);
+        // 焦点が移る前に確定した変換中の文字（押した位置へキャレットを動かすより先に入れる）
+        if self.cx.pending_commit.as_ref().is_some_and(|(pid, _)| *pid == id) {
+            let (_, t) = self.cx.pending_commit.take().unwrap();
+            self.cx.edits.get_mut(&id).unwrap().insert(s, &t, false);
+        }
         if let Some((pid, x, _y, shift)) = self.cx.pointer_text {
             if pid == id {
                 self.cx.pointer_text = None;
@@ -492,6 +497,15 @@ impl<'a> Ui<'a> {
                 }
                 Event::ImeCommit(t) => {
                     st.insert(s, &t, false);
+                }
+                // 変換が始まった: 選んでいる文字は変換中の文字に置き換わる（再変換もこの形）
+                Event::ImePreedit(_) if st.has_selection() => {
+                    st.insert(s, "", false);
+                }
+                Event::ImeSelect { start, end } => {
+                    st.move_to(start, false);
+                    st.move_to(end, true);
+                    st.clamp(s);
                 }
                 Event::Key { key, mods } => match key {
                     Key::Enter => submitted = true,
@@ -932,8 +946,9 @@ impl List<'_, '_> {
         if let Kind::List { view_h: v, .. } = &mut self.ui.tree.info[self.idx].kind {
             *v = view_h;
         }
-        let first = ((off_px / self.row_h).floor() as usize).min(self.count);
-        let last = (((off_px + view_h) / self.row_h).ceil() as usize).min(self.count);
+        // 見えている行に加えて、上下に 1 行ずつ見えない行も作る。Tab でその行へ移ると、見えるようにスクロールする
+        let first = ((off_px / self.row_h).floor() as usize).min(self.count).saturating_sub(1);
+        let last = ((((off_px + view_h) / self.row_h).ceil() as usize) + 1).min(self.count);
         for i in first..last {
             let rid = Id(hash_of((self.id.0, i)));
             let mut list_ui = self.ui.child(self.idx);

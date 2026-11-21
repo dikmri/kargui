@@ -22,6 +22,10 @@ use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows::Win32::System::Threading::{
+    AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+    THREAD_PRIORITY_NORMAL,
+};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::Ime::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -34,6 +38,7 @@ use crate::damage::Summary;
 use crate::gdi::Gdi;
 use crate::geom::{Color, IRect};
 use crate::gpu::Gpu;
+use crate::ime;
 use crate::input::{A11yAction, Event, Key, Mods};
 use crate::log;
 
@@ -69,6 +74,8 @@ enum Post {
     Destroy(HWND),
     Raise(QueuedEvents),
     AssociateIme(HWND, bool),
+    /// IME の変換を取り消す（変換中の文字をこちらで入力欄に確定した時）
+    ImeCancel(HWND),
     ImePosition(HWND, IRect),
     DarkTitle(HWND, bool),
     /// マウスを捕まえる（true）か放す（false）か
@@ -275,6 +282,14 @@ fn drain_post() {
                 log::event("ime.associate", &format!("on={on}"), &format!("ok={}", ok.as_bool()));
             },
             Post::ImePosition(hwnd, caret) => set_ime_position(hwnd, caret),
+            Post::ImeCancel(hwnd) => unsafe {
+                let himc = ImmGetContext(hwnd);
+                let ok = !himc.is_invalid() && ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0).as_bool();
+                if !himc.is_invalid() {
+                    let _ = ImmReleaseContext(hwnd, himc);
+                }
+                log::event("ime.cancel", "", &format!("ok={ok}"));
+            },
             Post::Capture(hwnd, on) => unsafe {
                 if on {
                     SetCapture(hwnd);
@@ -381,6 +396,10 @@ impl State {
                 self.post.push(Post::Raise(events));
             }
         }
+        // 変換中の文字をこちらで確定した時は、関連付けを変える前に IME の変換を取り消す
+        if std::mem::take(&mut self.rt.cx.ime_cancel) {
+            self.post.push(Post::ImeCancel(self.hwnd));
+        }
         let was_input = focus_before.is_some_and(|f| self.rt.cx.prev.inputs.contains_key(&f));
         let is_input = self.rt.cx.focus.is_some_and(|f| self.rt.cx.prev.inputs.contains_key(&f));
         if was_input != is_input || self.rt.frames == 1 {
@@ -472,12 +491,10 @@ impl State {
         }
     }
 
-    /// IME の「変換中の何文字目は画面のどこか」の問い合わせに答える。
-    /// 文字ごとの位置は持っていないので、変換中の文字の範囲を文字数で等分して近い位置を返す
+    /// IME の「変換中の何文字目は画面のどこか」の問い合わせに答える。描いた時に覚えた文字の境目を使う
     fn answer_char_position(&self, info: &mut IMECHARPOSITION) -> bool {
         let (Some(p), Some(r)) = (self.rt.cx.preedit_rect, self.rt.cx.input_rect) else { return false };
-        let count = self.rt.cx.preedit.encode_utf16().count().max(1) as f32;
-        let x = p.x + p.w * (info.dwCharPos as f32 / count).min(1.0);
+        let x = self.rt.cx.ime_field.as_ref().and_then(|f| ime::char_x(f, info.dwCharPos as usize)).unwrap_or(p.x);
         let mut pt = POINT { x: x.round() as i32, y: p.y as i32 };
         let mut lt = POINT { x: r.x as i32, y: r.y as i32 };
         let mut rb = POINT { x: r.right() as i32, y: r.bottom() as i32 };
@@ -731,6 +748,41 @@ impl State {
                     }
                     return ok.then_some(LRESULT(1));
                 }
+                if imr == IMR_DOCUMENTFEED || imr == IMR_RECONVERTSTRING {
+                    let name = if imr == IMR_DOCUMENTFEED { "DOCUMENTFEED" } else { "RECONVERTSTRING" };
+                    let preedit = &self.rt.cx.preedit;
+                    let answer = self.rt.cx.ime_field.as_ref().and_then(|f| {
+                        if imr == IMR_DOCUMENTFEED { Some(ime::document_feed(f, preedit)) } else { ime::reconvert(f, preedit) }
+                    });
+                    let Some(r) = answer else {
+                        if log_this {
+                            log::event("ime.request", &format!("imr={name}"), "answered=false");
+                        }
+                        return Some(LRESULT(0));
+                    };
+                    let need = r.size();
+                    // 1 回目は大きさだけを聞かれる（lParam が 0）。2 回目に IME が用意した場所へ書く
+                    let wrote = lp.0 != 0 && unsafe { write_reconvert(lp.0 as *mut RECONVERTSTRING, &r) };
+                    if log_this {
+                        log::event(
+                            "ime.request",
+                            &format!("imr={name} buffer={}", lp.0 != 0),
+                            &format!("size={need} wrote={wrote} len={} comp={:?}", r.text.len(), r.comp),
+                        );
+                    }
+                    if lp.0 != 0 && !wrote {
+                        return Some(LRESULT(0));
+                    }
+                    return Some(LRESULT(need as isize));
+                }
+                if imr == IMR_CONFIRMRECONVERTSTRING && lp.0 != 0 {
+                    let rs = unsafe { &*(lp.0 as *const RECONVERTSTRING) };
+                    let Some(f) = self.rt.cx.ime_field.as_ref() else { return Some(LRESULT(0)) };
+                    let (start, end) = ime::confirmed_range(&f.value, rs.dwCompStrOffset, rs.dwCompStrLen);
+                    log::event("ime.request", "imr=CONFIRMRECONVERTSTRING", &format!("select={start}..{end}"));
+                    self.push(Event::ImeSelect { start, end });
+                    return Some(LRESULT(1));
+                }
                 if log_this {
                     log::event("ime.request", &format!("imr=0x{imr:02X}"), "default");
                 }
@@ -928,8 +980,11 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     });
 
     let mut msg = MSG::default();
+    // 測定で比べるため、環境変数 KARGUI_MMCSS=0 で登録しないようにできる
+    let mut boost = Boost(None, std::env::var("KARGUI_MMCSS").as_deref() != Ok("0"));
     loop {
         let animating = with_state(|st| st.animating).unwrap_or(false);
+        boost.set(animating);
         if animating {
             if !dispatch_pending(&mut msg) {
                 break;
@@ -958,7 +1013,70 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             drain_post();
         }
     }
+    boost.set(false);
     STATE.with(|s| s.borrow_mut().take());
     log::event("loop.end", "", "ok");
     Ok(())
+}
+
+/// アニメーションの間だけ、このスレッドを MMCSS（動画・ゲーム向けに優先度を上げる Windows の仕組み）に登録する。
+/// 垂直同期の待ちから起こされた時に、同じコアのほかのスレッドより先に動けるようにする
+/// （1 コアの条件で、待ちから起こされるのが 1 フレーム以上遅れて途切れていた）
+struct Boost(Option<HANDLE>, bool);
+
+impl Boost {
+    fn set(&mut self, on: bool) {
+        match (on && self.1, self.0) {
+            (true, None) => {
+                let mut task = 0u32;
+                match unsafe { AvSetMmThreadCharacteristicsW(w!("Games"), &mut task) } {
+                    Ok(h) => {
+                        self.0 = Some(h);
+                        log::event("mmcss.on", "task=Games", &format!("index={task}"));
+                    }
+                    Err(e) => {
+                        // 登録できない時は、待ちから起こされたら先に動けるよう普通の優先度より 1 つ上げる
+                        let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) };
+                        self.0 = Some(HANDLE::default());
+                        log::event("mmcss.on", "task=Games", &format!("failed={e:?} fallback=above_normal"));
+                    }
+                }
+            }
+            (false, Some(h)) => {
+                if h.is_invalid() {
+                    let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL) };
+                } else {
+                    let _ = unsafe { AvRevertMmThreadCharacteristics(h) };
+                }
+                self.0 = None;
+                log::event("mmcss.off", "", "ok");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// IME が用意した場所に RECONVERTSTRING を書く。場所が足りなければ書かずに false
+///
+/// # Safety
+/// `rs` は IME が渡した RECONVERTSTRING を指し、その dwSize バイトを書けること
+unsafe fn write_reconvert(rs: *mut RECONVERTSTRING, r: &ime::Reconvert) -> bool {
+    let need = r.size();
+    let rs = unsafe { &mut *rs };
+    if (rs.dwSize as usize) < need {
+        return false;
+    }
+    rs.dwVersion = 0;
+    rs.dwStrLen = r.text.len() as u32;
+    rs.dwStrOffset = ime::HEADER as u32;
+    rs.dwCompStrLen = r.comp.1 as u32;
+    rs.dwCompStrOffset = (r.comp.0 * 2) as u32;
+    rs.dwTargetStrLen = r.target.1 as u32;
+    rs.dwTargetStrOffset = (r.target.0 * 2) as u32;
+    unsafe {
+        let text = (rs as *mut RECONVERTSTRING as *mut u8).add(ime::HEADER) as *mut u16;
+        std::ptr::copy_nonoverlapping(r.text.as_ptr(), text, r.text.len());
+        *text.add(r.text.len()) = 0;
+    }
+    true
 }

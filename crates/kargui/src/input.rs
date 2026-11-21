@@ -79,5 +79,7 @@ pub(crate) enum Event {
     ImePreedit(String),
     /// 確定した変換の結果
     ImeCommit(String),
+    /// 再変換で IME が決めた範囲を選ぶ（入力欄の文字の UTF-8 の位置）
+    ImeSelect { start: usize, end: usize },
     A11y { target: Id, action: A11yAction },
 }

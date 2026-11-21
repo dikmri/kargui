@@ -21,6 +21,7 @@ mod damage;
 mod gdi;
 mod geom;
 mod gpu;
+mod ime;
 mod input;
 pub mod log;
 mod paint;

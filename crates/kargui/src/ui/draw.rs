@@ -3,6 +3,7 @@
 use crate::geom::{Color, IRect, Rect};
 use crate::paint::{DrawList, Scroll};
 use crate::text::{Laid, TextStyle};
+use crate::ime::ImeField;
 use crate::ui::context::{Context, Hit, ListInfo, Prev};
 use crate::ui::edit;
 use crate::ui::layout::{self, Dir, Size};
@@ -120,6 +121,8 @@ struct Painter<'a> {
     prev: Prev,
     /// 今の切り取り範囲（当たり判定の範囲を切るため）
     clip: Rect,
+    /// 今描いている一覧の行（一覧の id と行の範囲）
+    row: Option<(crate::ui::Id, Rect)>,
 }
 
 /// 画面の木を描く。次のフレームの当たり判定の情報を cx.prev に入れる
@@ -129,7 +132,8 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     cx.caret = None;
     cx.preedit_rect = None;
     cx.input_rect = None;
-    let mut p = Painter { cx, d, prev: Prev::default(), clip: window.to_rect() };
+    cx.ime_field = None;
+    let mut p = Painter { cx, d, prev: Prev::default(), clip: window.to_rect(), row: None };
     p.node(tree, 0);
     p.d.finish();
     let prev = std::mem::take(&mut p.prev);
@@ -155,16 +159,24 @@ impl Painter<'_> {
 
     fn hit(&mut self, tree: &Tree, i: usize, focusable: bool, text_input: bool) {
         let r = tree.layout[i].rect;
-        if let Some(r) = intersect(r, self.clip) {
-            let id = tree.info[i].id;
-            // チェックとスイッチは小さいので、少し外れたクリックも当てる（切り取り範囲の外には広げない）
-            let small = matches!(tree.info[i].kind, Kind::Checkbox { .. } | Kind::Toggle { .. });
-            let (sx, sy) = if small { (self.px(sz::SLOP_X), self.px(sz::SLOP_Y)) } else { (0.0, 0.0) };
-            let slop = intersect(Rect::new(r.x - sx, r.y - sy, r.w + 2.0 * sx, r.h + 2.0 * sy), self.clip).unwrap_or(r);
-            self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input });
-            if focusable {
+        let id = tree.info[i].id;
+        if let Some(row) = self.row.filter(|_| focusable) {
+            self.prev.rows.insert(id, row);
+        }
+        let Some(r) = intersect(r, self.clip) else {
+            // 一覧の見えない行（上下に 1 行ずつ作る）の部品は、押せないが Tab では移れる
+            if focusable && self.row.is_some() {
                 self.prev.focus_order.push(id);
             }
+            return;
+        };
+        // チェックとスイッチは小さいので、少し外れたクリックも当てる（切り取り範囲の外には広げない）
+        let small = matches!(tree.info[i].kind, Kind::Checkbox { .. } | Kind::Toggle { .. });
+        let (sx, sy) = if small { (self.px(sz::SLOP_X), self.px(sz::SLOP_Y)) } else { (0.0, 0.0) };
+        let slop = intersect(Rect::new(r.x - sx, r.y - sy, r.w + 2.0 * sx, r.h + 2.0 * sy), self.clip).unwrap_or(r);
+        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input });
+        if focusable {
+            self.prev.focus_order.push(id);
         }
     }
 
@@ -350,6 +362,11 @@ impl Painter<'_> {
         }
         let caret = Rect::new((x0 + caret_x).round(), ty, (1.5 * self.cx.scale).round().max(1.0), line_h.round());
         if focused {
+            // IME の問い合わせに答えるための写し。変換中の文字の境目ごとの x も覚える
+            let start16 = edit::utf16_of(&shown, cursor);
+            let n16 = preedit.encode_utf16().count();
+            let preedit_xs = if preedit.is_empty() { Vec::new() } else { (0..=n16).map(|k| (x0 + laid.x_of(start16 + k)).round()).collect() };
+            self.cx.ime_field = Some(ImeField { id, value: value.to_string(), cursor, anchor, preedit_xs });
             self.d.fill(caret, t.text, 0.0);
             self.cx.caret = Some(caret);
             self.cx.input_rect = Some(r);
@@ -378,7 +395,9 @@ impl Painter<'_> {
                 let inset = tree.layout[c].pad.0;
                 self.d.fill(Rect::new(row.x + inset, row.bottom() - line, (row.w - 2.0 * inset).max(0.0), line), sep, 0.0);
             }
+            self.row = Some((id, row));
             self.node(tree, c);
+            self.row = None;
         }
         self.clip = outer;
         self.d.pop_clip();
