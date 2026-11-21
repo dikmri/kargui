@@ -101,6 +101,31 @@ pub(crate) struct Placed {
     pub slot: Slot,
 }
 
+/// 並べた文字列の 1 行。位置は UTF-16 で、end は改行の手前。改行で終わる文字列は、最後に空の行を持つ
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Line {
+    pub start: usize,
+    pub end: usize,
+    /// 行の上端と高さ（並べた範囲の左上が原点）
+    pub top: f32,
+    pub height: f32,
+    /// 行の文字の幅（行末の空白を含む）
+    pub width: f32,
+}
+
+/// 改行で終わる文字列の最後の空の行を足す（並べる道具が作らない時）
+fn add_trailing_line(s: &str, lines: &mut Vec<Line>) {
+    let len16 = s.encode_utf16().count();
+    if !s.ends_with('\n') {
+        return;
+    }
+    if let Some(&last) = lines.last() {
+        if last.start != len16 {
+            lines.push(Line { start: len16, end: len16, top: last.top + last.height, height: last.height, width: 0.0 });
+        }
+    }
+}
+
 /// 文字の書式
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TextStyle {
@@ -226,6 +251,45 @@ mod tests {
 
     /// 太字は濃く描く。太字の書体が無いフォント（Linux の Takao など）では輪郭を太らせるので、
     /// 幅は変わらないことがある。幅ではなく濃さで確かめる
+    #[test]
+    fn lines_carets_and_points_in_multiline_text() {
+        let mut t = Text::new().unwrap();
+        let st = TextStyle { size: 14.0, bold: false };
+        let laid = t.layout("ab\ncd\n", st, None);
+        let spans: Vec<(usize, usize)> = laid.lines.iter().map(|l| (l.start, l.end)).collect();
+        assert_eq!(spans, [(0, 2), (3, 5), (6, 6)], "改行で終わると最後に空の行");
+        let h = laid.lines[0].height;
+        assert!(h > 10.0 && laid.lines[1].top >= h - 0.5 && laid.lines[2].top >= 2.0 * h - 1.0, "{:?}", laid.lines);
+        assert!(laid.height >= 3.0 * h - 1.0, "高さは 3 行分: {}", laid.height);
+        // 4 の前（d の前）は 2 行目
+        let (x, top, ch) = laid.caret(4);
+        assert!(x > 0.0 && (top - laid.lines[1].top).abs() < 0.5 && ch > 10.0, "{x} {top} {ch}");
+        // 最後の改行の後ろは、空の最後の行の左端
+        let (x, top, _) = laid.caret(6);
+        assert!(x.abs() < 0.5 && (top - laid.lines[2].top).abs() < 0.5, "{x} {top}");
+        // 2 行目の右の外を押すと 2 行目の終わり、左の端なら 2 行目の始め
+        assert_eq!(laid.index_at_point(1000.0, laid.lines[1].top + 2.0), 5);
+        assert_eq!(laid.index_at_point(0.0, laid.lines[1].top + 2.0), 3);
+        // 折り返した行は、すき間なく並び、幅に収まる
+        let long = "これは日本語の折り返しを確かめるための文です。";
+        let w = t.layout(long, st, Some(100.0));
+        assert!(w.lines.len() >= 3, "{:?}", w.lines);
+        assert_eq!(w.lines[0].start, 0);
+        assert_eq!(w.lines.last().unwrap().end, long.encode_utf16().count());
+        for pair in w.lines.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+            assert!(pair[1].top > pair[0].top);
+        }
+        for l in &w.lines {
+            assert!(l.width <= 101.0, "{l:?}");
+        }
+        // 1 行の文字列と空の文字列も 1 行
+        assert_eq!(t.layout("abc", st, None).lines.len(), 1);
+        let empty = t.layout("", st, None);
+        assert_eq!(empty.lines.len(), 1);
+        assert_eq!(empty.caret(0).1, 0.0);
+    }
+
     #[test]
     fn bold_draws_more_ink_and_empty_text_has_height() {
         let mut t = Text::new().unwrap();

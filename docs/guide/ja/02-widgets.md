@@ -1,4 +1,4 @@
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Ui::icon Ui::icon_button Button::icon Ui::image Image::from_rgba Image::open Toggled::changed Toggled::strike Slider::changed sig=611901922cf6e15f -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::text_area TextArea::hint TextArea::rows Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Ui::icon Ui::icon_button Button::icon Ui::image Image::from_rgba Image::open Toggled::changed Toggled::strike Slider::changed sig=a0f2ab3741c86140 -->
 # 部品
 
 部品は `ui` のメソッドで作ります。値を変える部品には `&mut` で状態を渡し、戻り値で何が起きたかを聞きます。
@@ -76,7 +76,21 @@ if field.submitted() {
 # });
 ```
 
-日本語入力の決まりは [日本語入力](07-japanese-input.md) にあります。
+何行も書く欄は `ui.text_area(..)` です。Enter で改行が入り、長い行は折り返して、入りきらない分はスクロールします。上下の矢印・Home/End（行の始めと終わり）・Ctrl+Home/End（全体の始めと終わり）・PageUp/PageDown でキャレットが動きます。Enter を改行に使うので、送る操作には Ctrl+Enter などのショートカットを使います。
+
+```rust
+use kargui::{Key, Mods};
+# let (mut message, mut sent) = (String::new(), 0);
+# kargui::test::example(|ui| {
+ui.text_area(&mut message).hint("メッセージ").rows(5).grow();
+if ui.shortcut(Key::Enter, Mods::CTRL) && !message.is_empty() {
+    message.clear();
+    sent += 1;
+}
+# });
+```
+
+日本語入力の決まりは [日本語入力](07-japanese-input.md) にあります。どちらの入力欄でも同じです。
 
 ## 数を選ぶ
 

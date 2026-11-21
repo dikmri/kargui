@@ -48,6 +48,8 @@ pub(crate) struct Hit {
     pub text_input: bool,
     /// 焦点がある時に矢印などのキーを受ける（スライダー）
     pub arrows: bool,
+    /// 複数行の入力欄（上下の矢印と PageUp/PageDown も受ける）
+    pub multiline: bool,
     /// 押せる。押せない部品も当たりには入れ、下の部品へクリックが抜けないようにする
     pub enabled: bool,
 }
@@ -114,6 +116,8 @@ pub(crate) struct Prev {
     pub lists: Vec<ListInfo>,
     /// 入力欄の場所と、文字の左端の x（物理ピクセル）
     pub inputs: HashMap<Id, (Rect, f32)>,
+    /// 複数行の入力欄の、文字の左上（スクロールを入れた窓の座標）、折り返しの幅、見える高さ（物理ピクセル）
+    pub areas: HashMap<Id, (f32, f32, f32, f32)>,
     /// 一覧の行の中の、焦点を持てる部品 → (一覧の id, 行の範囲)
     pub rows: HashMap<Id, (Id, Rect)>,
     /// 選べる一覧の行 → (一覧の id, 何行目)
@@ -172,6 +176,8 @@ pub(crate) struct Context {
     pub keys: Vec<Event>,
     /// 部品が使わなかったキー（Ui::shortcut）
     pub app_keys: Vec<(Key, Mods)>,
+    /// キャレットが見えるようにスクロールする複数行の入力欄（打った・動かした時。描く時に使って消す）
+    pub reveal: Option<Id>,
     /// 入力欄の中のクリック（場所と Shift）
     pub pointer_text: Option<(Id, f32, f32, bool)>,
     /// 押している部品の上のポインターの位置（押した・動かした・離した時に入れる）
@@ -231,6 +237,7 @@ impl Context {
             closing: HashSet::new(),
             keys: Vec::new(),
             app_keys: Vec::new(),
+            reveal: None,
             pointer_text: None,
             pointer: None,
             released: None,
@@ -546,7 +553,9 @@ impl Context {
                 Event::Key { key, mods } => {
                     let text = self.focus.is_some_and(|f| self.is_text_input(f));
                     let arrows = self.focus.is_some_and(|f| self.prev.hits.iter().any(|h| h.id == f && h.arrows));
-                    if (text && text_input_takes(key, mods)) || (arrows && arrows_take(key, mods)) {
+                    let multiline = self.focus.is_some_and(|f| self.prev.hits.iter().any(|h| h.id == f && h.multiline));
+                    let lines = multiline && !mods.alt && !mods.ctrl && matches!(key, Key::Up | Key::Down | Key::PageUp | Key::PageDown);
+                    if (text && (text_input_takes(key, mods) || lines)) || (arrows && arrows_take(key, mods)) {
                         self.keys.push(Event::Key { key, mods });
                     } else {
                         self.app_keys.push((key, mods));

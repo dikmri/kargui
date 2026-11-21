@@ -19,6 +19,8 @@ mod sz {
     pub const BUTTON_MIN_W: f32 = 56.0;
     pub const BOX: f32 = 16.0;
     pub const BOX_GAP: f32 = 8.0;
+    /// 複数行の入力欄の上下の余白
+    pub const AREA_PAD_Y: f32 = 6.0;
     /// ボタンの中のアイコンと文字の間
     pub const ICON_GAP: f32 = 6.0;
     pub const TRACK_W: f32 = 36.0;
@@ -85,9 +87,33 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             (laid.width.ceil() + 2.0 * p(sz::SEGMENT_PAD), p(sz::SEGMENT_H))
         }
         Kind::TextInput { .. } => (p(sz::INPUT_W), p(sz::INPUT_H)),
+        Kind::TextArea { rows, .. } => {
+            let line_h = cx.text.layout("あ", style(cx, TextKind::Body, false), None).height.ceil();
+            (p(sz::INPUT_W), *rows as f32 * line_h + 2.0 * p(sz::AREA_PAD_Y))
+        }
         Kind::Slider { .. } => (p(sz::SLIDER_W), p(sz::SLIDER_H)),
         _ => return None,
     })
+}
+
+/// UTF-16 の範囲 [a, b) を、行ごとの四角にする（並べた範囲の左上が原点）。範囲が改行をまたぐ行は、
+/// 行の終わりから newline の幅だけ伸ばして、改行も選ばれていることを見せる
+fn range_rects(laid: &Laid, a: usize, b: usize, newline: f32) -> Vec<Rect> {
+    let mut out = Vec::new();
+    if a >= b {
+        return out;
+    }
+    for l in &laid.lines {
+        if l.end < a || l.start > b || (l.start == b && b > a && l.start != l.end) {
+            continue;
+        }
+        let x0 = if a > l.start { laid.caret(a).0 } else { 0.0 };
+        let (x1, extra) = if b <= l.end { (laid.caret(b).0, 0.0) } else { (l.width, newline) };
+        if x1 + extra > x0 {
+            out.push(Rect::new(x0, l.top, x1 + extra - x0, l.height));
+        }
+    }
+    out
 }
 
 /// ボタンの中のアイコンの大きさ（論理ピクセル）
@@ -279,7 +305,8 @@ impl Painter<'_> {
         let (sx, sy) = if small { (self.px(sz::SLOP_X), self.px(sz::SLOP_Y)) } else { (0.0, 0.0) };
         let slop = intersect(Rect::new(r.x - sx, r.y - sy, r.w + 2.0 * sx, r.h + 2.0 * sy), self.clip).unwrap_or(r);
         let arrows = enabled && matches!(tree.info[i].kind, Kind::Slider { .. });
-        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, enabled });
+        let multiline = matches!(tree.info[i].kind, Kind::TextArea { .. });
+        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, multiline, enabled });
         if focusable {
             self.prev.focus_order.push(id);
         }
@@ -351,7 +378,7 @@ impl Painter<'_> {
                     self.prev.rows.insert(id, (list, row));
                 }
                 if let Some(v) = intersect(r, self.clip) {
-                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, enabled });
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, multiline: false, enabled });
                 }
                 if !enabled {
                     self.prev.disabled.insert(id);
@@ -498,6 +525,7 @@ impl Painter<'_> {
                 self.hit(tree, i, true, false);
             }
             Kind::TextInput { value, hint } => self.text_input(tree, i, value, hint),
+            Kind::TextArea { value, hint, .. } => self.text_area(tree, i, value, hint),
             Kind::List { count, separators, .. } => self.list(tree, i, *count, *separators),
             Kind::Scroll => self.scroll_area(tree, i),
             Kind::Slider { value, min, max, .. } => {
@@ -536,7 +564,9 @@ impl Painter<'_> {
         let line = self.line();
         let window = Rect::new(0.0, 0.0, self.cx.width, self.cx.height);
         let start = self.prev.focus_order.len();
-        let block = |p: &mut Self, rect: Rect| p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, enabled: false });
+        let block = |p: &mut Self, rect: Rect| {
+            p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, multiline: false, enabled: false })
+        };
         let radius = self.px(if o.kind == OverlayKind::Tooltip { 4.0 } else { 8.0 });
         if o.kind == OverlayKind::Dialog {
             self.d.fill(window, [0.0, 0.0, 0.0, if self.cx.dark { 0.55 } else { 0.35 }], 0.0);
@@ -715,6 +745,109 @@ impl Painter<'_> {
         }
         self.d.pop_clip();
         self.prev.inputs.insert(id, (r, x0));
+        self.hit(tree, i, true, true);
+    }
+
+    /// 複数行の入力欄。折り返して並べ、縦にスクロールする（スクロールの棒とホイールは一覧と同じ仕組み）。
+    /// 選んだ範囲と変換中の文字の下線は、行ごとの四角に分けて描く
+    fn text_area(&mut self, tree: &Tree, i: usize, value: &str, hint: &str) {
+        let r = tree.layout[i].rect;
+        let id = tree.info[i].id;
+        let t = self.cx.theme.clone();
+        let line = self.line();
+        let focused = self.cx.focus == Some(id);
+        let off = tree.info[i].disabled;
+        let radius = self.px(sz::RADIUS);
+        self.d.boxed(r, if off { t.button } else { t.field }, if focused { t.accent } else { t.border }, if focused { 2.0 * line } else { line }, radius);
+        let (pad_x, pad_y) = (self.px(sz::INPUT_PAD), self.px(sz::AREA_PAD_Y));
+        let gutter = self.px(SCROLL_GUTTER);
+        // 文字を並べる範囲（右にスクロールの棒の分をいつも空け、幅が揺れないようにする）
+        let inner = Rect::new(r.x + pad_x, r.y + pad_y, (r.w - 2.0 * pad_x - gutter).max(1.0), (r.h - 2.0 * pad_y).max(1.0));
+        let view = Rect::new(r.x + line, r.y + line, (r.w - 2.0 * line).max(0.0), (r.h - 2.0 * line).max(0.0));
+        let st = style(self.cx, TextKind::Body, false);
+        let (cursor, anchor) = self.cx.edits.get(&id).map_or((value.len(), value.len()), |e| (e.cursor.min(value.len()), e.anchor.min(value.len())));
+        let preedit = if focused { self.cx.preedit.clone() } else { String::new() };
+        let shown = if preedit.is_empty() { value.to_string() } else { format!("{}{}{}", &value[..cursor], preedit, &value[cursor..]) };
+        let laid = self.cx.text.layout(&shown, st, Some(inner.w));
+        let start16 = edit::utf16_of(&shown, cursor);
+        let n16 = preedit.encode_utf16().count();
+        let clauses = if preedit.is_empty() { None } else { self.cx.preedit_clauses.clone() };
+        let caret16 = match clauses.as_ref().and_then(|c| c.cursor).filter(|&c| c <= n16) {
+            Some(c) => start16 + c,
+            None => start16 + n16,
+        };
+        let (cx_, cy, ch) = laid.caret(caret16);
+        // 縦のスクロール（論理ピクセルで持つ）。打った・動かした時だけ、キャレットが見えるようにする
+        let scale = self.cx.scale;
+        let content_h = laid.height + 2.0 * pad_y;
+        let max = (content_h - r.h).max(0.0);
+        let mut offset = (self.cx.scrolls.get(&id).copied().unwrap_or(0.0) * scale).clamp(0.0, max);
+        if self.cx.reveal == Some(id) {
+            self.cx.reveal = None;
+            if cy - offset < 0.0 {
+                offset = cy;
+            }
+            if cy + ch + 2.0 * pad_y - offset > r.h {
+                offset = cy + ch + 2.0 * pad_y - r.h;
+            }
+            offset = offset.clamp(0.0, max).round();
+        }
+        self.cx.scrolls.insert(id, offset / scale);
+        let (ox, oy) = (inner.x, (inner.y - offset).round());
+        self.d.push_clip(IRect::covering(view), None);
+        // 選んだ範囲
+        if cursor != anchor && preedit.is_empty() {
+            let (a, b) = (edit::utf16_of(&shown, cursor.min(anchor)), edit::utf16_of(&shown, cursor.max(anchor)));
+            for rr in range_rects(&laid, a, b, self.px(4.0)) {
+                self.d.fill(Rect::new(ox + rr.x, oy + rr.y, rr.w, rr.h), t.selection, 0.0);
+            }
+        }
+        if shown.is_empty() {
+            let h = self.cx.text.layout(hint, st, Some(inner.w));
+            put(self.d, &h, ox, oy, if off { t.done_text } else { t.weak_text });
+        } else {
+            put(self.d, &laid, ox, oy, if off { t.done_text } else { t.text });
+        }
+        if !preedit.is_empty() {
+            // 文節ごとに下線を引き、今変換している文節は太くする。行をまたぐ文節は行ごとに引く
+            let bounds = clauses.as_ref().map(|c| c.bounds.clone()).filter(|b| b.last() == Some(&n16)).unwrap_or_else(|| vec![0, n16]);
+            let target = clauses.as_ref().and_then(|c| c.target);
+            let gap = (2.0 * scale).round();
+            for w in bounds.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let thick = target.is_some_and(|(t0, t1)| a < t1 && t0 < b);
+                let h = if thick { 2.0 * line } else { line };
+                for rr in range_rects(&laid, start16 + a, start16 + b, 0.0) {
+                    let wdt = (rr.w - if b < n16 { gap } else { 0.0 }).max(0.0);
+                    self.d.fill(Rect::new((ox + rr.x).round(), (oy + rr.y + rr.h).round() - 2.0 * line, wdt.round(), h), t.text, 0.0);
+                }
+            }
+            let (pa, pt, ph) = laid.caret(start16);
+            let (pb, _, _) = laid.caret(start16 + n16);
+            self.cx.preedit_rect = Some(Rect::new((ox + pa).round(), oy + pt, (pb - pa).max(0.0), ph + 3.0 * line));
+        }
+        let caret = Rect::new((ox + cx_).round(), (oy + cy).round(), (1.5 * scale).round().max(1.0), ch.round());
+        if focused {
+            let preedit_xs = if preedit.is_empty() { Vec::new() } else { (0..=n16).map(|k| (ox + laid.caret(start16 + k).0).round()).collect() };
+            self.cx.ime_field = Some(ImeField { id, value: value.to_string(), cursor, anchor, preedit_xs });
+            if caret.bottom() > view.y && caret.y < view.bottom() {
+                self.d.fill(caret, t.text, 0.0);
+            }
+            self.cx.caret = Some(caret);
+            self.cx.input_rect = Some(r);
+            if preedit.is_empty() {
+                self.cx.preedit_rect = Some(Rect::new(caret.x, caret.y, 0.0, ch + 3.0 * line));
+            }
+        }
+        self.d.pop_clip();
+        // ホイールとスクロールの棒（一覧と同じ仕組み。cx.scrolls を動かす）
+        let (thumb, bar) = self.scrollbar_geometry(view, content_h, offset);
+        self.prev.lists.push(ListInfo { id, rect: view, content_h, thumb, bar });
+        if let Some(th) = thumb {
+            self.draw_thumb(id, th);
+        }
+        self.prev.inputs.insert(id, (r, ox));
+        self.prev.areas.insert(id, (ox, oy, inner.w, inner.h));
         self.hit(tree, i, true, true);
     }
 

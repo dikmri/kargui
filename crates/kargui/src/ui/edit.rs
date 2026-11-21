@@ -17,6 +17,15 @@ pub(crate) struct EditState {
     redo: Vec<Snapshot>,
     /// 続けて打った文字を 1 回の「元に戻す」にまとめるため、直前の操作が文字の入力だったか
     last_was_typing: bool,
+    /// 複数行の入力欄（改行を入れる）
+    pub multiline: bool,
+    /// 上下の矢印で続けて移る時に保つ横の位置（物理ピクセル。ほかの操作で忘れる）
+    pub goal_x: Option<f32>,
+}
+
+/// UTF-16 の位置 i がある行の番号。折り返しの境目（前の行の終わり = 次の行の始め）は次の行にする
+pub(crate) fn line_of(lines: &[crate::text::Line], i: usize) -> usize {
+    lines.iter().rposition(|l| l.start <= i).unwrap_or(0)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,9 +133,14 @@ impl EditState {
         true
     }
 
-    /// 文字を入れる（選択していれば置き換える）。改行は入れない（1 行の入力欄）
+    /// 文字を入れる（選択していれば置き換える）。1 行の入力欄は改行を入れない。複数行の入力欄は改行を入れ、
+    /// Windows の改行（CR LF）と古い Mac の改行（CR）は LF にそろえる
     pub fn insert(&mut self, s: &mut String, text: &str, typing: bool) -> bool {
-        let text: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+        let text: String = if self.multiline {
+            text.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            text.chars().filter(|c| *c != '\n' && *c != '\r').collect()
+        };
         if text.is_empty() && !self.has_selection() {
             return false;
         }
@@ -289,6 +303,32 @@ mod tests {
         assert_eq!(s, "豆乳を買う");
         assert_eq!(e.cursor, "豆乳".len());
         assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn multiline_insert_keeps_newlines_and_makes_crlf_lf() {
+        let mut s = String::from("ab");
+        let mut e = EditState { cursor: 1, anchor: 1, multiline: true, ..Default::default() };
+        assert!(e.insert(&mut s, "1\r\n2\r3\n", false));
+        assert_eq!(s, "a1\n2\n3\nb");
+        assert_eq!(e.cursor, "a1\n2\n3\n".len());
+    }
+
+    #[test]
+    fn line_of_finds_the_line_of_a_position() {
+        use crate::text::Line;
+        let l = |start, end, top| Line { start, end, top, height: 10.0, width: 0.0 };
+        // "ab\ncd\n" の行: [0, 2) [3, 5) [6, 6)
+        let lines = [l(0, 2, 0.0), l(3, 5, 10.0), l(6, 6, 20.0)];
+        assert_eq!(line_of(&lines, 0), 0);
+        assert_eq!(line_of(&lines, 2), 0, "改行の手前は前の行");
+        assert_eq!(line_of(&lines, 3), 1);
+        assert_eq!(line_of(&lines, 5), 1);
+        assert_eq!(line_of(&lines, 6), 2);
+        // 折り返し（改行なし）の境目は、次の行の始め
+        let wrapped = [l(0, 4, 0.0), l(4, 8, 10.0)];
+        assert_eq!(line_of(&wrapped, 4), 1);
+        assert_eq!(line_of(&wrapped, 8), 1);
     }
 
     #[test]

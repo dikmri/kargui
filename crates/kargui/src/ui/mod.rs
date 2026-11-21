@@ -137,6 +137,8 @@ pub(crate) enum Kind {
     Toggle { on: bool, text: String },
     Segment { text: String, selected: bool },
     TextInput { value: String, hint: String },
+    /// 複数行の入力欄（rows は見える行の数）
+    TextArea { value: String, hint: String, rows: u32 },
     Space,
     List { count: usize, separators: bool, view_h: f32 },
     Scroll,
@@ -177,6 +179,7 @@ impl Kind {
                 | Kind::Toggle { .. }
                 | Kind::Segment { .. }
                 | Kind::TextInput { .. }
+                | Kind::TextArea { .. }
                 | Kind::Slider { .. }
                 | Kind::Item { .. }
         )
@@ -835,7 +838,7 @@ impl<'a> Ui<'a> {
     #[track_caller]
     pub fn text_input(&mut self, text: &mut String) -> TextInput<'_> {
         let (idx, id) = self.add(Kind::TextInput { value: String::new(), hint: String::new() }, Dir::Leaf);
-        let (changed, submitted) = self.edit(id, text);
+        let (changed, submitted) = self.edit(id, text, false);
         if let Kind::TextInput { value, .. } = &mut self.tree.info[idx].kind {
             *value = text.clone();
         }
@@ -843,8 +846,35 @@ impl<'a> Ui<'a> {
         TextInput { h: self.handle(idx, id), changed, submitted, composing }
     }
 
-    /// 焦点のある入力欄に、この回の入力を当てる。(変わったか, 送信したか)
-    fn edit(&mut self, id: Id, s: &mut String) -> (bool, bool) {
+    /// A text field for several lines (notes, messages). Enter starts a new line; Ctrl+Enter is
+    /// left to the app (see [`Ui::shortcut`]) for sending. Long text wraps and scrolls; the arrows,
+    /// Home/End (line), Ctrl+Home/End (whole text) and Page Up/Down move the caret. Typing, the
+    /// input method, selection, copy and paste, undo and redo work as in [`Ui::text_input`]. Pasted
+    /// Windows line ends (CR LF) become `\n`.
+    ///
+    /// ```
+    /// use kargui::{Key, Mods};
+    /// # let (mut message, mut sent) = (String::new(), Vec::<String>::new());
+    /// # kargui::test::example(|ui| {
+    /// ui.text_area(&mut message).hint("Message").rows(5).grow();
+    /// if ui.shortcut(Key::Enter, Mods::CTRL) && !message.is_empty() {
+    ///     sent.push(std::mem::take(&mut message));
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn text_area(&mut self, text: &mut String) -> TextArea<'_> {
+        let (idx, id) = self.add(Kind::TextArea { value: String::new(), hint: String::new(), rows: 4 }, Dir::Leaf);
+        let (changed, _) = self.edit(id, text, true);
+        if let Kind::TextArea { value, .. } = &mut self.tree.info[idx].kind {
+            *value = text.clone();
+        }
+        let composing = (self.cx.focus == Some(id) && !self.cx.preedit.is_empty()).then(|| self.cx.preedit.clone());
+        TextArea { h: self.handle(idx, id), changed, composing }
+    }
+
+    /// 焦点のある入力欄に、この回の入力を当てる。(変わったか, 送信したか)。multiline は複数行の入力欄
+    fn edit(&mut self, id: Id, s: &mut String, multiline: bool) -> (bool, bool) {
         if self.disabled {
             return (false, false);
         }
@@ -852,15 +882,24 @@ impl<'a> Ui<'a> {
         let mut submitted = false;
         let style = crate::text::TextStyle { size: self.px(TextKind::Body.size()), bold: false };
         self.cx.edits.entry(id).or_default().clamp(s);
+        self.cx.edits.get_mut(&id).unwrap().multiline = multiline;
         // 焦点が移る前に確定した変換中の文字（押した位置へキャレットを動かすより先に入れる）
         if self.cx.pending_commit.as_ref().is_some_and(|(pid, _)| *pid == id) {
             let (_, t) = self.cx.pending_commit.take().unwrap();
             self.cx.edits.get_mut(&id).unwrap().insert(s, &t, false);
         }
-        if let Some((pid, x, _y, shift)) = self.cx.pointer_text {
+        if let Some((pid, x, y, shift)) = self.cx.pointer_text {
             if pid == id {
                 self.cx.pointer_text = None;
-                if let Some(&(_, text_x)) = self.cx.prev.inputs.get(&id) {
+                // 複数行: 押した点の行と位置（前のフレームの、文字の左上と折り返しの幅で並べ直して探す）
+                if let (true, Some(&(ox, oy, w, _))) = (multiline, self.cx.prev.areas.get(&id)) {
+                    let laid = self.cx.text.layout(s, style, Some(w));
+                    let at = edit::byte_of(s, laid.index_at_point(x - ox, y - oy));
+                    let st = self.cx.edits.get_mut(&id).unwrap();
+                    st.move_to(at, shift);
+                    st.goal_x = None;
+                    self.cx.reveal = Some(id);
+                } else if let Some(&(_, text_x)) = self.cx.prev.inputs.get(&id) {
                     let scroll = self.cx.edit_scroll.get(&id).copied().unwrap_or(0.0);
                     let laid = self.cx.text.layout(s, style, None);
                     let at = edit::byte_of(s, laid.index_at(x - text_x + scroll));
@@ -873,8 +912,16 @@ impl<'a> Ui<'a> {
         }
         let keys = std::mem::take(&mut self.cx.keys);
         let cx = &mut *self.cx;
+        if multiline && !keys.is_empty() {
+            // 打った・動かした後は、キャレットが見えるようにスクロールする（ホイールで動かした時はしない）
+            cx.reveal = Some(id);
+        }
         let st = cx.edits.get_mut(&id).unwrap();
         for e in keys {
+            // 上下に続けて動く間だけ、横の位置を覚えておく
+            if !matches!(e, Event::Key { key: Key::Up | Key::Down | Key::PageUp | Key::PageDown, .. }) {
+                st.goal_x = None;
+            }
             match e {
                 Event::Char(c) if !c.is_control() => {
                     st.insert(s, c.encode_utf8(&mut [0; 4]), true);
@@ -892,6 +939,25 @@ impl<'a> Ui<'a> {
                     st.clamp(s);
                 }
                 Event::Key { key, mods } => match key {
+                    Key::Enter if multiline => {
+                        st.insert(s, "\n", true);
+                    }
+                    Key::Up | Key::Down | Key::PageUp | Key::PageDown if multiline => {
+                        if let Some(&(_, _, w, view_h)) = cx.prev.areas.get(&id) {
+                            let laid = cx.text.layout(s, style, Some(w));
+                            if let Some(to) = vertical_move(&laid, s, st, key, view_h) {
+                                st.move_to(to, mods.shift);
+                            }
+                        }
+                    }
+                    Key::Home | Key::End if multiline && !mods.ctrl => {
+                        if let Some(&(_, _, w, _)) = cx.prev.areas.get(&id) {
+                            let laid = cx.text.layout(s, style, Some(w));
+                            let l = laid.lines[edit::line_of(&laid.lines, edit::utf16_of(s, st.cursor))];
+                            let to = if key == Key::Home { l.start } else { l.end };
+                            st.move_to(edit::byte_of(s, to), mods.shift);
+                        }
+                    }
                     Key::Enter => submitted = true,
                     Key::Backspace => {
                         st.backspace(s, mods.ctrl);
@@ -2052,6 +2118,103 @@ impl TextInput<'_> {
     pub fn composing(&self) -> Option<&str> {
         self.composing.as_deref()
     }
+}
+
+/// A text field for several lines. See [`Ui::text_area`].
+///
+/// ```
+/// # let mut notes = String::new();
+/// # kargui::test::example(|ui| {
+/// if ui.text_area(&mut notes).hint("Notes").rows(6).changed() {
+///     // save the notes
+/// }
+/// # });
+/// ```
+pub struct TextArea<'t> {
+    h: Handle<'t>,
+    changed: bool,
+    composing: Option<String>,
+}
+
+common!(TextArea, " # let mut text = String::new();", "text_area(&mut text)");
+
+impl TextArea<'_> {
+    /// Gray text shown while the field is empty. Screen readers use it as the name.
+    ///
+    /// ```
+    /// # let mut text = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.text_area(&mut text).hint("Describe the problem");
+    /// # });
+    /// ```
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        if let Kind::TextArea { hint: h, .. } = self.h.kind() {
+            *h = hint.into();
+        }
+        self
+    }
+    /// How many lines are visible (the height; the default is 4). Longer text scrolls.
+    ///
+    /// ```
+    /// # let mut text = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.text_area(&mut text).rows(10);
+    /// # });
+    /// ```
+    pub fn rows(mut self, rows: u32) -> Self {
+        if let Kind::TextArea { rows: r, .. } = self.h.kind() {
+            *r = rows.max(1);
+        }
+        self
+    }
+    /// Whether the text changed in this frame.
+    ///
+    /// ```
+    /// # let mut text = String::new();
+    /// # kargui::test::example(|ui| {
+    /// if ui.text_area(&mut text).changed() {
+    ///     // mark the document as edited
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+    /// The text the input method is composing (not yet in the value), if any.
+    ///
+    /// ```
+    /// # let mut text = String::new();
+    /// # kargui::test::example(|ui| {
+    /// let area = ui.text_area(&mut text);
+    /// let busy = area.composing().is_some();
+    /// # let _ = busy;
+    /// # });
+    /// ```
+    pub fn composing(&self) -> Option<&str> {
+        self.composing.as_deref()
+    }
+}
+
+/// 複数行の入力欄で、上下の矢印と PageUp/PageDown の行き先（UTF-8 の位置）。行が変わらなければ None。
+/// 横の位置は、続けて上下に動く間は最初の位置（goal_x）を保つ
+fn vertical_move(laid: &crate::text::Laid, s: &str, st: &mut edit::EditState, key: Key, view_h: f32) -> Option<usize> {
+    let cur = edit::utf16_of(s, st.cursor);
+    let (x, top, h) = laid.caret(cur);
+    let gx = *st.goal_x.get_or_insert(x);
+    let (first, last) = (*laid.lines.first()?, *laid.lines.last()?);
+    let y = match key {
+        Key::Up => top - h * 0.5,
+        Key::Down => top + h * 1.5,
+        Key::PageUp => top + h * 0.5 - view_h.max(h),
+        _ => top + h * 0.5 + view_h.max(h),
+    };
+    let y = y.clamp(first.top + first.height * 0.5, last.top + last.height * 0.5);
+    let from = edit::line_of(&laid.lines, cur);
+    let to = laid.lines.iter().rposition(|l| l.top <= y).unwrap_or(0);
+    if to == from {
+        return None;
+    }
+    Some(edit::byte_of(s, laid.index_at_point(gx, y)))
 }
 
 /// A virtual list being set up. See [`Ui::list`].

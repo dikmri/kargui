@@ -13,7 +13,7 @@ use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
 use swash::zeno::Format;
 
-use super::{ATLAS_SIZE, Atlas, LayoutCache, LayoutKey, Placed, Slot, TextStyle};
+use super::{ATLAS_SIZE, Atlas, LayoutCache, LayoutKey, Line, Placed, Slot, TextStyle, add_trailing_line};
 use crate::log;
 
 /// UI の文字に使うフォント（CSS の font-family の形）。先にある物から使い、無い文字は代わりのフォントで出す
@@ -30,12 +30,35 @@ pub(crate) struct Laid {
     pub glyphs: Vec<Placed>,
     pub width: f32,
     pub height: f32,
+    /// 行（1 行の文字列も 1 行。改行で終わる文字列は最後に空の行）
+    pub lines: Vec<Line>,
     /// 当たり判定のために、元の文字列と parley の並べた結果を持つ
     text: String,
     layout: Option<Layout<()>>,
 }
 
 impl Laid {
+    /// UTF-16 で index 文字目の前のカーソルの位置（x, 行の上端, 行の高さ）
+    pub fn caret(&self, index: usize) -> (f32, f32, f32) {
+        let Some(l) = &self.layout else { return (0.0, 0.0, self.height) };
+        // 最後の改行の後ろは、parley では前の行の終わりになるので、空の最後の行の左端にする
+        if let Some(last) = self.lines.last().filter(|last| index >= last.start && last.start == last.end && self.text.ends_with('\n')) {
+            return (0.0, last.top, last.height);
+        }
+        let byte = byte_of_utf16(&self.text, index);
+        let g = Cursor::from_byte_index(l, byte, Affinity::Downstream).geometry(l, 0.0);
+        (g.x0 as f32, g.y0 as f32, (g.y1 - g.y0) as f32)
+    }
+
+    /// 点 (x, y) に一番近い文字の境目（UTF-16 の位置）
+    pub fn index_at_point(&self, x: f32, y: f32) -> usize {
+        let Some(l) = &self.layout else { return 0 };
+        if let Some(last) = self.lines.last().filter(|last| last.start == last.end && y >= last.top && self.text.ends_with('\n')) {
+            return last.start;
+        }
+        utf16_of_byte(&self.text, Cursor::from_point(l, x, y).index())
+    }
+
     /// UTF-16 で index 文字目の前の位置（並べた範囲の左からの x）
     pub fn x_of(&self, index: usize) -> f32 {
         let Some(l) = &self.layout else { return 0.0 };
@@ -124,7 +147,8 @@ impl Text {
         // 空の文字列は行が無く高さ 0 になるので、1 行分の高さだけを持つ（DirectWrite と同じ）
         if s.is_empty() {
             let probe = self.make_layout(" ", style, None);
-            return Laid { glyphs: Vec::new(), width: 0.0, height: probe.height, text: String::new(), layout: None };
+            let lines = vec![Line { start: 0, end: 0, top: 0.0, height: probe.height, width: 0.0 }];
+            return Laid { glyphs: Vec::new(), width: 0.0, height: probe.height, lines, text: String::new(), layout: None };
         }
         self.layouts_made += 1;
         let mut b = self.layout_cx.ranged_builder(&mut self.fonts, s, 1.0, true);
@@ -153,8 +177,19 @@ impl Text {
                 }
             }
         }
+        // 行の一覧（改行は行の終わりに入れない）
+        let mut lines = Vec::new();
+        for line in layout.lines() {
+            let r = line.text_range();
+            let m = line.metrics();
+            let end = if s[r.start..r.end].ends_with('\n') { r.end - 1 } else { r.end };
+            let (top, height) = (m.block_min_coord, m.block_max_coord - m.block_min_coord);
+            lines.push(Line { start: utf16_of_byte(s, r.start), end: utf16_of_byte(s, end), top, height, width: m.advance });
+        }
+        add_trailing_line(s, &mut lines);
+        let height = lines.last().map_or(layout.height(), |l| layout.height().max(l.top + l.height));
         // 幅は行末の空白も含める（入力欄のキャレットが空白の後ろへ進むように。DirectWrite と同じ）
-        Laid { glyphs, width: layout.full_width(), height: layout.height(), text: s.to_string(), layout: Some(layout) }
+        Laid { glyphs, width: layout.full_width(), height, lines, text: s.to_string(), layout: Some(layout) }
     }
 
     fn glyph(&mut self, font: &FontData, glyph: u32, size: f32, coords: &[i16], embolden: bool) -> Option<Slot> {

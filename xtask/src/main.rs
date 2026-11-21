@@ -286,6 +286,32 @@ fn shots() -> Vec<Shot> {
             setup: no_setup,
         },
         Shot {
+            name: "text_area",
+            size: (380.0, 150.0),
+            view: |ui| {
+                let mut text = String::from("Buy milk and bread\nCall the office about the meeting room for Thursday afternoon\nPack");
+                ui.text_area(&mut text).hint("Notes").rows(4).grow();
+            },
+            // 最後の行から 2 行分を選ぶ（行をまたぐ選択）
+            setup: |h| {
+                h.click("Notes")
+                    .press_with(kargui::Key::End, kargui::Mods::CTRL)
+                    .press_with(kargui::Key::Up, kargui::Mods::SHIFT)
+                    .press_with(kargui::Key::Up, kargui::Mods::SHIFT);
+            },
+        },
+        Shot {
+            name: "text_area_ime",
+            size: (380.0, 120.0),
+            view: |ui| {
+                let mut text = String::from("今日の予定:\n");
+                ui.text_area(&mut text).hint("Notes").rows(3).grow();
+            },
+            setup: |h| {
+                h.click("Notes").press_with(kargui::Key::End, kargui::Mods::CTRL).ime_compose("かいぎしつをよやくする");
+            },
+        },
+        Shot {
             name: "icons",
             size: (520.0, 110.0),
             view: |ui| {

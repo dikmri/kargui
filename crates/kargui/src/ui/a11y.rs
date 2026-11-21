@@ -24,7 +24,7 @@ pub(crate) fn name_of(tree: &Tree, i: usize) -> Option<String> {
         return Some(l.clone());
     }
     match &n.kind {
-        Kind::TextInput { hint, .. } if !hint.is_empty() => Some(hint.clone()),
+        Kind::TextInput { hint, .. } | Kind::TextArea { hint, .. } if !hint.is_empty() => Some(hint.clone()),
         Kind::Item { .. } => Some(row_name(tree, i)).filter(|s| !s.is_empty()),
         k => visible_text(k).filter(|t| !t.is_empty()).map(str::to_string),
     }
@@ -131,6 +131,15 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
             }
             Kind::TextInput { value, hint } => {
                 let mut n = Node::new(Role::TextInput);
+                n.set_value(value.clone());
+                if !hint.is_empty() {
+                    n.set_placeholder(hint.clone());
+                }
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::TextArea { value, hint, .. } => {
+                let mut n = Node::new(Role::MultilineTextInput);
                 n.set_value(value.clone());
                 if !hint.is_empty() {
                     n.set_placeholder(hint.clone());

@@ -2402,5 +2402,105 @@ mod tests {
     fn image_files_need_rgba_outside_windows_for_now() {
         assert!(crate::Image::from_bytes(&TINY_PNG).is_err());
     }
+
+    /// 複数行の入力欄の見本（3 行の高さ。Ctrl+Enter で送る）
+    #[derive(Default)]
+    struct Notes {
+        body: String,
+        sent: u32,
+        changes: u32,
+    }
+
+    impl App for Notes {
+        fn view(&mut self, ui: &mut Ui) {
+            if ui.text_area(&mut self.body).hint("Body").rows(3).changed() {
+                self.changes += 1;
+            }
+            if ui.shortcut(Key::Enter, Mods::CTRL) {
+                self.sent += 1;
+            }
+            ui.button("After");
+        }
+    }
+
+    #[test]
+    fn text_area_takes_newlines_and_moves_by_lines() {
+        let mut h = Harness::new(Notes::default());
+        h.click("Body").type_text("abc").press(Key::Enter).type_text("de").press(Key::Enter).type_text("fghij");
+        assert_eq!(h.app().body, "abc\nde\nfghij");
+        assert!(h.app().changes > 0);
+        // 上へ: 2 行目（"fghij" の終わりは "de" より右なので、2 行目の終わり）
+        h.press(Key::Up).type_text("X");
+        assert_eq!(h.app().body, "abc\ndeX\nfghij");
+        // Home は行の始め、Ctrl+Home は全体の始め、Ctrl+End は全体の終わり
+        h.press(Key::Home).type_text("1");
+        assert_eq!(h.app().body, "abc\n1deX\nfghij");
+        h.press_with(Key::Home, Mods::CTRL).type_text("0");
+        h.press_with(Key::End, Mods::CTRL).type_text("!");
+        assert_eq!(h.app().body, "0abc\n1deX\nfghij!");
+        // 下へ: 同じ横の位置（左の端）の次の行
+        h.press_with(Key::Home, Mods::CTRL).press(Key::Down).type_text("2");
+        assert_eq!(h.app().body, "0abc\n21deX\nfghij!");
+        // End は行の終わり
+        h.press(Key::End).type_text("Y");
+        assert_eq!(h.app().body, "0abc\n21deXY\nfghij!");
+        // PageDown は見える高さ分下へ（ここでは最後の行）
+        h.press_with(Key::Home, Mods::CTRL).press(Key::PageDown).press(Key::End).type_text("Z");
+        assert_eq!(h.app().body, "0abc\n21deXY\nfghij!Z");
+        // Ctrl+Enter は改行を入れずにアプリへ
+        h.press_with(Key::Enter, Mods::CTRL);
+        assert_eq!(h.app().sent, 1);
+        assert!(!h.app().body.ends_with('\n'));
+        // Windows の改行を貼ると LF になる
+        h.rt.cx.clipboard.set("p\r\nq");
+        h.press_with(Key::V, Mods::CTRL);
+        assert!(h.app().body.ends_with("Zp\nq"), "{:?}", h.app().body);
+    }
+
+    #[test]
+    fn text_area_scrolls_to_the_caret_and_with_the_wheel() {
+        let mut h = Harness::new(Notes::default());
+        let long: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        h.app_mut().body = long.clone();
+        h.click("Body").press_with(Key::End, Mods::CTRL).type_text("end");
+        let id = id_named(&h, "Body");
+        let scrolled = h.rt.cx.scrolls.get(&id).copied().unwrap_or(0.0);
+        assert!(scrolled > 100.0, "キャレットが見えるように下までスクロールする: {scrolled}");
+        // ホイールで上へ戻せる（キャレットの位置へ戻されない）
+        h.scroll("Body", -1000.0);
+        assert_eq!(h.rt.cx.scrolls.get(&id).copied().unwrap_or(0.0), 0.0);
+        h.frame();
+        assert_eq!(h.rt.cx.scrolls.get(&id).copied().unwrap_or(0.0), 0.0, "描き直しても戻らない");
+    }
+
+    #[test]
+    fn text_area_puts_the_caret_where_it_is_clicked_and_is_multiline_for_screen_readers() {
+        let mut h = Harness::new(Notes::default());
+        h.app_mut().body = "first\nsecond\nthird".into();
+        h.frame();
+        let r = h.find("Body").unwrap();
+        // 入力欄の下の端の近く（3 行目）を押す
+        h.send(vec![Event::PointerDown { x: r.x + 12.0, y: r.bottom() - 8.0, shift: false }, Event::PointerUp { x: r.x + 12.0, y: r.bottom() - 8.0 }]);
+        h.type_text("#");
+        let body = h.app().body.clone();
+        assert!(body.starts_with("first\nsecond\n") && body.contains('#') && body.find('#').unwrap() >= "first\nsecond\n".len(), "{body:?}");
+        let built = a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new());
+        let n = built.update.nodes.iter().find(|(_, n)| n.role() == accesskit::Role::MultilineTextInput).expect("複数行の入力欄の役割").1.clone();
+        assert_eq!(n.label(), Some("Body"));
+        assert_eq!(n.value(), Some(body.as_str()));
+    }
+
+    #[test]
+    fn text_area_works_with_the_input_method() {
+        let mut h = Harness::new(Notes::default());
+        h.click("Body").type_text("メモ").press(Key::Enter);
+        h.ime_compose("ぎゅうにゅう");
+        assert_eq!(h.app().body, "メモ\n", "変換中は値を変えない");
+        h.ime_commit("牛乳");
+        assert_eq!(h.app().body, "メモ\n牛乳");
+        // Tab は焦点を次の部品へ移す（タブの文字は入れない）
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("After"));
+    }
 }
 

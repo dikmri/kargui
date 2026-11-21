@@ -1,5 +1,5 @@
-<!-- source: ja/02-widgets.md fnv=ff99b86bd2e590fa -->
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Ui::icon Ui::icon_button Button::icon Ui::image Image::from_rgba Image::open Toggled::changed Toggled::strike Slider::changed sig=611901922cf6e15f -->
+<!-- source: ja/02-widgets.md fnv=ad000fa0b2b2d8eb -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::text_area TextArea::hint TextArea::rows Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Ui::icon Ui::icon_button Button::icon Ui::image Image::from_rgba Image::open Toggled::changed Toggled::strike Slider::changed sig=a0f2ab3741c86140 -->
 # Widgets
 
 Widgets are created with methods on `ui`. Widgets that change a value take the state with `&mut`; ask the return value what happened.
@@ -77,7 +77,21 @@ if field.submitted() {
 # });
 ```
 
-The input-method rules are in [Japanese input](07-japanese-input.md).
+For several lines, use `ui.text_area(..)`. Enter starts a new line, long lines wrap, and what does not fit scrolls. The arrows, Home/End (start and end of the line), Ctrl+Home/End (start and end of the text) and Page Up/Down move the caret. Since Enter makes a new line, use a shortcut such as Ctrl+Enter for sending.
+
+```rust
+use kargui::{Key, Mods};
+# let (mut message, mut sent) = (String::new(), 0);
+# kargui::test::example(|ui| {
+ui.text_area(&mut message).hint("Message").rows(5).grow();
+if ui.shortcut(Key::Enter, Mods::CTRL) && !message.is_empty() {
+    message.clear();
+    sent += 1;
+}
+# });
+```
+
+The input-method rules are in [Japanese input](07-japanese-input.md). They are the same for both fields.
 
 ## Picking a number
 

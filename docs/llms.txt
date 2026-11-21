@@ -321,6 +321,22 @@ if field.submitted() {
 }
 ```
 
+### `pub fn text_area(&mut self, text: &mut String) -> TextArea<'_>`
+
+A text field for several lines (notes, messages). Enter starts a new line; Ctrl+Enter is
+left to the app (see [`Ui::shortcut`]) for sending. Long text wraps and scrolls; the arrows,
+Home/End (line), Ctrl+Home/End (whole text) and Page Up/Down move the caret. Typing, the
+input method, selection, copy and paste, undo and redo work as in [`Ui::text_input`]. Pasted
+Windows line ends (CR LF) become `\n`.
+
+```
+use kargui::{Key, Mods};
+ui.text_area(&mut message).hint("Message").rows(5).grow();
+if ui.shortcut(Key::Enter, Mods::CTRL) && !message.is_empty() {
+    sent.push(std::mem::take(&mut message));
+}
+```
+
 ### `pub fn slider<T: SliderValue>(&mut self, value: &mut T, range: RangeInclusive<T>) -> Slider<'_>`
 
 A slider for picking a number in `range` by dragging, clicking, or with the arrow keys

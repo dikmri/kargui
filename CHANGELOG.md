@@ -30,6 +30,13 @@
   with `.size(..)` and `.label(..)`. Files are decoded with Windows Imaging Component (no new
   dependencies); on other systems `from_bytes` returns an error for now. Drawn by the CPU renderer
   (bilinear scaling); the Direct3D 11 renderer does not draw images yet.
+- Multi-line text: `Ui::text_area(&mut text)` with `.hint`, `.rows(n)`, `.changed`, `.composing`.
+  Enter inserts a new line (Ctrl+Enter reaches the app), long lines wrap, the field scrolls (wheel,
+  scroll bar, and to the caret after typing or moving), and Up/Down (keeping the column),
+  Home/End per line, Ctrl+Home/End and Page Up/Down move the caret; a click places the caret on
+  the clicked line. Selections and the input method's clause underlines are drawn line by line.
+  Pasted CR LF and CR become LF. Screen readers see a multi-line text input. The text layer now
+  reports lines, caret positions and hit points (both DirectWrite and parley).
 - Linux and macOS (preparation): kargui now builds on them, and its tests (widgets, layout,
   drawing, the test harness) pass there. Text on these systems is laid out with parley and drawn
   with swash; Windows keeps DirectWrite and gains no dependencies. Windows cannot be opened there

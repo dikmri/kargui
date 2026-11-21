@@ -9,7 +9,7 @@ use std::rc::Rc;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::{BOOL, ComObject, IUnknown, Interface, Ref, Result, implement, w};
 
-use super::{ATLAS_SIZE, Atlas, LayoutCache, LayoutKey, Placed, Slot, TextStyle};
+use super::{ATLAS_SIZE, Atlas, LayoutCache, LayoutKey, Line, Placed, Slot, TextStyle, add_trailing_line};
 use crate::log;
 
 /// 並べ終えた文字列
@@ -17,13 +17,39 @@ pub(crate) struct Laid {
     pub glyphs: Vec<Placed>,
     pub width: f32,
     pub height: f32,
+    /// 行（1 行の文字列も 1 行。改行で終わる文字列は最後に空の行）
+    pub lines: Vec<Line>,
     /// 当たり判定のために DirectWrite の並べた結果を持つ
     layout: Option<IDWriteTextLayout>,
 }
 
 impl Laid {
     fn empty(height: f32) -> Self {
-        Self { glyphs: Vec::new(), width: 0.0, height, layout: None }
+        let lines = vec![Line { start: 0, end: 0, top: 0.0, height, width: 0.0 }];
+        Self { glyphs: Vec::new(), width: 0.0, height, lines, layout: None }
+    }
+
+    /// UTF-16 で index 文字目の前のカーソルの位置（x, 行の上端, 行の高さ）
+    pub fn caret(&self, index: usize) -> (f32, f32, f32) {
+        let Some(l) = &self.layout else { return (0.0, 0.0, self.height) };
+        let (mut x, mut y) = (0.0f32, 0.0f32);
+        let mut m = DWRITE_HIT_TEST_METRICS::default();
+        if unsafe { l.HitTestTextPosition(index as u32, false, &mut x, &mut y, &mut m) }.is_err() {
+            return (self.width, 0.0, self.height);
+        }
+        (x, m.top, m.height)
+    }
+
+    /// 点 (x, y) に一番近い文字の境目（UTF-16 の位置）
+    pub fn index_at_point(&self, x: f32, y: f32) -> usize {
+        let Some(l) = &self.layout else { return 0 };
+        let mut trailing = BOOL::default();
+        let mut inside = BOOL::default();
+        let mut m = DWRITE_HIT_TEST_METRICS::default();
+        if unsafe { l.HitTestPoint(x, y, &mut trailing, &mut inside, &mut m) }.is_err() {
+            return 0;
+        }
+        (m.textPosition + if trailing.as_bool() { m.length } else { 0 }) as usize
     }
 
     /// UTF-16 で index 文字目の前の位置（並べた範囲の左からの x）
@@ -225,7 +251,8 @@ impl Text {
                 glyphs.push(Placed { x: g.x, y: g.y, slot });
             }
         }
-        Ok(Laid { glyphs, width: m.widthIncludingTrailingWhitespace, height: m.height, layout: Some(layout) })
+        let lines = line_metrics(&layout, s)?;
+        Ok(Laid { glyphs, width: m.widthIncludingTrailingWhitespace, height: m.height, lines, layout: Some(layout) })
     }
 
     fn glyph(&mut self, face: &IDWriteFontFace, index: u16, size: f32) -> Option<Slot> {
@@ -288,4 +315,33 @@ impl Text {
         self.atlas.write(x, y, w, h, &buf);
         Ok(Some(Slot { x: x as u16, y: y as u16, w: w as u16, h: h as u16, left: b.left as i16, top: b.top as i16 }))
     }
+}
+
+/// DirectWrite の行の情報から行の一覧を作る。行の幅は、行の最後の文字の後ろの位置
+fn line_metrics(layout: &IDWriteTextLayout, s: &str) -> Result<Vec<Line>> {
+    let mut count = 0u32;
+    // 1 回目は数を聞くだけ（足りないという失敗が返る）
+    let _ = unsafe { layout.GetLineMetrics(None, &mut count) };
+    let mut lm = vec![DWRITE_LINE_METRICS::default(); count as usize];
+    unsafe { layout.GetLineMetrics(Some(&mut lm), &mut count)? };
+    let (mut start, mut top) = (0usize, 0.0f32);
+    let mut lines = Vec::with_capacity(lm.len());
+    for m in &lm {
+        let end = start + m.length as usize - m.newlineLength as usize;
+        let width = if end > start {
+            let (mut x, mut y) = (0.0f32, 0.0f32);
+            let mut hm = DWRITE_HIT_TEST_METRICS::default();
+            match unsafe { layout.HitTestTextPosition(end as u32 - 1, true, &mut x, &mut y, &mut hm) } {
+                Ok(()) => x,
+                Err(_) => 0.0,
+            }
+        } else {
+            0.0
+        };
+        lines.push(Line { start, end, top, height: m.height, width });
+        start += m.length as usize;
+        top += m.height;
+    }
+    add_trailing_line(s, &mut lines);
+    Ok(lines)
 }
