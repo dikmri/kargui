@@ -591,6 +591,9 @@ impl State {
                 }
                 let hover = self.rt.hover_at(x, y);
                 let bar = self.rt.cx.scrollbar_at(x, y).map(|l| l.id);
+                if bar != self.rt.cx.bar_hover {
+                    log::event("scrollbar.hover", &format!("x={x} y={y}"), &format!("on={}", bar.is_some()));
+                }
                 if hover != self.rt.cx.hover || bar != self.rt.cx.bar_hover {
                     self.rt.cx.hover = hover;
                     self.rt.cx.bar_hover = bar;
@@ -600,7 +603,11 @@ impl State {
             }
             WM_MOUSELEAVE => {
                 self.tracking_leave = false;
-                if self.rt.cx.hover.take().is_some() | self.rt.cx.bar_hover.take().is_some() {
+                let bar = self.rt.cx.bar_hover.take().is_some();
+                if bar {
+                    log::event("scrollbar.hover", "leave", "on=false");
+                }
+                if self.rt.cx.hover.take().is_some() | bar {
                     self.need_frame = true;
                 }
                 Some(LRESULT(0))
