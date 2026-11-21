@@ -11,7 +11,7 @@ use accesskit::{Action, Node, NodeId, Rect as AkRect, Role, Toggled, TreeId, Tre
 use crate::geom::Rect;
 use crate::log;
 use crate::ui::context::Context;
-use crate::ui::{Kind, OverlayKind, Tree, visible_text};
+use crate::ui::{Kind, MenuMark, OverlayKind, Tree, visible_text};
 
 fn ak(r: Rect) -> AkRect {
     AkRect { x0: r.x as f64, y0: r.y as f64, x1: r.right() as f64, y1: r.bottom() as f64 }
@@ -202,6 +202,43 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
             Kind::ListOption { selected, .. } => {
                 let mut n = Node::new(Role::ListBoxOption);
                 n.set_selected(*selected);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::MenuButton { open, .. } => {
+                let mut n = Node::new(Role::Button);
+                n.set_has_popup(accesskit::HasPopup::Menu);
+                n.set_expanded(*open);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::MenuBar => Node::new(Role::MenuBar),
+            Kind::MenuBarItem { open, .. } => {
+                let mut n = Node::new(Role::MenuItem);
+                n.set_has_popup(accesskit::HasPopup::Menu);
+                n.set_expanded(*open);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::MenuItem { mark, shortcut, submenu, open, .. } => {
+                let mut n = Node::new(match mark {
+                    MenuMark::None => Role::MenuItem,
+                    MenuMark::Check(_) => Role::MenuItemCheckBox,
+                    MenuMark::Radio(_) => Role::MenuItemRadio,
+                });
+                if let MenuMark::Check(on) | MenuMark::Radio(on) = mark {
+                    n.set_toggled(if *on { accesskit::Toggled::True } else { accesskit::Toggled::False });
+                }
+                if let Some(k) = shortcut {
+                    n.set_keyboard_shortcut(k.clone());
+                }
+                if *submenu {
+                    n.set_has_popup(accesskit::HasPopup::Menu);
+                    n.set_expanded(*open);
+                }
                 n.add_action(Action::Click);
                 n.add_action(Action::Focus);
                 n

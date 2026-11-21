@@ -325,6 +325,59 @@ fn shots() -> Vec<Shot> {
             },
         },
         Shot {
+            name: "menus",
+            size: (520.0, 260.0),
+            view: |ui| {
+                use kargui::{Key, Mods};
+                let mut wrap = true;
+                ui.menu_bar(|bar| {
+                    bar.menu("File", |m| {
+                        m.item("New").shortcut(Key::N, Mods::CTRL);
+                        m.item("Save").shortcut(Key::S, Mods::CTRL);
+                        m.submenu("Open recent", |m| {
+                            m.item("notes.txt");
+                            m.item("plan.md");
+                            m.item("report-2026.pdf");
+                        });
+                        m.separator();
+                        m.item("Print").shortcut(Key::P, Mods::CTRL).enabled(false);
+                        m.item("Exit");
+                    });
+                    bar.menu("Edit", |m| {
+                        m.item("Undo");
+                    });
+                    bar.menu("View", |m| {
+                        m.check(&mut wrap, "Word wrap");
+                    });
+                });
+                ui.label("notes.txt").weak();
+            },
+            setup: |h| {
+                h.click("File").click("Open recent");
+            },
+        },
+        Shot {
+            name: "context_menu",
+            size: (420.0, 230.0),
+            view: |ui| {
+                use kargui::{Icon, Key, Mods};
+                let mut pinned = true;
+                for name in ["notes.txt", "plan.md", "report-2026.pdf"] {
+                    ui.label(name).context_menu(|m| {
+                        m.item("Open").icon(Icon::ArrowRight);
+                        m.item("Rename").shortcut(Key::F2, Mods::NONE);
+                        m.check(&mut pinned, "Pinned");
+                        m.separator();
+                        m.item("Delete").icon(Icon::Close).shortcut(Key::Delete, Mods::NONE);
+                    });
+                }
+            },
+            // 開いた後に下の矢印: キーボードの焦点の見た目も写す
+            setup: |h| {
+                h.right_click("plan.md").press(kargui::Key::Down);
+            },
+        },
+        Shot {
             name: "more_widgets",
             size: (560.0, 330.0),
             view: |ui| {

@@ -471,6 +471,36 @@ impl<A: App> Harness<A> {
         self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }])
     }
 
+    /// Right-clicks the widget with this name (opens its
+    /// [`Handle::context_menu`](crate::ui::Handle::context_menu)).
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Files {
+    ///     deleted: bool,
+    /// }
+    ///
+    /// impl App for Files {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.label("a.txt").context_menu(|m| {
+    ///             if m.item("Delete").clicked() {
+    ///                 self.deleted = true;
+    ///             }
+    ///         });
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Files::default());
+    /// h.right_click("a.txt").click("Delete");
+    /// assert!(h.app().deleted);
+    /// ```
+    pub fn right_click(&mut self, name: &str) -> &mut Self {
+        let (x, y) = self.center(name);
+        self.send(vec![Event::ContextMenu { x, y }])
+    }
+
     /// Types text into the focused field, as if typed without an input method.
     ///
     /// ```
@@ -2701,5 +2731,269 @@ mod tests {
         let nodes = a11y_nodes(&h);
         assert_eq!(nodes.iter().filter(|n| n.role() == accesskit::Role::ListBoxOption).count(), 3);
         assert!(nodes.iter().any(|n| n.role() == accesskit::Role::ListBox));
+    }
+
+    #[test]
+    fn dropdowns_pick_by_typing_a_letter() {
+        let mut h = Harness::new(Pick::default());
+        h.press(Key::Tab).press(Key::L);
+        assert_eq!(h.app().size, 2, "閉じたまま、L で始まる Large を選ぶ");
+        h.press(Key::Space).press(Key::M);
+        assert_eq!(focused_name(&h).as_deref(), Some("Medium"), "開いた一覧では焦点だけが移る");
+        assert_eq!(h.app().size, 2);
+    }
+
+    /// メニューの見本: メニューバー、メニューボタン、右クリックのメニュー
+    #[derive(Default)]
+    struct Doc {
+        saved: u32,
+        opened: Vec<&'static str>,
+        wrap: bool,
+        sort: u8,
+        renamed: u32,
+        deleted: u32,
+        customized: u32,
+        other: u32,
+    }
+
+    impl App for Doc {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.menu_bar(|bar| {
+                bar.menu("File", |m| {
+                    if m.item("Save").shortcut(Key::S, Mods::CTRL).clicked() {
+                        self.saved += 1;
+                    }
+                    m.submenu("Recent", |m| {
+                        for name in ["a.txt", "b.txt"] {
+                            if m.item(name).clicked() {
+                                self.opened.push(name);
+                            }
+                        }
+                    });
+                    m.separator();
+                    m.item("Exit").enabled(false);
+                });
+                bar.menu("View", |m| {
+                    m.check(&mut self.wrap, "Word wrap").shortcut(Key::W, Mods::ALT);
+                    m.separator();
+                    m.radio(&mut self.sort, 0, "By name");
+                    m.radio(&mut self.sort, 1, "By date");
+                });
+            });
+            ui.row(|ui| {
+                ui.menu_button("More", |m| {
+                    if m.item("Rename").clicked() {
+                        self.renamed += 1;
+                    }
+                    m.item("Duplicate");
+                    m.item("Delete");
+                });
+                let other = ui.button("Other").context_menu(|m| {
+                    if m.item("Customize").shortcut(Key::F2, Mods::NONE).clicked() {
+                        self.customized += 1;
+                    }
+                });
+                if other.clicked() {
+                    self.other += 1;
+                }
+            });
+            ui.label("report.pdf").context_menu(|m| {
+                if m.item("Delete file").clicked() {
+                    self.deleted += 1;
+                }
+                m.item("Properties");
+            });
+        }
+    }
+
+    #[test]
+    fn menu_buttons_open_below_and_close_after_a_pick() {
+        let mut h = Harness::new(Doc::default());
+        assert!(h.find("Rename").is_none());
+        let n = a11y_node(&h, "More");
+        assert_eq!((n.role(), n.has_popup(), n.is_expanded()), (accesskit::Role::Button, Some(accesskit::HasPopup::Menu), Some(false)));
+        h.click("More");
+        let (button, rename) = (h.find("More").unwrap(), h.find("Rename").expect("押すと開く"));
+        assert!(rename.y > button.bottom());
+        assert_eq!(a11y_node(&h, "More").is_expanded(), Some(true));
+        assert_eq!(a11y_node(&h, "Rename").role(), accesskit::Role::MenuItem);
+        h.click("Rename");
+        assert_eq!(h.app().renamed, 1);
+        assert!(h.find("Rename").is_none(), "選ぶと閉じる");
+        assert_eq!(focused_name(&h).as_deref(), Some("More"), "焦点はボタンへ戻る");
+        // 外を押すと閉じ、そのクリックは下に届かない
+        h.click("More").click("Other");
+        assert_eq!(h.app().other, 0);
+        assert!(h.find("Rename").is_none());
+        // 開いている時にもう一度押すと閉じる
+        h.click("More").click("More");
+        assert!(h.find("Rename").is_none());
+    }
+
+    #[test]
+    fn opening_a_layer_asks_for_a_frame_to_draw_the_moved_focus() {
+        let mut h = Harness::new(Doc::default());
+        h.press(Key::Tab).press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("More"));
+        let out = h.rt.frame(&mut h.app, vec![Event::Key { key: Key::Enter, mods: Mods::NONE }]);
+        assert_eq!(focused_name(&h).as_deref(), Some("Rename"));
+        assert!(out.want_frame, "描いた後で焦点が開いた物の中へ移ったので、もう 1 フレーム描く");
+    }
+
+    #[test]
+    fn menu_buttons_work_with_the_keyboard() {
+        let mut h = Harness::new(Doc::default());
+        // メニューバーは Tab で 1 回だけ止まる
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("File"));
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("More"));
+        h.press(Key::Enter);
+        assert_eq!(focused_name(&h).as_deref(), Some("Rename"), "開くと最初の項目に焦点");
+        h.press(Key::Up);
+        assert_eq!(focused_name(&h).as_deref(), Some("Delete"), "端で折り返す");
+        h.press(Key::Home);
+        assert_eq!(focused_name(&h).as_deref(), Some("Rename"));
+        h.press(Key::D);
+        assert_eq!(focused_name(&h).as_deref(), Some("Duplicate"), "打った文字で始まる項目へ");
+        h.press(Key::D);
+        assert_eq!(focused_name(&h).as_deref(), Some("Delete"), "同じ文字でその次へ");
+        h.press(Key::Escape);
+        assert!(h.find("Rename").is_none());
+        assert_eq!(focused_name(&h).as_deref(), Some("More"));
+        h.press(Key::Up);
+        assert_eq!(focused_name(&h).as_deref(), Some("Delete"), "上の矢印で開くと最後の項目");
+        h.press(Key::Tab);
+        assert!(h.find("Rename").is_none(), "Tab で閉じる");
+        assert_eq!(focused_name(&h).as_deref(), Some("More"));
+        h.press(Key::Down).press(Key::Enter);
+        assert_eq!(h.app().renamed, 1);
+    }
+
+    #[test]
+    fn menu_bars_and_submenus_work_with_the_keyboard() {
+        let mut h = Harness::new(Doc::default());
+        h.click("Other");
+        // F10 でメニューバーの最初の見出しへ。左右で見出しを移る
+        h.press(Key::F10);
+        assert_eq!(focused_name(&h).as_deref(), Some("File"));
+        h.press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("View"));
+        h.press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("File"), "端で折り返す");
+        h.press(Key::Down);
+        assert_eq!(focused_name(&h).as_deref(), Some("Save"));
+        h.press(Key::Down);
+        assert_eq!(focused_name(&h).as_deref(), Some("Recent"));
+        assert_eq!(a11y_node(&h, "Recent").has_popup(), Some(accesskit::HasPopup::Menu));
+        h.press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("a.txt"), "右で入れ子のメニューを開く");
+        let (recent, a) = (h.find("Recent").unwrap(), h.find("a.txt").unwrap());
+        assert!(a.x >= recent.right(), "入れ子のメニューは横に出る");
+        h.press(Key::Left);
+        assert!(h.find("a.txt").is_none(), "左で閉じる");
+        assert_eq!(focused_name(&h).as_deref(), Some("Recent"));
+        h.press(Key::Right).press(Key::Down).press(Key::Enter);
+        assert_eq!(h.app().opened, vec!["b.txt"]);
+        assert!(h.find("Save").is_none(), "選ぶと全部閉じる");
+        assert_eq!(focused_name(&h).as_deref(), Some("Other"), "焦点はメニューバーへ入る前の場所へ戻る");
+        // メニューの中の左右で、隣の見出しのメニューへ
+        h.press(Key::F10).press(Key::Enter);
+        assert!(h.find("Save").is_some());
+        h.press(Key::Right);
+        assert!(h.find("Save").is_none());
+        assert_eq!(focused_name(&h).as_deref(), Some("Word wrap"));
+        h.press(Key::Left);
+        assert_eq!(focused_name(&h).as_deref(), Some("Save"));
+        // 使えない項目（Exit）は飛ばす
+        h.press(Key::Up);
+        assert_eq!(focused_name(&h).as_deref(), Some("Recent"));
+        // Esc の 1 回目でメニューを閉じて見出しへ、2 回目でメニューバーへ入る前の場所へ
+        h.press(Key::Escape);
+        assert_eq!(focused_name(&h).as_deref(), Some("File"));
+        h.press(Key::Escape);
+        assert_eq!(focused_name(&h).as_deref(), Some("Other"));
+    }
+
+    #[test]
+    fn menu_bars_switch_on_hover_and_submenus_open_after_a_pause() {
+        let mut h = Harness::new(Doc::default());
+        h.click("File");
+        assert!(h.find("Save").is_some());
+        h.hover("View");
+        assert!(h.find("Save").is_none(), "開いている時は、乗せるだけで切り替わる");
+        assert!(h.find("Word wrap").is_some());
+        h.hover("File").hover("Recent");
+        assert!(h.find("a.txt").is_none(), "すぐには開かない");
+        h.wait(std::time::Duration::from_millis(500));
+        assert!(h.find("a.txt").is_some(), "止まると開く");
+        h.hover("Save").wait(std::time::Duration::from_millis(500));
+        assert!(h.find("a.txt").is_none(), "別の項目に止まると閉じる");
+        h.click("Recent");
+        assert!(h.find("a.txt").is_some(), "押すとすぐ開く");
+        h.click("a.txt");
+        assert_eq!(h.app().opened, vec!["a.txt"]);
+        assert!(h.find("Save").is_none());
+    }
+
+    #[test]
+    fn menu_items_check_pick_and_answer_to_shortcuts() {
+        let mut h = Harness::new(Doc::default());
+        h.press_with(Key::S, Mods::CTRL);
+        assert_eq!(h.app().saved, 1, "閉じたメニューの項目もショートカットで動く");
+        h.press_with(Key::W, Mods::ALT);
+        assert!(h.app().wrap);
+        h.click("View");
+        let n = a11y_node(&h, "Word wrap");
+        assert_eq!((n.role(), n.toggled()), (accesskit::Role::MenuItemCheckBox, Some(accesskit::Toggled::True)));
+        assert_eq!(n.keyboard_shortcut(), Some("Alt+W"));
+        assert_eq!(a11y_node(&h, "By date").role(), accesskit::Role::MenuItemRadio);
+        h.click("Word wrap");
+        assert!(!h.app().wrap);
+        h.click("View").click("By date");
+        assert_eq!(h.app().sort, 1);
+        h.click("View");
+        assert_eq!(a11y_node(&h, "By date").toggled(), Some(accesskit::Toggled::True));
+        assert_eq!(a11y_node(&h, "By name").toggled(), Some(accesskit::Toggled::False));
+        h.press(Key::Escape);
+        assert_eq!(h.enabled("Exit"), None, "File のメニューは閉じている");
+        h.click("File");
+        assert_eq!(h.enabled("Exit"), Some(false));
+        let nodes = a11y_nodes(&h);
+        assert!(nodes.iter().any(|n| n.role() == accesskit::Role::MenuBar));
+        assert!(nodes.iter().any(|n| n.role() == accesskit::Role::Menu));
+        assert_eq!(a11y_node(&h, "Save").keyboard_shortcut(), Some("Ctrl+S"));
+    }
+
+    #[test]
+    fn context_menus_open_at_the_pointer_and_from_the_keyboard() {
+        let mut h = Harness::new(Doc::default());
+        h.right_click("report.pdf");
+        let (label, item) = (h.find("report.pdf").unwrap(), h.find("Delete file").expect("右クリックで開く"));
+        let (x, y) = (label.x + label.w / 2.0, label.y + label.h / 2.0);
+        assert!((item.x - x).abs() < 12.0 && item.y >= y, "ポインターの所に出る: {item:?} {x} {y}");
+        h.click("Delete file");
+        assert_eq!(h.app().deleted, 1);
+        assert!(h.find("Properties").is_none());
+        // ほかのメニューが開いている時に右クリックすると、そちらを閉じて開く
+        h.click("More").right_click("report.pdf");
+        assert!(h.find("Rename").is_none() && h.find("Properties").is_some());
+        h.press(Key::Escape);
+        // 焦点のある部品で Shift+F10 かアプリケーションキー
+        h.click("Other");
+        h.press_with(Key::F10, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("Customize"));
+        h.press(Key::Escape);
+        assert_eq!(focused_name(&h).as_deref(), Some("Other"));
+        h.press(Key::ContextMenu);
+        assert!(h.find("Customize").is_some());
+        h.press(Key::Escape);
+        // 右クリックのメニューの項目のショートカットは、焦点がその部品の中にある時だけ動く
+        h.press(Key::F2);
+        assert_eq!(h.app().customized, 1);
+        h.press(Key::Tab);
+        assert_ne!(focused_name(&h).as_deref(), Some("Other"));
+        h.press(Key::F2);
+        assert_eq!(h.app().customized, 1);
     }
 }

@@ -120,6 +120,8 @@ mod guide {
     struct Ja10KeysTimeThreads;
     #[doc = include_str!("../../../docs/guide/ja/11-more-widgets.md")]
     struct Ja11MoreWidgets;
+    #[doc = include_str!("../../../docs/guide/ja/12-menus.md")]
+    struct Ja12Menus;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -144,6 +146,8 @@ mod guide {
     struct En10KeysTimeThreads;
     #[doc = include_str!("../../../docs/guide/en/11-more-widgets.md")]
     struct En11MoreWidgets;
+    #[doc = include_str!("../../../docs/guide/en/12-menus.md")]
+    struct En12Menus;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]

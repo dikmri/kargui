@@ -212,6 +212,7 @@ fn key_of(vk: VIRTUAL_KEY) -> Option<Key> {
         VK_DOWN => Key::Down,
         VK_HOME => Key::Home,
         VK_END => Key::End,
+        VK_APPS => Key::ContextMenu,
         VK_PRIOR => Key::PageUp,
         VK_NEXT => Key::PageDown,
         VK_INSERT => Key::Insert,
@@ -752,6 +753,24 @@ impl State {
                 self.push(Event::PointerUp { x, y });
                 Some(LRESULT(0))
             }
+            // 右クリック。キーボードから来た物（位置が -1）は、Shift+F10 とアプリケーションキーをキーとして受けたので捨てる
+            WM_CONTEXTMENU => {
+                if lo(lp.0) == -1 && hi(lp.0) == -1 {
+                    return Some(LRESULT(0));
+                }
+                let mut p = POINT { x: lo(lp.0), y: hi(lp.0) };
+                unsafe {
+                    let _ = ScreenToClient(self.hwnd, &mut p);
+                }
+                let (x, y) = (p.x as f32, p.y as f32);
+                // 窓の枠（題の帯）の上なら、OS の窓のメニューに任せる
+                if x < 0.0 || y < 0.0 || x >= self.rt.cx.width || y >= self.rt.cx.height {
+                    return None;
+                }
+                log::event("context_menu", &format!("x={x} y={y}"), "sent");
+                self.push(Event::ContextMenu { x, y });
+                Some(LRESULT(0))
+            }
             WM_MOUSEWHEEL => {
                 let delta = hi(wp.0 as isize) as f32;
                 let mut p = POINT { x: lo(lp.0), y: hi(lp.0) };
@@ -773,8 +792,10 @@ impl State {
                         let mods = mods_now();
                         log::event("key", &format!("key={key:?} mods={mods:?} composing={}", self.composing), "sent");
                         self.push(Event::Key { key, mods });
-                        // Alt+F4（閉じる）と F10（窓のメニュー）は、アプリに知らせた上で OS の既定の動きも残す
-                        if msg == WM_SYSKEYDOWN && matches!(key, Key::F4 | Key::F10) { None } else { Some(LRESULT(0)) }
+                        // Alt+F4（閉じる）と、メニューバーの無い窓の F10（窓のメニュー）は、アプリに知らせた上で OS の
+                        // 既定の動きも残す。Shift+F10 はキーとして右クリックのメニューを開くので、OS には渡さない
+                        let f10 = key == Key::F10 && !mods.shift && self.rt.cx.prev.menubar.is_empty();
+                        if msg == WM_SYSKEYDOWN && (key == Key::F4 || f10) { None } else { Some(LRESULT(0)) }
                     }
                     None => None,
                 }

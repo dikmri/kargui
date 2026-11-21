@@ -261,6 +261,16 @@ pub(crate) fn place_near(anchor: Rect, w: f32, h: f32, window: Rect, margin: f32
     Rect::new(x.round(), y.round(), w, h)
 }
 
+/// 出す元（anchor）の横に w×h を置く場所（入れ子のメニュー）。右に入れば右、入らなければ左。
+/// 縦は出す元の上端から pad だけ上（中の最初の項目が出す元と並ぶ）にして、窓の中に収める
+pub(crate) fn place_beside(anchor: Rect, w: f32, h: f32, window: Rect, margin: f32, pad: f32) -> Rect {
+    let right = anchor.right() + pad;
+    let x = if right + w <= window.right() - margin { right } else { anchor.x - pad - w };
+    let x = x.min(window.right() - margin - w).max(window.x + margin);
+    let y = (anchor.y - pad).min(window.bottom() - margin - h).max(window.y + margin);
+    Rect::new(x.round(), y.round(), w, h)
+}
+
 /// 窓の真ん中に w×h を置く場所
 pub(crate) fn place_center(w: f32, h: f32, window: Rect) -> Rect {
     Rect::new((window.x + (window.w - w) / 2.0).max(window.x).round(), (window.y + (window.h - h) / 2.0).max(window.y).round(), w, h)
@@ -269,6 +279,19 @@ pub(crate) fn place_center(w: f32, h: f32, window: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placing_beside_prefers_the_right_then_the_left_and_stays_inside() {
+        let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let r = place_beside(Rect::new(20.0, 40.0, 100.0, 30.0), 120.0, 100.0, window, 8.0, 4.0);
+        assert_eq!((r.x, r.y), (124.0, 36.0));
+        // 右に入らないので左
+        let r = place_beside(Rect::new(250.0, 40.0, 100.0, 30.0), 120.0, 100.0, window, 8.0, 4.0);
+        assert_eq!(r.x, 250.0 - 4.0 - 120.0);
+        // 下にはみ出すなら上へ寄せる
+        let r = place_beside(Rect::new(20.0, 250.0, 100.0, 30.0), 120.0, 100.0, window, 8.0, 4.0);
+        assert_eq!(r.y, 300.0 - 8.0 - 100.0);
+    }
 
     #[test]
     fn placing_near_an_anchor_prefers_below_then_above_and_stays_inside() {

@@ -48,6 +48,20 @@
   Enter, Space, Alt+Down and F4 open it; open, Up/Down/Home/End move (wrapping), Enter or Space
   picks, Escape or a click outside closes. Screen readers see a combo box with its value and
   whether it is expanded, and a list box of options.
+- Menus: `Ui::menu_button`, `Ui::menu_bar` with `MenuBar::menu`, and `.context_menu(..)` on any
+  widget (right-click, Shift+F10 or the context menu key). Items: `Menu::item`, `Menu::check`,
+  `Menu::radio`, `Menu::separator` and `Menu::submenu` (opens beside, on click, Right or a 0.4 s
+  rest of the pointer); `MenuItem::shortcut` shows the keys and chooses the item even while the
+  menu is closed (in a context menu, while the focus is inside its widget), `MenuItem::enabled`,
+  `MenuItem::icon`. Keyboard as in the WAI-ARIA menu patterns: arrows, Home/End, a letter jumps to
+  the next item starting with it, Right/Left for submenus and neighbouring menu bar menus, Escape
+  and Tab close, F10 moves to the menu bar and back. Only one menu chain is open at a time; while
+  a menu bar menu is open, pointing at another heading switches. Screen readers see menu buttons,
+  a menu bar, menus, and menu items (checkable and radio items with their state, and shortcuts).
+  New: `Key::ContextMenu`, `Harness::right_click`. Drop-downs now also pick by typing a letter.
+- Fix: when a popup, dialog, list or menu opens or closes, the focus that moves into it (or back)
+  is drawn at once. Before, the frame was drawn before the focus moved, and the old focus stayed on
+  screen until the next input.
 - Linux and macOS (preparation): kargui now builds on them, and its tests (widgets, layout,
   drawing, the test harness) pass there. Text on these systems is laid out with parley and drawn
   with swash; Windows keeps DirectWrite and gains no dependencies. Windows cannot be opened there

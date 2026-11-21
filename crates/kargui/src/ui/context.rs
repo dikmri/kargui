@@ -126,6 +126,10 @@ pub(crate) struct Prev {
     pub disabled: HashSet<Id>,
     /// 重ねて出した物（描いた順。後ろほど上）
     pub overlays: Vec<OverlayInfo>,
+    /// 右クリックのメニューを持つ部品と、その見える範囲（描いた順。後ろほど内側か上）
+    pub context_regions: Vec<(Id, Rect)>,
+    /// メニューバーの見出し（並んだ順）
+    pub menubar: Vec<Id>,
 }
 
 pub(crate) struct Context {
@@ -168,8 +172,22 @@ pub(crate) struct Context {
     pub overlay_return: HashMap<Id, Id>,
     /// 重ねて出した物 → 開いた時に焦点を置く部品（無ければ中の最初の部品。ドロップダウンは選んでいる項目）
     pub overlay_focus_hint: HashMap<Id, Id>,
-    /// 開いているドロップダウンとメニュー（使う側の書き方を簡単にするため、kargui が持つ）
+    /// 開いているドロップダウン（使う側の書き方を簡単にするため、kargui が持つ）
     pub open: HashSet<Id>,
+    /// 開いているメニューの列（一番外のメニューから入れ子の順）。メニューは同時に 1 列だけ開く
+    pub menus: Vec<Id>,
+    /// ビューの途中で、前に作った部品が見た状態を変えた（メニューを開いた・閉じた）。もう一度回す
+    pub again: bool,
+    /// ポインターが止まった時の動き（入れ子のメニューの開閉）を済ませた項目と、乗った時刻
+    pub rested: Option<(Id, Instant)>,
+    /// 重ねて出した物が閉じた時に焦点を移す先（overlay_return より先に使う。None なら焦点を外す）
+    pub overlay_after: HashMap<Id, Option<Id>>,
+    /// F10 か見出しを押してメニューバーへ入る前の焦点（選んだ後と Esc で戻す）
+    pub bar_return: Option<Id>,
+    /// 右クリックのメニューを開く頼み（対象の部品と、出す場所）。キーボードなら部品の左下
+    pub context_request: Option<(Id, (f32, f32))>,
+    /// 開いている右クリックのメニューの場所（物理ピクセル）
+    pub context_at: (f32, f32),
     pub pressed: Option<Id>,
     /// ポインターが乗っているスクロールの棒（一覧の id）
     pub bar_hover: Option<Id>,
@@ -242,6 +260,13 @@ impl Context {
             overlay_return: HashMap::new(),
             overlay_focus_hint: HashMap::new(),
             open: HashSet::new(),
+            menus: Vec::new(),
+            again: false,
+            rested: None,
+            overlay_after: HashMap::new(),
+            bar_return: None,
+            context_request: None,
+            context_at: (0.0, 0.0),
             pressed: None,
             bar_hover: None,
             drag: None,
@@ -348,6 +373,45 @@ impl Context {
         self.prev.overlays.iter().rev().find(|o| o.kind != OverlayKind::Tooltip).filter(|o| o.kind.light_dismiss())
     }
 
+    /// 開いているメニューの列を depth 個に切る（深いメニューを閉じる）。変えたらビューを回し直す
+    pub fn menus_truncate(&mut self, depth: usize) {
+        if self.menus.len() > depth {
+            self.menus.truncate(depth);
+            self.again = true;
+        }
+    }
+
+    /// depth の深さに pop のメニューを開く（それより深いメニューは閉じる）。変えたらビューを回し直す
+    pub fn menus_open(&mut self, depth: usize, pop: Id) {
+        if self.menus.get(depth) == Some(&pop) && self.menus.len() == depth + 1 {
+            return;
+        }
+        self.menus.truncate(depth);
+        if self.menus.len() == depth {
+            self.menus.push(pop);
+        }
+        self.again = true;
+    }
+
+    /// 前のフレームのメニュー（入れ子を含む）
+    fn menu_layers(&self) -> Vec<Id> {
+        self.prev.overlays.iter().filter(|l| l.kind == OverlayKind::Menu).map(|l| l.id).collect()
+    }
+
+    /// 外を押した時に一緒に閉じる物（メニューなら開いている入れ子のメニュー全部）と、その範囲
+    fn dismiss_layers(&self, o: &OverlayInfo) -> Vec<(Id, Rect)> {
+        if o.kind == OverlayKind::Menu {
+            self.prev.overlays.iter().filter(|l| l.kind == OverlayKind::Menu).map(|l| (l.id, l.rect)).collect()
+        } else {
+            vec![(o.id, o.rect)]
+        }
+    }
+
+    /// 部品 f がメニューの中にあるか
+    fn in_menu(&self, f: Id) -> bool {
+        self.prev.overlays.iter().any(|l| l.kind == OverlayKind::Menu && l.focus.contains(&f))
+    }
+
     /// 一番上のダイアログ（焦点を中に閉じ込める）
     fn top_dialog(&self) -> Option<&OverlayInfo> {
         self.prev.overlays.iter().rev().find(|o| o.kind == OverlayKind::Dialog)
@@ -438,11 +502,18 @@ impl Context {
                     // 押した部品のツールチップは消す
                     self.tooltip_hidden = self.hover;
                     // 浮き出しの外（出す元の部品も除く）を押したら閉じる。そのクリックは下の部品に届けない
-                    if let Some(o) = self.top_popup() {
-                        let on_anchor = o.anchor.and_then(|a| self.prev.hits.iter().find(|h| h.id == a)).is_some_and(|h| h.rect.contains(x, y));
-                        if !o.rect.contains(x, y) && !on_anchor {
+                    if let Some(o) = self.top_popup().cloned() {
+                        let layers = self.dismiss_layers(&o);
+                        let on = |id: Id| self.prev.hits.iter().find(|h| h.id == id).is_some_and(|h| h.rect.contains(x, y));
+                        // メニューは、開いている入れ子のメニュー全部と、一番外の出す元と、メニューバーの見出しを内側とみなす
+                        let root = if o.kind == OverlayKind::Menu { self.prev.overlays.iter().find(|l| l.kind == OverlayKind::Menu).unwrap_or(&o) } else { &o };
+                        let on_anchor = root.anchor.is_some_and(on);
+                        let on_bar = o.kind == OverlayKind::Menu && self.prev.menubar.iter().any(|&b| on(b));
+                        if !layers.iter().any(|(_, r)| r.contains(x, y)) && !on_anchor && !on_bar {
                             log::event("popup.close", &format!("x={x} y={y} why=outside"), &format!("id={:x}", o.id.0));
-                            self.closing.insert(o.id);
+                            for (id, _) in layers {
+                                self.closing.insert(id);
+                            }
                             self.pressed = None;
                             continue;
                         }
@@ -455,6 +526,11 @@ impl Context {
                     }
                     // 押せない部品の上では、何も無い所を押したのと同じ（下の部品にも届かない）
                     let hit = self.hit(x, y).cloned().filter(|h| h.enabled);
+                    // メニューバーの見出しを押した時は、元の焦点を覚える（項目を選んだら戻す）
+                    let on_bar = hit.as_ref().is_some_and(|h| self.prev.menubar.contains(&h.id));
+                    if on_bar && !self.focus.is_some_and(|f| self.prev.menubar.contains(&f) || self.in_menu(f)) {
+                        self.bar_return = self.focus;
+                    }
                     self.pressed = hit.as_ref().map(|h| h.id);
                     self.pointer = Some((x, y));
                     self.focus_visible = false;
@@ -514,8 +590,71 @@ impl Context {
                         self.closing.insert(o.id);
                     }
                 }
+                // F10: メニューバーの最初の見出しへ（見出しにいれば元の場所へ戻る）
+                Event::Key { key: Key::F10, mods } if mods == Mods::NONE && !self.prev.menubar.is_empty() => {
+                    self.commit_preedit("f10");
+                    let in_bar = self.focus.is_some_and(|f| self.prev.menubar.contains(&f));
+                    for id in self.menu_layers() {
+                        self.closing.insert(id);
+                    }
+                    if in_bar {
+                        self.focus = self.bar_return.take();
+                    } else {
+                        if !self.focus.is_some_and(|f| self.in_menu(f)) {
+                            self.bar_return = self.focus;
+                        }
+                        self.focus = Some(self.prev.menubar[0]);
+                        self.focus_visible = true;
+                    }
+                }
+                // Shift+F10 とアプリケーションキー: 焦点のある部品（かそれを含む部品）の右クリックのメニューを、部品の左下に開く
+                Event::Key { key: Key::F10, mods: Mods { shift: true, ctrl: false, alt: false } } | Event::Key { key: Key::ContextMenu, .. } => {
+                    self.commit_preedit("context");
+                    let target = self.focus.and_then(|f| {
+                        let r = self.prev.hits.iter().find(|h| h.id == f)?.rect;
+                        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                        let &(t, _) = self.prev.context_regions.iter().rev().find(|&&(id, rr)| id == f || rr.contains(cx, cy))?;
+                        Some((t, (r.x, r.bottom())))
+                    });
+                    log::event("context_menu.key", "", &format!("target={:?}", target.map(|t| t.0)));
+                    if let Some(req) = target {
+                        for id in self.menu_layers() {
+                            self.closing.insert(id);
+                        }
+                        self.context_request = Some(req);
+                    }
+                }
+                // 右クリック: 開いている物の外なら閉じて、その場所の部品の右クリックのメニューを開く
+                Event::ContextMenu { x, y } => {
+                    self.commit_preedit("context");
+                    if let Some(o) = self.top_popup().cloned() {
+                        let layers = self.dismiss_layers(&o);
+                        if layers.iter().any(|(_, r)| r.contains(x, y)) {
+                            continue;
+                        }
+                        for (id, _) in layers {
+                            self.closing.insert(id);
+                        }
+                    }
+                    if self.top_dialog().is_some_and(|d| !d.rect.contains(x, y)) {
+                        continue;
+                    }
+                    let target = self.prev.context_regions.iter().rev().find(|(_, r)| r.contains(x, y)).map(|&(t, _)| t);
+                    log::event("context_menu.pointer", &format!("x={x} y={y}"), &format!("target={target:?}"));
+                    if let Some(t) = target {
+                        self.context_request = Some((t, (x, y)));
+                    }
+                }
                 Event::Key { key: Key::Tab, mods } => {
                     self.commit_preedit("tab");
+                    // メニューと選択の一覧は Tab で閉じる（焦点は開いた元へ戻る）
+                    if let Some(o) = self.top_popup().filter(|o| matches!(o.kind, OverlayKind::Menu | OverlayKind::ListBox)).cloned() {
+                        self.focus_visible = true;
+                        for (id, _) in self.dismiss_layers(&o) {
+                            self.closing.insert(id);
+                        }
+                        continue;
+                    }
                     self.focus_visible = true;
                     self.tooltip_hidden = None;
                     self.move_focus(mods.shift);
@@ -628,6 +767,7 @@ impl Context {
         self.keys.clear();
         self.pointer_text = None;
         self.released = None;
+        self.context_request = None;
     }
 }
 

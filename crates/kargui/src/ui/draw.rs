@@ -7,7 +7,7 @@ use crate::ime::ImeField;
 use crate::ui::context::{Context, Hit, ListInfo, OverlayInfo, Prev};
 use crate::ui::edit;
 use crate::ui::layout::{self, Dir, Size};
-use crate::ui::{Kind, Overlay, OverlayKind, TextKind, Tree};
+use crate::ui::{Kind, MenuMark, Overlay, OverlayKind, Place, TextKind, Tree};
 use crate::icon::Icon;
 
 /// 論理ピクセルの大きさ（拡大率を掛ける前）
@@ -87,6 +87,28 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
         Kind::ListOption { text, .. } => {
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
             (laid.width.ceil() + 2.0 * p(12.0), p(30.0))
+        }
+        Kind::MenuButton { text, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
+            ((laid.width.ceil() + p(sz::BUTTON_PAD) + p(sz::ICON_GAP) + p(16.0) + p(10.0)).max(p(sz::BUTTON_MIN_W)), p(sz::BUTTON_H))
+        }
+        Kind::MenuBarItem { text, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
+            (laid.width.ceil() + 2.0 * p(10.0), p(30.0))
+        }
+        Kind::MenuItem { text, shortcut, submenu, gutter, .. } => {
+            let st = style(cx, TextKind::Body, false);
+            let mut w = cx.text.layout(text, st, None).width.ceil() + 2.0 * p(12.0);
+            if *gutter {
+                w += p(16.0) + p(10.0);
+            }
+            if let Some(k) = shortcut {
+                w += p(32.0) + cx.text.layout(k, st, None).width.ceil();
+            }
+            if *submenu {
+                w += p(8.0) + p(16.0);
+            }
+            (w.max(p(140.0)), p(30.0))
         }
         Kind::Progress { ring: false, .. } => (p(sz::INPUT_W), p(12.0)),
         Kind::Progress { ring: true, .. } => (p(20.0), p(20.0)),
@@ -224,8 +246,11 @@ fn place_overlays(tree: &mut Tree, cx: &Context, window: Rect) {
         let w = w.min((window.w - 2.0 * margin).max(0.0));
         let h = h.min((window.h - 2.0 * margin).max(0.0));
         let anchor = o.anchor.and_then(|a| tree.info.iter().position(|n| n.id == a)).map(|i| tree.layout[i].rect);
-        let rect = match (o.kind, anchor) {
-            (OverlayKind::Popup | OverlayKind::Tooltip | OverlayKind::ListBox | OverlayKind::Menu, Some(a)) => layout::place_near(a, w, h, window, margin, gap),
+        let rect = match (o.kind, o.place, anchor) {
+            (OverlayKind::Dialog, ..) => layout::place_center(w, h, window),
+            (_, Place::At(x, y), _) => layout::place_near(Rect::new(x, y, 0.0, 0.0), w, h, window, margin, 0.0),
+            (_, Place::Beside, Some(a)) => layout::place_beside(a, w, h, window, margin, px(cx, 4.0)),
+            (_, _, Some(a)) => layout::place_near(a, w, h, window, margin, gap),
             _ => layout::place_center(w, h, window),
         };
         layout::arrange(&mut tree.layout, o.idx, rect);
@@ -331,10 +356,15 @@ impl Painter<'_> {
         let small = matches!(tree.info[i].kind, Kind::Checkbox { .. } | Kind::Toggle { .. });
         let (sx, sy) = if small { (self.px(sz::SLOP_X), self.px(sz::SLOP_Y)) } else { (0.0, 0.0) };
         let slop = intersect(Rect::new(r.x - sx, r.y - sy, r.w + 2.0 * sx, r.h + 2.0 * sy), self.clip).unwrap_or(r);
-        let arrows = enabled && matches!(tree.info[i].kind, Kind::Slider { .. } | Kind::Dropdown { .. } | Kind::ListOption { .. });
+        let arrows = enabled
+            && matches!(
+                tree.info[i].kind,
+                Kind::Slider { .. } | Kind::Dropdown { .. } | Kind::ListOption { .. } | Kind::MenuButton { .. } | Kind::MenuBarItem { .. } | Kind::MenuItem { .. }
+            );
         let multiline = matches!(tree.info[i].kind, Kind::TextArea { .. });
         self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, multiline, enabled });
-        if focusable {
+        // メニューバーは Tab で最初の見出しにだけ止まる
+        if focusable && !matches!(tree.info[i].kind, Kind::MenuBarItem { tab_stop: false, .. }) {
             self.prev.focus_order.push(id);
         }
     }
@@ -343,6 +373,18 @@ impl Painter<'_> {
     fn icon(&mut self, icon: Icon, x: f32, y: f32, s: f32, color: Color) {
         if let Some(slot) = self.cx.icon_slot(icon, s as u32) {
             self.d.glyph(x, y, slot.w as f32, slot.h as f32, slot.x as f32, slot.y as f32, color);
+        }
+    }
+
+    /// 一覧やメニューの項目の背景（bg が無ければ塗らない）と、キーボードの焦点の枠（内側に 2 本分）。
+    /// 枠の内側は背景の色で塗り直す（boxed は外側を枠の色で塗るので、透明は渡せない）
+    fn item_bg(&mut self, r: Rect, bg: Option<Color>, focused: bool, radius: f32) {
+        let line = self.line();
+        let (accent, base) = (self.cx.theme.accent, self.cx.theme.background);
+        if focused {
+            self.d.boxed(r.inset(line), bg.unwrap_or(base), accent, 2.0 * line, radius);
+        } else if let Some(b) = bg {
+            self.d.fill(r, b, radius);
         }
     }
 
@@ -361,10 +403,16 @@ impl Painter<'_> {
         let r = tree.layout[i].rect;
         let id = tree.info[i].id;
         let line = self.line();
+        // 右クリックのメニューを持つ部品は、見えている範囲を覚える（右クリックの場所から部品を探す）
+        if tree.info[i].context_menu {
+            if let Some(c) = intersect(r, self.clip) {
+                self.prev.context_regions.push((id, c));
+            }
+        }
         match &tree.info[i].kind {
             // 重ねる物は親に付かないので、ここには来ない（Painter::overlay で描く）
             Kind::Overlay { .. } => {}
-            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space => {
+            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar => {
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
                 }
@@ -526,18 +574,103 @@ impl Painter<'_> {
                 let t = self.cx.theme.clone();
                 let radius = self.px(4.0);
                 let hot = self.cx.hover == Some(id) || self.cx.focus == Some(id);
+                let bg = if *selected {
+                    Some(t.selected)
+                } else if hot {
+                    Some(t.button_hover)
+                } else {
+                    None
+                };
+                self.item_bg(r, bg, self.cx.focus_visible && self.cx.focus == Some(id), radius);
                 if *selected {
-                    self.d.fill(r, t.selected, radius);
                     // 選んでいる項目は左に短い縦の線
                     let bar = Rect::new(r.x, (r.y + r.h * 0.25).round(), self.px(3.0), (r.h * 0.5).round());
                     self.d.fill(bar, t.accent, bar.w / 2.0);
-                } else if hot {
-                    self.d.fill(r, t.button_hover, radius);
-                }
-                if self.cx.focus_visible && self.cx.focus == Some(id) {
-                    self.d.boxed(r.inset(line), [0.0; 4], t.accent, 2.0 * line, radius);
                 }
                 text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + self.px(12.0), r, t.text);
+                self.hit(tree, i, true, false);
+            }
+            Kind::MenuButton { text, open } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(sz::RADIUS);
+                self.focus_ring(tree, i, radius);
+                let bg = if off {
+                    t.button
+                } else if *open || self.cx.pressed == Some(id) {
+                    t.button_pressed
+                } else if self.cx.hover == Some(id) {
+                    t.button_hover
+                } else {
+                    t.button
+                };
+                self.d.boxed(r, bg, t.border, line, radius);
+                let color = if off { t.done_text } else { t.text };
+                text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + self.px(sz::BUTTON_PAD), r, color);
+                let s = self.px(16.0);
+                self.icon(Icon::ChevronDown, r.right() - self.px(10.0) - s, (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                self.hit(tree, i, true, false);
+            }
+            Kind::MenuBarItem { text, open, .. } => {
+                self.prev.menubar.push(id);
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(4.0);
+                let bg = if !off && (*open || self.cx.pressed == Some(id)) {
+                    Some(t.button_pressed)
+                } else if !off && self.cx.hover == Some(id) {
+                    Some(t.button_hover)
+                } else {
+                    None
+                };
+                self.item_bg(r, bg, self.cx.focus_visible && self.cx.focus == Some(id), radius);
+                let laid = self.cx.text.layout(text, style(self.cx, TextKind::Body, false), None);
+                let color = if off { t.done_text } else { t.text };
+                put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
+                self.hit(tree, i, true, false);
+            }
+            Kind::MenuItem { text, shortcut, icon, mark, submenu, open, gutter } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(4.0);
+                let hot = !off && (self.cx.hover == Some(id) || (self.cx.focus_visible && self.cx.focus == Some(id)));
+                let bg = if *open {
+                    Some(t.selected)
+                } else if hot {
+                    Some(t.button_hover)
+                } else {
+                    None
+                };
+                self.item_bg(r, bg, self.cx.focus_visible && self.cx.focus == Some(id), radius);
+                let color = if off { t.done_text } else { t.text };
+                let weak = if off { t.done_text } else { t.weak_text };
+                let pad = self.px(12.0);
+                let s = self.px(16.0);
+                let iy = (r.y + (r.h - s) / 2.0).round();
+                let mut x = r.x + pad;
+                if *gutter {
+                    match (mark, icon) {
+                        (MenuMark::Check(true), _) => self.icon(Icon::Check, x, iy, s, color),
+                        (MenuMark::Radio(true), _) => {
+                            let d = self.px(6.0);
+                            self.d.fill(Rect::new(x + ((s - d) / 2.0).round(), (r.y + (r.h - d) / 2.0).round(), d, d), color, d / 2.0);
+                        }
+                        (_, Some(ic)) => self.icon(*ic, x, iy, s, color),
+                        _ => {}
+                    }
+                    x += s + self.px(10.0);
+                }
+                let st = style(self.cx, TextKind::Body, false);
+                text_mid(self.d, self.cx, text, st, x, r, color);
+                let mut right = r.right() - pad;
+                if *submenu {
+                    self.icon(Icon::ChevronRight, right - s, iy, s, weak);
+                    right -= s + self.px(8.0);
+                }
+                if let Some(k) = shortcut {
+                    let laid = self.cx.text.layout(k, st, None);
+                    put(self.d, &laid, (right - laid.width).round(), (r.y + (r.h - laid.height) / 2.0).round(), weak);
+                }
                 self.hit(tree, i, true, false);
             }
             Kind::Progress { value, ring } => {
@@ -785,7 +918,7 @@ impl Painter<'_> {
         let id = tree.info[i].id;
         if tree.info[i].disabled {
             self.prev.disabled.insert(id);
-        } else if tree.info[i].kind.interactive() && !matches!(tree.info[i].kind, Kind::Radio { tab_stop: false, .. }) {
+        } else if tree.info[i].kind.interactive() && !matches!(tree.info[i].kind, Kind::Radio { tab_stop: false, .. } | Kind::MenuBarItem { tab_stop: false, .. }) {
             if let Some(s) = self.scroller {
                 self.prev.rows.insert(id, (s, tree.layout[i].rect));
             }

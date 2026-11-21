@@ -162,6 +162,8 @@ pub enum Key {
     PageDown,
     /// Insert.
     Insert,
+    /// The context menu key (on some keyboards called the Application key).
+    ContextMenu,
 }
 
 /// Modifier keys held during a key press.
@@ -258,4 +260,6 @@ pub(crate) enum Event {
     /// 再変換で IME が決めた範囲を選ぶ（入力欄の文字の UTF-8 の位置）
     ImeSelect { start: usize, end: usize },
     A11y { target: Id, action: A11yAction },
+    /// 右クリック（その場所の部品の右クリックのメニューを開く）。位置は物理ピクセル
+    ContextMenu { x: f32, y: f32 },
 }

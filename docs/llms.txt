@@ -351,6 +351,49 @@ if ui.dropdown(&mut theme, &options).label("Theme").changed() {
 }
 ```
 
+### `pub fn menu_button(&mut self, text: impl Into<String>, f: impl FnOnce(&mut Menu)) -> Handle<'_>`
+
+A button that opens a menu below it (or above it when there is no room). Build the items in
+`f` with [`Menu::item`], [`Menu::check`], [`Menu::radio`], [`Menu::separator`] and
+[`Menu::submenu`]. Choosing an item closes the menu; Escape or a click outside closes it
+without choosing. Keyboard: Enter, Space or Down opens it at the first item and Up at the
+last. In the menu, Up, Down, Home and End move, a letter moves to the next item starting
+with it, Right opens a submenu and Left closes it, and Tab closes the menu. `f` also runs
+while the menu is closed, without creating anything, so that the items' shortcuts work.
+
+```
+use kargui::{Key, Mods};
+ui.menu_button("Edit", |m| {
+    if m.item("Clear").shortcut(Key::L, Mods::CTRL).clicked() {
+        doc.clear();
+    }
+    m.separator();
+    m.check(&mut wrap, "Word wrap");
+});
+```
+
+### `pub fn menu_bar(&mut self, f: impl FnOnce(&mut MenuBar)) -> Handle<'_>`
+
+A menu bar: a row of headings that each open a menu ([`MenuBar::menu`]). F10 moves the
+focus to the first heading (and back); Left and Right move between headings, also while a
+menu is open; Down, Enter or Space opens the menu. While one menu is open, pointing at
+another heading opens that one. After an item is chosen, the focus goes back to where it was
+before the menu bar. Tab stops once on the bar.
+
+```
+use kargui::{Key, Mods};
+ui.menu_bar(|bar| {
+    bar.menu("File", |m| {
+        if m.item("Save").shortcut(Key::S, Mods::CTRL).clicked() {
+            saved += 1;
+        }
+    });
+    bar.menu("Help", |m| {
+        m.item("About");
+    });
+});
+```
+
 ### `pub fn icon(&mut self, icon: Icon) -> IconView<'_>`
 
 A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
@@ -750,6 +793,30 @@ ui.row(|ui| {
 .tooltip("Shows whether the last save worked");
 ```
 
+### `pub fn context_menu(self, f: impl FnOnce(&mut Menu)) -> Self`
+
+A menu that opens where the widget is right-clicked, or below it with Shift+F10 or the
+context menu key while the focus is on it (or on a widget inside it). Build the items in `f`
+as in [`Ui::menu_button`]. While the focus is inside the widget, the items' shortcuts work
+even when the menu is closed.
+
+```
+let mut remove = None;
+for (k, name) in files.iter().enumerate() {
+    ui.row(|ui| {
+        ui.label(name);
+    })
+    .context_menu(|m| {
+        if m.item("Delete").clicked() {
+            remove = Some(k);
+        }
+    });
+}
+if let Some(k) = remove {
+    files.remove(k);
+}
+```
+
 ### `pub fn scroll_into_view(self) -> Self`
 
 Scrolls the nearest [`Ui::scroll`] container that holds this widget so that the widget is at
@@ -771,101 +838,13 @@ jump_to = None;
 
 ## Text (`Label`, from `ui.label` and `ui.heading`)
 
-### `pub fn weak(self) -> Self`
+### `pub fn context_menu(self, f: impl FnOnce(&mut Menu)) -> Self`
 
-Draws in the less prominent text color.
-
-```
-ui.label("3 of 10 done").weak();
-```
-
-### `pub fn small(self) -> Self`
-
-Draws smaller.
+Adds a menu that opens on a right-click. See [`Handle::context_menu`].
 
 ```
-ui.label("Saved a minute ago").small();
-```
-
-### `pub fn bold(self) -> Self`
-
-Draws bold.
-
-```
-ui.label("Total: 1,280").bold();
-```
-
-### `pub fn strike(self, on: bool) -> Self`
-
-Draws a line through the text (for example for finished tasks) when `on` is true.
-
-```
-let done = true;
-ui.label("Buy milk").strike(done);
-```
-
-### `pub fn wrap(self) -> Self`
-
-Wraps the text onto several lines to fit the width. In a row, the text also takes the
-remaining width.
-
-```
-ui.label("A long paragraph that does not fit on one line is wrapped to the width.").wrap();
-```
-
-### `pub fn size(self, size: f32) -> Self`
-
-Sets the text size in logical pixels (body text is 14, headings 21). Use it for text the
-user can enlarge, such as a reading view.
-
-```
-ui.label("Large text for reading.").size(font_size).wrap();
-```
-
-### `pub fn right(mut self) -> Self`
-
-Puts the text at the right end of its space (for example numbers in a table column).
-Give the label a width with [`Label::width`] or [`Label::grow`] for this to show.
-
-```
-ui.row(|ui| {
-    ui.label("Apples").grow();
-    ui.label("1,280").right().width(kargui::Size::Fixed(80.0));
-});
-```
-
-### `pub fn grow(self) -> Self`
-
-Takes the remaining space. See [`Handle::grow`].
-
-```
-ui.row(|ui| {
-    ui.label("Title").grow();
-    ui.button("Close");
-});
-```
-
-### `pub fn width(self, size: Size) -> Self`
-
-Sets the width. See [`Handle::width`].
-
-```
-ui.row(|ui| {
-    ui.label("Name").width(Size::Fixed(80.0));
-    ui.label("Ada");
-});
-```
-
-### `pub fn scroll_into_view(self) -> Self`
-
-Scrolls the nearest scroll container so this text is at its top. See [`Handle::scroll_into_view`].
-
-```
-ui.scroll(|ui| {
-    for i in 0..30 {
-        ui.label(format!("Line {i}"));
-    }
-    ui.label("The end").scroll_into_view();
+ui.label("report.pdf").context_menu(|m| {
+    m.item("Open");
 });
 ```
 

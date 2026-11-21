@@ -151,6 +151,14 @@ pub(crate) enum Kind {
     Dropdown { text: String, widest: String, open: bool },
     /// 選択の一覧の項目（ドロップダウンの中）
     ListOption { text: String, selected: bool },
+    /// メニューを開くボタン（Ui::menu_button）
+    MenuButton { text: String, open: bool },
+    /// メニューバー（見出しを横に並べる入れ物）
+    MenuBar,
+    /// メニューバーの見出し（tab_stop は Tab で止まる 1 つ。最初の見出し）
+    MenuBarItem { text: String, open: bool, tab_stop: bool },
+    /// メニューの項目（gutter は印かアイコンの列を空けるか。メニューの中で 1 つでもあれば全部が空ける）
+    MenuItem { text: String, shortcut: Option<String>, icon: Option<Icon>, mark: MenuMark, submenu: bool, open: bool, gutter: bool },
     Checkbox { checked: bool, text: String, strike: bool, mixed: bool },
     Toggle { on: bool, text: String },
     Segment { text: String, selected: bool },
@@ -189,14 +197,34 @@ impl OverlayKind {
     }
 }
 
+/// メニューの項目の印
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MenuMark {
+    None,
+    Check(bool),
+    Radio(bool),
+}
+
+/// 重ねて出す物を置く場所（ダイアログは窓の真ん中）
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Place {
+    /// 出す元の下（入らなければ上）
+    Below,
+    /// 出す元の横（右、入らなければ左）。入れ子のメニュー
+    Beside,
+    /// 窓の中のこの点（物理ピクセル）の右下。右クリックのメニュー
+    At(f32, f32),
+}
+
 /// この回の画面で重ねて出す物
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Overlay {
     pub idx: usize,
     pub id: Id,
-    /// 近くに出す元の部品（ダイアログは無し）
+    /// 近くに出す元の部品（ダイアログと右クリックのメニューは無し）
     pub anchor: Option<Id>,
     pub kind: OverlayKind,
+    pub place: Place,
 }
 
 impl Kind {
@@ -217,6 +245,9 @@ impl Kind {
                 | Kind::ToggleButton { .. }
                 | Kind::Dropdown { .. }
                 | Kind::ListOption { .. }
+                | Kind::MenuButton { .. }
+                | Kind::MenuBarItem { .. }
+                | Kind::MenuItem { .. }
         )
     }
 }
@@ -231,6 +262,8 @@ pub(crate) struct NodeInfo {
     pub disabled: bool,
     /// 読み上げの説明（ツールチップの文）
     pub description: Option<String>,
+    /// 右クリックのメニューを持つ（Handle::context_menu）。描く時にその範囲を覚える
+    pub context_menu: bool,
 }
 
 /// ビュー 1 回分の画面の木。info と layout は同じ番号で並ぶ。親は子より前に入る
@@ -255,7 +288,7 @@ impl Tree {
         layout.pad = ((16.0 * scale).round(), (12.0 * scale).round());
         layout.gap = (10.0 * scale).round();
         Self {
-            info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false, description: None }],
+            info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false, description: None, context_menu: false }],
             layout: vec![layout],
             overlays: Vec::new(),
             occurrences: HashMap::new(),
@@ -317,15 +350,15 @@ impl<'a> Ui<'a> {
     /// 重ねて出す物の入れ物を作る（親には付けず、Tree::overlays に入れる）
     fn push_overlay(&mut self, id: Id, kind: OverlayKind, title: String, anchor: Option<Id>) -> usize {
         let idx = self.tree.info.len();
-        self.tree.info.push(NodeInfo { id, kind: Kind::Overlay { kind, title }, label: None, disabled: self.disabled, description: None });
+        self.tree.info.push(NodeInfo { id, kind: Kind::Overlay { kind, title }, label: None, disabled: self.disabled, description: None, context_menu: false });
         self.tree.layout.push(LayoutNode::new(Dir::Column));
-        self.tree.overlays.push(Overlay { idx, id, anchor, kind });
+        self.tree.overlays.push(Overlay { idx, id, anchor, kind, place: Place::Below });
         idx
     }
 
     fn push(&mut self, id: Id, kind: Kind, dir: Dir) -> (usize, Id) {
         let idx = self.tree.info.len();
-        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled, description: None });
+        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled, description: None, context_menu: false });
         self.tree.layout.push(LayoutNode::new(dir));
         self.tree.layout[self.parent].children.push(idx);
         (idx, id)
@@ -342,16 +375,8 @@ impl<'a> Ui<'a> {
     fn handle(&mut self, idx: usize, id: Id) -> Handle<'_> {
         let parent_dir = self.parent_dir();
         let tip = self.cx.tip_state(id);
-        Handle {
-            cx_scroll: &mut self.cx.scroll_into_view,
-            wake_at: &mut self.cx.wake_at,
-            tree: &mut *self.tree,
-            idx,
-            id,
-            scale: self.cx.scale,
-            parent_dir,
-            tip,
-        }
+        let scale = self.cx.scale;
+        Handle { cx: &mut *self.cx, tree: &mut *self.tree, idx, id, scale, parent_dir, tip }
     }
 
     // ---- 入れ物 ----
@@ -993,6 +1018,16 @@ impl<'a> Ui<'a> {
                 if self.cx.app_keys.contains(&(Key::Down, Mods::ALT)) || self.cx.app_keys.contains(&(Key::F4, Mods::NONE)) {
                     open = true;
                 }
+                // 閉じたまま文字を打つと、その文字で始まる次の項目を選ぶ
+                if !open {
+                    let texts: Vec<&str> = options.iter().map(|(_, t)| *t).collect();
+                    for c in take_letters(self.cx) {
+                        let from = picked.or(current).unwrap_or(options.len() - 1);
+                        if let Some(j) = next_starting(&texts, from, c) {
+                            picked = Some(j);
+                        }
+                    }
+                }
             }
         }
         if open {
@@ -1019,6 +1054,8 @@ impl<'a> Ui<'a> {
             // 開いた時は、選んでいる項目に焦点を置く
             self.cx.overlay_focus_hint.insert(pop, item_ids[current.unwrap_or(0).min(item_ids.len().saturating_sub(1))]);
             move_focus_with_arrows(self.cx, &item_ids);
+            let named: Vec<(Id, String)> = item_ids.iter().zip(options).map(|(&i, (_, t))| (i, t.to_string())).collect();
+            type_ahead(self.cx, &named);
         }
         if open {
             self.cx.open.insert(id);
@@ -1036,6 +1073,227 @@ impl<'a> Ui<'a> {
             }
         }
         Dropdown { h: self.handle(idx, id), changed }
+    }
+
+    /// A button that opens a menu below it (or above it when there is no room). Build the items in
+    /// `f` with [`Menu::item`], [`Menu::check`], [`Menu::radio`], [`Menu::separator`] and
+    /// [`Menu::submenu`]. Choosing an item closes the menu; Escape or a click outside closes it
+    /// without choosing. Keyboard: Enter, Space or Down opens it at the first item and Up at the
+    /// last. In the menu, Up, Down, Home and End move, a letter moves to the next item starting
+    /// with it, Right opens a submenu and Left closes it, and Tab closes the menu. `f` also runs
+    /// while the menu is closed, without creating anything, so that the items' shortcuts work.
+    ///
+    /// ```
+    /// use kargui::{Key, Mods};
+    /// # let (mut doc, mut wrap) = (String::from("text"), false);
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("Edit", |m| {
+    ///     if m.item("Clear").shortcut(Key::L, Mods::CTRL).clicked() {
+    ///         doc.clear();
+    ///     }
+    ///     m.separator();
+    ///     m.check(&mut wrap, "Word wrap");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn menu_button(&mut self, text: impl Into<String>, f: impl FnOnce(&mut Menu)) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::MenuButton { text: text.into(), open: false }, Dir::Leaf);
+        let pop = Id(hash_of((id.0, "menu")));
+        let (open, last) = self.root_menu(id, pop);
+        let out = self.menu_body(pop, Some(id), Place::Below, 0, open, false, f);
+        let cx = &mut *self.cx;
+        if out.done && cx.menus.first() == Some(&pop) {
+            cx.menus_truncate(0);
+        }
+        if let (true, Some(&l)) = (last, out.items.last()) {
+            cx.overlay_focus_hint.insert(pop, l);
+        }
+        let open = cx.menus.first() == Some(&pop);
+        if let Kind::MenuButton { open: o, .. } = &mut self.tree.info[idx].kind {
+            *o = open;
+        }
+        self.handle(idx, id)
+    }
+
+    /// A menu bar: a row of headings that each open a menu ([`MenuBar::menu`]). F10 moves the
+    /// focus to the first heading (and back); Left and Right move between headings, also while a
+    /// menu is open; Down, Enter or Space opens the menu. While one menu is open, pointing at
+    /// another heading opens that one. After an item is chosen, the focus goes back to where it was
+    /// before the menu bar. Tab stops once on the bar.
+    ///
+    /// ```
+    /// use kargui::{Key, Mods};
+    /// # let mut saved = 0;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_bar(|bar| {
+    ///     bar.menu("File", |m| {
+    ///         if m.item("Save").shortcut(Key::S, Mods::CTRL).clicked() {
+    ///             saved += 1;
+    ///         }
+    ///     });
+    ///     bar.menu("Help", |m| {
+    ///         m.item("About");
+    ///     });
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn menu_bar(&mut self, f: impl FnOnce(&mut MenuBar)) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::MenuBar, Dir::Row);
+        let gap = self.px(2.0);
+        self.tree.layout[idx].gap = gap;
+        let mut bar = MenuBar { ui: self.child(idx), items: Vec::new(), step: None };
+        f(&mut bar);
+        let MenuBar { items, step, .. } = bar;
+        let cx = &mut *self.cx;
+        // メニューの中の左右の矢印で、隣の見出しのメニューへ
+        if let Some((k, s)) = step.filter(|_| !items.is_empty()) {
+            let j = (k as i32 + s).rem_euclid(items.len() as i32) as usize;
+            let pop = Id(hash_of((items[j].0, "menu")));
+            cx.overlay_focus_hint.remove(&pop);
+            cx.menus_open(0, pop);
+        }
+        // 見出しに焦点がある時（メニューは閉じている）: 左右で見出しを移る。Esc でメニューバーへ入る前の場所へ
+        if let Some(at) = cx.focus.and_then(|f| items.iter().position(|&i| i == f)) {
+            let n = items.len();
+            let mut next = at;
+            for e in std::mem::take(&mut cx.keys) {
+                if let Event::Key { key, mods } = e {
+                    if mods.ctrl || mods.alt {
+                        continue;
+                    }
+                    next = match key {
+                        Key::Right => (next + 1) % n,
+                        Key::Left => (next + n - 1) % n,
+                        Key::Home => 0,
+                        Key::End => n - 1,
+                        _ => next,
+                    };
+                }
+            }
+            if next != at {
+                cx.focus = Some(items[next]);
+                cx.focus_visible = true;
+            }
+            let esc = (Key::Escape, Mods::NONE);
+            if cx.bar_return.is_some() && cx.app_keys.contains(&esc) {
+                cx.app_keys.retain(|k| *k != esc);
+                cx.focus = cx.bar_return.take();
+            }
+        }
+        self.handle(idx, id)
+    }
+
+    /// 一番外のメニュー（メニューボタン・メニューバーの見出し）を開くか決めて、開いているメニューの列を合わせる。
+    /// 出す元を押すと開閉し、焦点がある時は下の矢印で開く（上の矢印なら最後の項目から）。返すのは (開くか, 最後の項目に焦点を置くか)
+    fn root_menu(&mut self, owner: Id, pop: Id) -> (bool, bool) {
+        let cx = &mut *self.cx;
+        let mine = cx.menus.first() == Some(&pop);
+        if self.disabled {
+            if mine {
+                cx.menus_truncate(0);
+            }
+            return (false, false);
+        }
+        let mut open = mine && !cx.closing.contains(&pop);
+        if cx.clicked == Some(owner) {
+            open = !open;
+        }
+        let mut last = false;
+        if cx.focus == Some(owner) {
+            if take_key(cx, Key::Down) {
+                open = true;
+            }
+            if take_key(cx, Key::Up) {
+                open = true;
+                last = !mine;
+            }
+        }
+        if open && !mine {
+            cx.overlay_focus_hint.remove(&pop);
+            cx.menus_open(0, pop);
+        } else if !open && mine {
+            cx.menus_truncate(0);
+        }
+        (open, last)
+    }
+
+    /// メニューの中身を作る。開いていれば重ねる物を作って項目を並べ、閉じていれば項目を作らずに
+    /// ショートカットだけを見る（f は毎回回す）
+    #[allow(clippy::too_many_arguments)]
+    fn menu_body(&mut self, pop: Id, anchor: Option<Id>, place: Place, depth: usize, open: bool, in_bar: bool, f: impl FnOnce(&mut Menu)) -> MenuOut {
+        let parent = if open {
+            let o = self.push_overlay(pop, OverlayKind::Menu, String::new(), anchor);
+            if let Some(last) = self.tree.overlays.last_mut() {
+                last.place = place;
+            }
+            let pad = self.px(4.0);
+            self.tree.layout[o].pad = (pad, pad);
+            o
+        } else {
+            self.parent
+        };
+        let mut m = Menu { ui: self.child(parent), open, depth, in_bar, done: false, step: 0 };
+        f(&mut m);
+        let (done, step) = (m.done, m.step);
+        if !open {
+            return MenuOut { done, step, items: Vec::new() };
+        }
+        let (items, keys_step) = self.finish_menu(parent, pop, depth, in_bar);
+        MenuOut { done, step: if keys_step != 0 { keys_step } else { step }, items }
+    }
+
+    /// 開いたメニューの仕上げ: 印かアイコンの列をそろえ、焦点が中にあれば矢印・Home・End・文字で項目を移る。
+    /// 入れ子のメニューは左の矢印で閉じる。メニューバーのメニューは左右で隣へ（返す向き）
+    fn finish_menu(&mut self, o: usize, pop: Id, depth: usize, in_bar: bool) -> (Vec<Id>, i32) {
+        let kids = self.tree.layout[o].children.clone();
+        let gutter = kids
+            .iter()
+            .any(|&c| matches!(&self.tree.info[c].kind, Kind::MenuItem { mark, icon, .. } if *mark != MenuMark::None || icon.is_some()));
+        let mut items = Vec::new();
+        for &c in &kids {
+            let n = &mut self.tree.info[c];
+            if let Kind::MenuItem { gutter: g, text, .. } = &mut n.kind {
+                *g = gutter;
+                if !n.disabled {
+                    items.push((n.id, text.clone()));
+                }
+            }
+        }
+        let mut step = 0;
+        let cx = &mut *self.cx;
+        if let Some(at) = cx.focus.and_then(|f| items.iter().position(|(i, _)| *i == f)) {
+            let n = items.len();
+            let mut next = at;
+            for e in std::mem::take(&mut cx.keys) {
+                let Event::Key { key, mods } = e else { continue };
+                if mods.ctrl || mods.alt {
+                    continue;
+                }
+                match key {
+                    Key::Down => next = (next + 1) % n,
+                    Key::Up => next = (next + n - 1) % n,
+                    Key::Home => next = 0,
+                    Key::End => next = n - 1,
+                    // 入れ子のメニューは左で閉じる（焦点は開いた項目へ戻る）
+                    Key::Left if depth > 0 => {
+                        if cx.menus.get(depth) == Some(&pop) {
+                            cx.menus_truncate(depth);
+                        }
+                    }
+                    Key::Left if in_bar => step = -1,
+                    Key::Right if in_bar => step = 1,
+                    _ => {}
+                }
+            }
+            if next != at {
+                cx.focus = Some(items[next].0);
+                cx.focus_visible = true;
+            }
+            type_ahead(cx, &items);
+        }
+        (items.into_iter().map(|(i, _)| i).collect(), step)
     }
 
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
@@ -1698,9 +1956,7 @@ impl<'a> Ui<'a> {
 /// # });
 /// ```
 pub struct Handle<'t> {
-    cx_scroll: &'t mut Option<Id>,
-    /// 次に起こす時刻（ツールチップを出す時刻に起こしてもらう）
-    wake_at: &'t mut Option<Instant>,
+    cx: &'t mut Context,
     tree: &'t mut Tree,
     idx: usize,
     id: Id,
@@ -1866,23 +2122,75 @@ impl Handle<'_> {
         self.tree.info[self.idx].description = Some(text.clone());
         match self.tip {
             // 出す時刻に起こしてもらう（それまでは描かない）
-            TipState::Waiting(due) => *self.wake_at = Some(self.wake_at.map_or(due, |w| w.min(due))),
+            TipState::Waiting(due) => self.cx.wake_by(due),
             TipState::Shown => {
                 let (id, scale) = (self.id, self.scale);
                 let ov = Id(hash_of((id.0, "tooltip")));
                 let idx = self.tree.info.len();
                 let kind = Kind::Overlay { kind: OverlayKind::Tooltip, title: String::new() };
-                self.tree.info.push(NodeInfo { id: ov, kind, label: None, disabled: false, description: None });
+                self.tree.info.push(NodeInfo { id: ov, kind, label: None, disabled: false, description: None, context_menu: false });
                 let mut l = LayoutNode::new(Dir::Column);
                 l.pad = ((8.0 * scale).round(), (5.0 * scale).round());
                 self.tree.layout.push(l);
                 let label = Kind::Label { text, size: TextKind::Small, bold: false, weak: false, strike: false, wrap: false, right: false };
-                self.tree.info.push(NodeInfo { id: Id(hash_of((id.0, "tooltip-text"))), kind: label, label: None, disabled: false, description: None });
+                self.tree.info.push(NodeInfo { id: Id(hash_of((id.0, "tooltip-text"))), kind: label, label: None, disabled: false, description: None, context_menu: false });
                 self.tree.layout.push(LayoutNode::new(Dir::Leaf));
                 self.tree.layout[idx].children.push(idx + 1);
-                self.tree.overlays.push(Overlay { idx, id: ov, anchor: Some(id), kind: OverlayKind::Tooltip });
+                self.tree.overlays.push(Overlay { idx, id: ov, anchor: Some(id), kind: OverlayKind::Tooltip, place: Place::Below });
             }
             TipState::Hidden => {}
+        }
+        self
+    }
+
+    /// A menu that opens where the widget is right-clicked, or below it with Shift+F10 or the
+    /// context menu key while the focus is on it (or on a widget inside it). Build the items in `f`
+    /// as in [`Ui::menu_button`]. While the focus is inside the widget, the items' shortcuts work
+    /// even when the menu is closed.
+    ///
+    /// ```
+    /// # let mut files = vec!["a.txt".to_string(), "b.txt".to_string()];
+    /// # kargui::test::example(|ui| {
+    /// let mut remove = None;
+    /// for (k, name) in files.iter().enumerate() {
+    ///     ui.row(|ui| {
+    ///         ui.label(name);
+    ///     })
+    ///     .context_menu(|m| {
+    ///         if m.item("Delete").clicked() {
+    ///             remove = Some(k);
+    ///         }
+    ///     });
+    /// }
+    /// if let Some(k) = remove {
+    ///     files.remove(k);
+    /// }
+    /// # });
+    /// ```
+    pub fn context_menu(self, f: impl FnOnce(&mut Menu)) -> Self {
+        let (idx, id) = (self.idx, self.id);
+        self.tree.info[idx].context_menu = true;
+        let disabled = self.tree.info[idx].disabled;
+        let pop = Id(hash_of((id.0, "context")));
+        let within = self.cx.focus.is_some_and(|f| f == id || descends(self.tree, idx, f));
+        let cx = &mut *self.cx;
+        if cx.closing.contains(&pop) && cx.menus.first() == Some(&pop) {
+            cx.menus_truncate(0);
+        }
+        if let Some((_, at)) = cx.context_request.filter(|&(t, _)| t == id && !disabled) {
+            cx.context_request = None;
+            cx.context_at = at;
+            cx.overlay_focus_hint.remove(&pop);
+            cx.menus_open(0, pop);
+        }
+        let open = cx.menus.first() == Some(&pop);
+        if open || (within && !disabled) {
+            let (x, y) = cx.context_at;
+            let mut ui = Ui { cx: &mut *self.cx, tree: &mut *self.tree, parent: idx, salt: 0, disabled };
+            let out = ui.menu_body(pop, None, Place::At(x, y), 0, open, false, f);
+            if out.done && ui.cx.menus.first() == Some(&pop) {
+                ui.cx.menus_truncate(0);
+            }
         }
         self
     }
@@ -1907,7 +2215,7 @@ impl Handle<'_> {
     /// # });
     /// ```
     pub fn scroll_into_view(self) -> Self {
-        *self.cx_scroll = Some(self.id);
+        self.cx.scroll_into_view = Some(self.id);
         self
     }
 
@@ -1994,6 +2302,19 @@ macro_rules! common {
             pub fn tooltip(self, text: impl Into<String>) -> Self {
                 Self { h: self.h.tooltip(text), ..self }
             }
+            /// Adds a menu that opens on a right-click. See [`Handle::context_menu`].
+            ///
+            /// ```
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            #[doc = concat!(" ui.", $make, ".context_menu(|m| {")]
+            ///     m.item("Copy");
+            /// });
+            /// # });
+            /// ```
+            pub fn context_menu(self, f: impl FnOnce(&mut Menu)) -> Self {
+                Self { h: self.h.context_menu(f), ..self }
+            }
         }
     };
 }
@@ -2007,6 +2328,21 @@ macro_rules! common {
 /// # });
 /// ```
 pub struct Label<'t>(Handle<'t>);
+
+impl Label<'_> {
+    /// Adds a menu that opens on a right-click. See [`Handle::context_menu`].
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.label("report.pdf").context_menu(|m| {
+    ///     m.item("Open");
+    /// });
+    /// # });
+    /// ```
+    pub fn context_menu(self, f: impl FnOnce(&mut Menu)) -> Self {
+        Label(self.0.context_menu(f))
+    }
+}
 
 /// A picture. See [`Ui::image`].
 ///
@@ -2694,6 +3030,493 @@ fn move_focus_with_arrows(cx: &mut Context, items: &[Id]) {
     }
 }
 
+/// ポインターが入れ子のメニューの項目に止まってから開く（ほかの項目なら閉じる）までの時間
+const SUBMENU_DELAY: Duration = Duration::from_millis(400);
+
+/// メニューの中身を作った結果
+struct MenuOut {
+    /// 項目を選んだ（開いているメニューを全部閉じる）
+    done: bool,
+    /// メニューバーのメニューで、左右の矢印で隣のメニューへ移る向き（0 なら移らない）
+    step: i32,
+    /// 使える項目（並んだ順）
+    items: Vec<Id>,
+}
+
+/// The items of a menu, built in the closure given to [`Ui::menu_button`], [`MenuBar::menu`],
+/// [`Menu::submenu`] or `.context_menu(..)`. While the menu is closed, the closure still runs but
+/// creates nothing, so that the items' [`MenuItem::shortcut`]s work.
+///
+/// ```
+/// # let mut zoom = 100;
+/// # kargui::test::example(|ui| {
+/// ui.menu_button("View", |m| {
+///     if m.item("Zoom in").clicked() {
+///         zoom += 10;
+///     }
+///     if m.item("Zoom out").clicked() {
+///         zoom -= 10;
+///     }
+/// });
+/// # });
+/// ```
+pub struct Menu<'m> {
+    ui: Ui<'m>,
+    open: bool,
+    /// 入れ子の深さ（一番外が 0）
+    depth: usize,
+    /// メニューバーのメニュー（左右の矢印で隣へ移る）
+    in_bar: bool,
+    done: bool,
+    step: i32,
+}
+
+impl Menu<'_> {
+    /// An item that does something when chosen (clicked, or Enter or Space on it). Ask
+    /// [`MenuItem::clicked`]; give it keys with [`MenuItem::shortcut`].
+    ///
+    /// ```
+    /// # let mut copies = 0;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("More", |m| {
+    ///     if m.item("Duplicate").clicked() {
+    ///         copies += 1;
+    ///     }
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn item(&mut self, text: impl Into<String>) -> MenuItem<'_> {
+        self.entry(text.into(), MenuMark::None, None)
+    }
+
+    /// An item with a check mark that flips `*value` when chosen. Screen readers hear a checkable
+    /// menu item.
+    ///
+    /// ```
+    /// # let mut wrap = false;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("View", |m| {
+    ///     m.check(&mut wrap, "Word wrap");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn check<'s>(&'s mut self, value: &'s mut bool, text: impl Into<String>) -> MenuItem<'s> {
+        let mark = MenuMark::Check(*value);
+        self.entry(text.into(), mark, Some(Box::new(move || *value = !*value)))
+    }
+
+    /// One of several items where one is chosen: it shows a dot when `*value == this` and sets
+    /// `*value = this` when chosen. Screen readers hear a radio menu item.
+    ///
+    /// ```
+    /// #[derive(Clone, Copy, PartialEq)]
+    /// enum Sort { Name, Date }
+    /// # let mut sort = Sort::Name;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("Sort", |m| {
+    ///     m.radio(&mut sort, Sort::Name, "By name");
+    ///     m.radio(&mut sort, Sort::Date, "By date");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn radio<'s, T: Copy + PartialEq + 's>(&'s mut self, value: &'s mut T, this: T, text: impl Into<String>) -> MenuItem<'s> {
+        let mark = MenuMark::Radio(*value == this);
+        self.entry(text.into(), mark, Some(Box::new(move || *value = this)))
+    }
+
+    /// A line between groups of items.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("File", |m| {
+    ///     m.item("Open");
+    ///     m.separator();
+    ///     m.item("Exit");
+    /// });
+    /// # });
+    /// ```
+    pub fn separator(&mut self) {
+        if self.open {
+            self.ui.space(2.0);
+            self.ui.separator();
+            self.ui.space(2.0);
+        }
+    }
+
+    /// An item that opens another menu beside it: when clicked, when the pointer rests on it, or
+    /// with Right (Left closes it again).
+    ///
+    /// ```
+    /// # let mut opened = None;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("File", |m| {
+    ///     m.submenu("Open recent", |m| {
+    ///         for name in ["notes.txt", "plan.md"] {
+    ///             if m.item(name).clicked() {
+    ///                 opened = Some(name);
+    ///             }
+    ///         }
+    ///     });
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn submenu(&mut self, text: impl Into<String>, f: impl FnOnce(&mut Menu)) {
+        let d = self.depth + 1;
+        if !self.open {
+            // 閉じている時も、中の項目のショートカットのために回す
+            let parent = self.ui.parent;
+            let mut m = Menu { ui: self.ui.child(parent), open: false, depth: d, in_bar: self.in_bar, done: false, step: 0 };
+            f(&mut m);
+            return;
+        }
+        let kind = Kind::MenuItem { text: text.into(), shortcut: None, icon: None, mark: MenuMark::None, submenu: true, open: false, gutter: false };
+        let (idx, id) = self.ui.add(kind, Dir::Leaf);
+        let pop = Id(hash_of((id.0, "submenu")));
+        let enabled = !self.ui.disabled;
+        let cx = &mut *self.ui.cx;
+        if cx.closing.contains(&pop) && cx.menus.get(d) == Some(&pop) {
+            cx.menus_truncate(d);
+        }
+        if enabled {
+            let key = cx.focus == Some(id) && take_key(cx, Key::Right);
+            if cx.clicked == Some(id) || key {
+                cx.overlay_focus_hint.remove(&pop);
+                cx.menus_open(d, pop);
+            }
+        }
+        if enabled && self.rest(id) {
+            self.ui.cx.menus_open(d, pop);
+        }
+        let open = enabled && self.ui.cx.menus.get(d) == Some(&pop);
+        let out = self.ui.menu_body(pop, Some(id), Place::Beside, d, open, self.in_bar, f);
+        if out.done {
+            self.done = true;
+        }
+        if out.step != 0 {
+            self.step = out.step;
+        }
+        let open = self.ui.cx.menus.get(d) == Some(&pop);
+        if let Kind::MenuItem { open: o, .. } = &mut self.ui.tree.info[idx].kind {
+            *o = open;
+        }
+    }
+
+    #[track_caller]
+    fn entry<'s>(&'s mut self, text: String, mark: MenuMark, apply: Option<Box<dyn FnMut() + 's>>) -> MenuItem<'s> {
+        let enabled = !self.ui.disabled;
+        if !self.open {
+            return MenuItem { cx: &mut *self.ui.cx, node: None, clicked: false, keyed: false, enabled, apply };
+        }
+        let kind = Kind::MenuItem { text, shortcut: None, icon: None, mark, submenu: false, open: false, gutter: false };
+        let (idx, id) = self.ui.add(kind, Dir::Leaf);
+        let mut apply = apply;
+        let clicked = enabled && self.ui.cx.clicked == Some(id);
+        if clicked {
+            self.done = true;
+            if let Some(mut a) = apply.take() {
+                a();
+            }
+        }
+        // ポインターが止まったら、開いている入れ子のメニューを閉じる
+        if self.rest(id) {
+            self.ui.cx.menus_truncate(self.depth + 1);
+        }
+        MenuItem { cx: &mut *self.ui.cx, node: Some((&mut *self.ui.tree, idx)), clicked, keyed: false, enabled, apply }
+    }
+
+    /// ポインターが項目 id の上に SUBMENU_DELAY だけ止まった（1 回だけ true。それまでは起こしてもらう）
+    fn rest(&mut self, id: Id) -> bool {
+        let cx = &mut *self.ui.cx;
+        let Some(since) = cx.hover_since.filter(|_| cx.hover == Some(id)) else { return false };
+        if cx.rested == Some((id, since)) {
+            return false;
+        }
+        let due = since + SUBMENU_DELAY;
+        if cx.now >= due {
+            cx.rested = Some((id, since));
+            true
+        } else {
+            cx.wake_by(due);
+            false
+        }
+    }
+}
+
+/// An item of a [`Menu`]. Ask it whether it was chosen with [`MenuItem::clicked`].
+///
+/// ```
+/// use kargui::{Key, Mods};
+/// # let mut saved = 0;
+/// # kargui::test::example(|ui| {
+/// ui.menu_button("File", |m| {
+///     if m.item("Save").shortcut(Key::S, Mods::CTRL).clicked() {
+///         saved += 1;
+///     }
+/// });
+/// # });
+/// ```
+pub struct MenuItem<'s> {
+    cx: &'s mut Context,
+    /// 開いている時の項目（木と番号）
+    node: Option<(&'s mut Tree, usize)>,
+    clicked: bool,
+    /// ショートカットのキーが押された
+    keyed: bool,
+    enabled: bool,
+    /// 選んだ時に値を変える（チェックとラジオ）
+    apply: Option<Box<dyn FnMut() + 's>>,
+}
+
+impl MenuItem<'_> {
+    /// Shows `key` with `mods` at the right of the item and chooses the item when they are pressed,
+    /// even while the menu is closed (in a context menu, while the focus is inside its widget).
+    /// Keys that the focused widget uses itself (such as Ctrl+C in a text field) stay with it.
+    ///
+    /// ```
+    /// use kargui::{Key, Mods};
+    /// # let mut found = false;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("Edit", |m| {
+    ///     if m.item("Find").shortcut(Key::F, Mods::CTRL).clicked() {
+    ///         found = true;
+    ///     }
+    /// });
+    /// # });
+    /// ```
+    pub fn shortcut(mut self, key: Key, mods: Mods) -> Self {
+        if let Some((tree, idx)) = &mut self.node {
+            if let Kind::MenuItem { shortcut, .. } = &mut tree.info[*idx].kind {
+                *shortcut = Some(key_label(key, mods));
+            }
+        }
+        self.keyed |= self.cx.app_keys.contains(&(key, mods));
+        self
+    }
+
+    /// Makes the item unavailable when `enabled` is false: it is drawn dimmed, cannot be chosen
+    /// (its shortcut does nothing either), and the arrow keys skip it.
+    ///
+    /// ```
+    /// # let can_paste = false;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("Edit", |m| {
+    ///     m.item("Paste").enabled(can_paste);
+    /// });
+    /// # });
+    /// ```
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        if !enabled {
+            self.enabled = false;
+            self.clicked = false;
+            if let Some((tree, idx)) = &mut self.node {
+                tree.info[*idx].disabled = true;
+            }
+        }
+        self
+    }
+
+    /// Shows an icon at the left of the item.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("More", |m| {
+    ///     m.item("Remove").icon(Icon::Close);
+    /// });
+    /// # });
+    /// ```
+    pub fn icon(mut self, icon: Icon) -> Self {
+        if let Some((tree, idx)) = &mut self.node {
+            if let Kind::MenuItem { icon: i, .. } = &mut tree.info[*idx].kind {
+                *i = Some(icon);
+            }
+        }
+        self
+    }
+
+    /// Whether the item was chosen in this frame (clicked, Enter or Space on it, or its shortcut).
+    ///
+    /// ```
+    /// # let mut count = 0;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_button("More", |m| {
+    ///     if m.item("Count").clicked() {
+    ///         count += 1;
+    ///     }
+    /// });
+    /// # });
+    /// ```
+    pub fn clicked(&self) -> bool {
+        self.clicked || (self.keyed && self.enabled)
+    }
+}
+
+impl Drop for MenuItem<'_> {
+    /// ショートカットで選んだチェックとラジオの値を変える（enabled と shortcut の順番に関わらず、最後に決める）
+    fn drop(&mut self) {
+        if self.keyed && self.enabled {
+            if let Some(mut a) = self.apply.take() {
+                a();
+            }
+        }
+    }
+}
+
+/// The headings of a menu bar. See [`Ui::menu_bar`].
+///
+/// ```
+/// # kargui::test::example(|ui| {
+/// ui.menu_bar(|bar| {
+///     bar.menu("File", |m| {
+///         m.item("New");
+///     });
+/// });
+/// # });
+/// ```
+pub struct MenuBar<'m> {
+    ui: Ui<'m>,
+    items: Vec<Id>,
+    /// 左右の矢印で隣のメニューへ移る: (何番目の見出しから, 向き)
+    step: Option<(usize, i32)>,
+}
+
+impl MenuBar<'_> {
+    /// A heading that opens the menu built in `f` (see [`Ui::menu_button`] for the items).
+    ///
+    /// ```
+    /// # let mut about = false;
+    /// # kargui::test::example(|ui| {
+    /// ui.menu_bar(|bar| {
+    ///     bar.menu("Help", |m| {
+    ///         if m.item("About").clicked() {
+    ///             about = true;
+    ///         }
+    ///     });
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn menu(&mut self, text: impl Into<String>, f: impl FnOnce(&mut Menu)) {
+        let tab_stop = self.items.is_empty();
+        let (idx, id) = self.ui.add(Kind::MenuBarItem { text: text.into(), open: false, tab_stop }, Dir::Leaf);
+        let pop = Id(hash_of((id.0, "menu")));
+        // ほかの見出しのメニューが開いている時は、ポインターを乗せるだけで切り替える
+        let cx = &mut *self.ui.cx;
+        let bar_open = cx.menus.first().is_some_and(|m| cx.prev.menubar.iter().any(|b| Id(hash_of((b.0, "menu"))) == *m));
+        if !self.ui.disabled && bar_open && cx.hover == Some(id) && cx.menus.first() != Some(&pop) {
+            cx.overlay_focus_hint.remove(&pop);
+            cx.menus_open(0, pop);
+        }
+        let (open, last) = self.ui.root_menu(id, pop);
+        let out = self.ui.menu_body(pop, Some(id), Place::Below, 0, open, true, f);
+        let cx = &mut *self.ui.cx;
+        if out.done && cx.menus.first() == Some(&pop) {
+            cx.menus_truncate(0);
+            // 選んだ後は、メニューバーへ入る前の場所へ焦点を戻す
+            let back = cx.bar_return.take();
+            cx.overlay_after.insert(pop, back);
+        }
+        if let (true, Some(&l)) = (last, out.items.last()) {
+            cx.overlay_focus_hint.insert(pop, l);
+        }
+        if out.step != 0 {
+            self.step = Some((self.items.len(), out.step));
+        }
+        self.items.push(id);
+        let open = cx.menus.first() == Some(&pop);
+        if let Kind::MenuBarItem { open: o, .. } = &mut self.ui.tree.info[idx].kind {
+            *o = open;
+        }
+    }
+}
+
+/// 焦点のある部品へ届いたキーのうち、key（Ctrl と Alt 無し）を取り出す。あったか
+fn take_key(cx: &mut Context, key: Key) -> bool {
+    let before = cx.keys.len();
+    cx.keys.retain(|e| !matches!(e, Event::Key { key: k, mods } if *k == key && !mods.ctrl && !mods.alt));
+    cx.keys.len() != before
+}
+
+/// 文字のキーの小文字（A〜Z だけ）
+fn letter_of(key: Key) -> Option<char> {
+    use Key::*;
+    const LETTERS: [Key; 26] = [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z];
+    LETTERS.iter().position(|&k| k == key).map(|i| (b'a' + i as u8) as char)
+}
+
+/// アプリへ行くはずだった文字のキー（修飾キー無しか Shift）を取り出す（打った文字で項目へ移るのに使う）
+fn take_letters(cx: &mut Context) -> Vec<char> {
+    let mut typed = Vec::new();
+    cx.app_keys.retain(|&(k, m)| match letter_of(k) {
+        Some(c) if !m.ctrl && !m.alt => {
+            typed.push(c);
+            false
+        }
+        _ => true,
+    });
+    typed
+}
+
+/// from の次から一周して、c で始まる項目（大文字と小文字は区別しない）
+fn next_starting(texts: &[&str], from: usize, c: char) -> Option<usize> {
+    let n = texts.len();
+    (1..=n).map(|s| (from + s) % n).find(|&j| texts[j].chars().next().is_some_and(|f| f.to_lowercase().eq(c.to_lowercase())))
+}
+
+/// 焦点が items のどれかにある時、打った文字で始まる次の項目へ焦点を移す（メニュー・選択の一覧）
+fn type_ahead(cx: &mut Context, items: &[(Id, String)]) {
+    let Some(mut at) = cx.focus.and_then(|f| items.iter().position(|(i, _)| *i == f)) else { return };
+    let typed = take_letters(cx);
+    if typed.is_empty() {
+        return;
+    }
+    let texts: Vec<&str> = items.iter().map(|(_, t)| t.as_str()).collect();
+    for c in typed {
+        if let Some(j) = next_starting(&texts, at, c) {
+            at = j;
+        }
+    }
+    cx.focus = Some(items[at].0);
+    cx.focus_visible = true;
+}
+
+/// ショートカットのキーの書き方（Ctrl+Shift+S）
+fn key_label(key: Key, mods: Mods) -> String {
+    let mut s = String::new();
+    if mods.ctrl {
+        s.push_str("Ctrl+");
+    }
+    if mods.alt {
+        s.push_str("Alt+");
+    }
+    if mods.shift {
+        s.push_str("Shift+");
+    }
+    let name = match key {
+        Key::Escape => "Esc".to_string(),
+        Key::Delete => "Del".to_string(),
+        Key::Insert => "Ins".to_string(),
+        Key::PageUp => "PgUp".to_string(),
+        Key::PageDown => "PgDn".to_string(),
+        Key::ContextMenu => "Menu".to_string(),
+        k => {
+            let d = format!("{k:?}");
+            d.strip_prefix("Num").map(str::to_string).unwrap_or(d)
+        }
+    };
+    s.push_str(&name);
+    s
+}
+
+/// 部品 a の下に id の部品があるか（a 自身を含まない）
+fn descends(tree: &Tree, a: usize, id: Id) -> bool {
+    tree.layout[a].children.iter().any(|&c| tree.info[c].id == id || descends(tree, c, id))
+}
+
 /// 入力欄の種類（edit の振る舞いを変える）
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -2964,6 +3787,7 @@ pub(crate) fn visible_text(kind: &Kind) -> Option<&str> {
         Kind::Label { text, .. } | Kind::Button { text, .. } | Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => Some(text),
         Kind::Segment { text, .. } | Kind::Radio { text, .. } | Kind::Expander { text, .. } | Kind::Link { text } | Kind::ToggleButton { text, .. } => Some(text),
         Kind::Dropdown { text, .. } | Kind::ListOption { text, .. } => Some(text),
+        Kind::MenuButton { text, .. } | Kind::MenuBarItem { text, .. } | Kind::MenuItem { text, .. } => Some(text),
         _ => None,
     }
 }

@@ -74,13 +74,16 @@ impl Runtime {
             self.cx.end_input();
             want |= std::mem::take(&mut self.cx.want_frame);
         }
+        self.cx.again = false;
         let mut tree = Tree::new(ROOT, self.cx.scale);
         app.view(&mut Ui::new(&mut self.cx, &mut tree));
         want |= std::mem::take(&mut self.cx.want_frame);
-        if had_input {
+        // 入力が無くても、ビューの途中でメニューを開いた・閉じた時（ポインターが止まった時）は回し直す
+        if had_input || std::mem::take(&mut self.cx.again) {
             for _ in 0..SETTLE {
                 let mut again = Tree::new(ROOT, self.cx.scale);
                 app.view(&mut Ui::new(&mut self.cx, &mut again));
+                self.cx.again = false;
                 want |= std::mem::take(&mut self.cx.want_frame);
                 let settled = again.same_as(&tree);
                 tree = again;
@@ -102,7 +105,13 @@ impl Runtime {
             draw::layout(&mut tree, &mut self.cx);
             draw::paint(&tree, &mut self.cx, &mut self.draw);
         }
+        let drawn_focus = self.cx.focus;
         self.overlay_focus(&before, &tree);
+        // 描いた後で焦点が動いた（開いた物の中へ移った・閉じて戻った）ら、新しい焦点を描くためにもう 1 フレーム描く
+        if self.cx.focus != drawn_focus {
+            crate::log::event("focus.moved_after_draw", "", "frame");
+            want = true;
+        }
         // 焦点のある部品が消えたら、焦点を外す
         if let Some(f) = self.cx.focus {
             if !tree.info.iter().any(|n| n.id == f) {
@@ -130,7 +139,14 @@ impl Runtime {
             if now.iter().any(|n| n.id == o.id) {
                 continue;
             }
-            let back = self.cx.overlay_return.remove(&o.id).or(o.anchor);
+            // 閉じた後の焦点: 決めてあればそこ（メニューバーのメニューで選んだ後）。メニューと選択の一覧は出す元。
+            // ほかは開く前の焦点（無ければ出す元）
+            let ret = self.cx.overlay_return.remove(&o.id);
+            let back = match self.cx.overlay_after.remove(&o.id) {
+                Some(after) => after,
+                None if matches!(o.kind, OverlayKind::Menu | OverlayKind::ListBox) && o.anchor.is_some() => o.anchor,
+                None => ret.or(o.anchor),
+            };
             let inside = self.cx.focus.is_none_or(|f| o.focus.contains(&f) || !exists(f));
             if let (true, Some(b)) = (inside, back.filter(|&b| exists(b))) {
                 self.cx.focus = Some(b);
