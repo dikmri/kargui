@@ -131,7 +131,7 @@ $out = & cargo build --offline 2>&1 | Out-String
 $code = $LASTEXITCODE
 $errors = ([regex]::Matches($out, '(?m)^error(\\[E\\d+\\])?:')).Count
 "$(Get-Date -Format o) attempt=$n exit=$code errors=$errors" | Add-Content '{run}\\attempts.log'
-$out | Set-Content '{run}\\build-$n.txt'
+$out | Set-Content "{run}\\build-$n.txt"
 $out
 exit $code
 ''', bom=True)
