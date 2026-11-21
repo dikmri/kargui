@@ -416,6 +416,62 @@ fn shots() -> Vec<Shot> {
             setup: no_setup,
         },
         Shot {
+            name: "grid_split",
+            size: (560.0, 220.0),
+            view: |ui| {
+                use kargui::Size;
+                let mut left = 150.0;
+                let (mut name, mut email, mut team) = (String::from("Aiko Tanaka"), String::new(), 1);
+                ui.split_left_right(&mut left, |ui, pane| {
+                    if pane == 0 {
+                        ui.heading("People");
+                        ui.label("Aiko Tanaka");
+                        ui.label("Ben Clark").weak();
+                        ui.label("Chen Wei").weak();
+                    } else {
+                        ui.grid(&[Size::Auto, Size::Fill(1.0)], |ui| {
+                            ui.label("Name");
+                            ui.text_input(&mut name).label("Name");
+                            ui.label("E-mail address");
+                            ui.text_input(&mut email).hint("name@example.com").label("E-mail address");
+                            ui.label("Team");
+                            ui.dropdown(&mut team, &[(0, "Design"), (1, "Engineering"), (2, "Sales")]).label("Team");
+                        });
+                    }
+                })
+                .label("Resize the list")
+                .grow();
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "canvas",
+            size: (360.0, 220.0),
+            view: |ui| {
+                use kargui::{Rect, rgb};
+                let values = [12.0, 30.0, 22.0, 48.0, 40.0, 62.0, 58.0];
+                ui.canvas(320.0, 180.0, |d| {
+                    d.rounded_rect(Rect::new(0.0, 0.0, 320.0, 180.0), 8.0, rgb(0xf3f5f8));
+                    for k in 0..4 {
+                        let y = 150.0 - k as f32 * 40.0;
+                        d.rect(Rect::new(36.0, y, 270.0, 1.0), rgb(0xdde2ea));
+                        d.text((8.0, y - 9.0), format!("{}", k * 20), rgb(0x6b7280));
+                    }
+                    let pts: Vec<(f32, f32)> = values.iter().enumerate().map(|(k, &v)| (48.0 + k as f32 * 42.0, 150.0 - v * 2.0)).collect();
+                    let mut area = pts.clone();
+                    area.push((pts[pts.len() - 1].0, 150.0));
+                    area.push((pts[0].0, 150.0));
+                    d.polygon(&area, [0.2, 0.45, 0.9, 0.15]);
+                    d.polyline(&pts, 2.5, rgb(0x2f6fd6));
+                    for &p in &pts {
+                        d.circle(p, 4.0, rgb(0x2f6fd6));
+                    }
+                })
+                .label("Weekly visits");
+            },
+            setup: no_setup,
+        },
+        Shot {
             name: "more_widgets",
             size: (560.0, 330.0),
             view: |ui| {

@@ -9,6 +9,8 @@
 //! - List: 見えている行だけを、行の番号とスクロールの位置から置く
 //! - Scroll: 子を縦に並べ、スクロールの位置だけ上にずらす。中身の高さ（content）を覚える。
 //!   高さが Fill のときは、中身が高くても残りの高さだけを取る（Fill の基準を 0 にする）
+//! - Grid: 子を左から右、上から下へ、列の数ごとに折り返して並べる。列の幅は columns（Auto はその列でいちばん広い子、
+//!   Fill は残りを分ける）、行の高さはその行でいちばん高い子。子は升の中で横は align、縦は真ん中
 //! - Fill の子は、残りの長さを重みで分け合う
 
 use crate::geom::Rect;
@@ -68,6 +70,7 @@ pub(crate) enum Dir {
     Stack,
     List,
     Scroll,
+    Grid,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +95,8 @@ pub(crate) struct LayoutNode {
     pub content: f32,
     /// Scroll の右に空けておく幅（スクロールの棒の分。中身があふれていなくても空け、幅が変わって折り返しが揺れないようにする）
     pub gutter: f32,
+    /// Grid の列の幅（Fixed は物理ピクセル）
+    pub columns: Vec<Size>,
     // 結果
     pub measured: (f32, f32),
     pub rect: Rect,
@@ -113,6 +118,7 @@ impl LayoutNode {
             row_index: 0,
             content: 0.0,
             gutter: 0.0,
+            columns: Vec::new(),
             measured: (0.0, 0.0),
             rect: Rect::default(),
         }
@@ -138,6 +144,13 @@ pub(crate) fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
         Dir::Stack => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).fold(0.0, f32::max)),
         Dir::List => (0.0, 0.0),
         Dir::Scroll => (sizes.iter().map(|s| s.0).fold(0.0, f32::max) + n.gutter, sizes.iter().map(|s| s.1).sum::<f32>() + gaps),
+        Dir::Grid => {
+            let (cw, rh) = grid_tracks(&n.columns, &sizes);
+            let gx = n.gap * cw.len().saturating_sub(1) as f32;
+            let gy = n.gap * rh.len().saturating_sub(1) as f32;
+            let cw: Vec<f32> = cw.iter().zip(grid_columns(&n.columns, cw.len())).map(|(&m, c)| fixed_or(c, m)).collect();
+            (cw.iter().sum::<f32>() + gx, rh.iter().sum::<f32>() + gy)
+        }
     };
     let (w, h) = if n.dir == Dir::Leaf { (w, h) } else { (w + 2.0 * n.pad.0, h + 2.0 * n.pad.1) };
     let (dir, width, height) = (n.dir, n.width, n.height);
@@ -154,6 +167,23 @@ pub(crate) fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
     };
     nodes[i].measured = m;
     m
+}
+
+/// 格子の列の決まり（足りない分は Auto）
+fn grid_columns(columns: &[Size], n: usize) -> Vec<Size> {
+    (0..n).map(|k| columns.get(k).copied().unwrap_or(Size::Auto)).collect()
+}
+
+/// 格子の、列ごとのいちばん広い子の幅と、行ごとのいちばん高い子の高さ
+fn grid_tracks(columns: &[Size], sizes: &[(f32, f32)]) -> (Vec<f32>, Vec<f32>) {
+    let cols = columns.len().max(1);
+    let rows = sizes.len().div_ceil(cols);
+    let (mut cw, mut rh) = (vec![0.0f32; cols], vec![0.0f32; rows]);
+    for (k, s) in sizes.iter().enumerate() {
+        cw[k % cols] = cw[k % cols].max(s.0);
+        rh[k / cols] = rh[k / cols].max(s.1);
+    }
+    (cw, rh)
 }
 
 /// 主軸の長さを子に分ける。Fixed と Auto はそのまま、Fill は残りを重みで分ける
@@ -231,6 +261,25 @@ pub(crate) fn arrange(nodes: &mut [LayoutNode], i: usize, rect: Rect) {
                 arrange(nodes, c, Rect::new(inner.x, y.round(), inner.w, n.row_h));
             }
         }
+        Dir::Grid => {
+            let sizes: Vec<(f32, f32)> = n.children.iter().map(|&c| nodes[c].measured).collect();
+            let (cm, rh) = grid_tracks(&n.columns, &sizes);
+            let cols = cm.len();
+            let gx = n.gap * cols.saturating_sub(1) as f32;
+            let cw = distribute(&grid_columns(&n.columns, cols), &cm, inner.w - gx);
+            let mut y = inner.y;
+            for (r, &row_h) in rh.iter().enumerate() {
+                let mut x = inner.x;
+                for (k, &col_w) in cw.iter().enumerate() {
+                    let Some(&c) = n.children.get(r * cols + k) else { break };
+                    let (ax, w) = cross(nodes[c].width, nodes[c].measured.0, col_w, n.align);
+                    let (ay, h) = cross(nodes[c].height, nodes[c].measured.1, row_h, Align::Center);
+                    arrange(nodes, c, Rect::new((x + ax).round(), (y + ay).round(), w.round(), h));
+                    x += col_w + n.gap;
+                }
+                y += row_h + n.gap;
+            }
+        }
     }
 }
 
@@ -279,6 +328,30 @@ pub(crate) fn place_center(w: f32, h: f32, window: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grids_size_columns_by_their_widest_cell_and_share_the_rest() {
+        let mut nodes = vec![LayoutNode::new(Dir::Grid)];
+        nodes[0].columns = vec![Size::Auto, Size::Fill(1.0)];
+        nodes[0].gap = 10.0;
+        for (w, h) in [(40.0, 20.0), (100.0, 30.0), (80.0, 20.0), (100.0, 30.0), (30.0, 20.0)] {
+            let mut leaf = LayoutNode::new(Dir::Leaf);
+            leaf.intrinsic = (w, h);
+            nodes.push(leaf);
+            let k = nodes.len() - 1;
+            nodes[0].children.push(k);
+        }
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 400.0, 300.0));
+        // 1 列目は 80（いちばん広い）、2 列目は残りの 310
+        assert_eq!((nodes[1].rect.x, nodes[1].rect.w), (0.0, 80.0));
+        assert_eq!((nodes[2].rect.x, nodes[2].rect.w), (90.0, 310.0));
+        // 行の高さは 30。低い子は縦の真ん中
+        assert_eq!(nodes[1].rect.y, 5.0);
+        assert_eq!(nodes[3].rect.y, 40.0 + 5.0);
+        // 3 行目は 1 つだけ
+        assert_eq!((nodes[5].rect.x, nodes[5].rect.y), (0.0, 80.0));
+        assert_eq!(nodes[0].measured, (80.0 + 10.0 + 100.0, 30.0 + 10.0 + 30.0 + 10.0 + 20.0));
+    }
 
     #[test]
     fn placing_beside_prefers_the_right_then_the_left_and_stays_inside() {

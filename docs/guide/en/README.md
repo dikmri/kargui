@@ -1,4 +1,4 @@
-<!-- source: ja/README.md fnv=2c32504d244aa85d -->
+<!-- source: ja/README.md fnv=b771f6697ed9f696 -->
 # The kargui guide (English)
 
 kargui is a light GUI framework for writing Windows desktop apps in Rust.
@@ -20,5 +20,6 @@ updated in the same change, the check (`cargo run -p xtask -- guide-check`) fail
 11. [More widgets](11-more-widgets.md)
 12. [Menus](12-menus.md)
 13. [Tabs, number inputs and toolbars](13-tabs-numbers-toolbars.md)
+14. [Grids, split panes and drawing surfaces](14-grids-splits-canvas.md)
 
 Each item of the API is described in `cargo doc -p kargui --open`. When an AI writes code with kargui, give it `docs/llms.txt`.

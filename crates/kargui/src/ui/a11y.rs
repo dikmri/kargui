@@ -343,6 +343,26 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Decrement);
                 n
             }
+            Kind::Grid | Kind::Split { .. } => Node::new(Role::GenericContainer),
+            Kind::Splitter { stacked, value, min, max } => {
+                let mut n = Node::new(Role::Splitter);
+                n.set_numeric_value(*value as f64);
+                n.set_min_numeric_value(*min as f64);
+                n.set_max_numeric_value(*max as f64);
+                // 左右に分ける仕切りは縦の線
+                n.set_orientation(if *stacked { accesskit::Orientation::Horizontal } else { accesskit::Orientation::Vertical });
+                n.add_action(Action::Focus);
+                n.add_action(Action::Increment);
+                n.add_action(Action::Decrement);
+                n
+            }
+            Kind::Canvas { .. } => {
+                let mut n = Node::new(Role::Canvas);
+                if let Some(l) = &info.label {
+                    n.set_label(l.clone());
+                }
+                n
+            }
             Kind::Toolbar => {
                 let mut n = Node::new(Role::Toolbar);
                 if let Some(l) = &info.label {

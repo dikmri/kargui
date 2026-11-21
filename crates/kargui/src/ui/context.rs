@@ -134,6 +134,12 @@ pub(crate) struct Prev {
     pub steps: HashMap<Id, f64>,
     /// 数の入力欄の小さいボタン → 欄（押しても焦点を欄に残す）
     pub spins: HashMap<Id, Id>,
+    /// 仕切り → 入れ物の始まりと長さ（つかんで動かす時と、広げられる限りに使う。物理ピクセル）
+    pub splits: HashMap<Id, (f32, f32)>,
+    /// 仕切り → 上下に分けるか（ポインターの形を決める）
+    pub split_bars: HashMap<Id, bool>,
+    /// 自由に描く面の場所（ポインターを面の座標にする）
+    pub canvases: HashMap<Id, Rect>,
 }
 
 pub(crate) struct Context {
@@ -166,6 +172,9 @@ pub(crate) struct Context {
     /// 形の表に入れたアイコン（アイコン, 画素の大きさ）。表を作り直したら（generation が変わったら）忘れる
     icons: HashMap<(Icon, u32), Option<Slot>>,
     icons_gen: u64,
+    /// 形の表に入れた、自由に描く面の線と多角形（形を表す数 → 表の場所）。表を作り直したら忘れる
+    masks: HashMap<u64, Option<Slot>>,
+    masks_gen: u64,
     pub focus: Option<Id>,
     pub hover: Option<Id>,
     /// ポインターが今の部品に乗った時刻（ツールチップを出すまでの時間を数える）
@@ -261,6 +270,8 @@ impl Context {
             waker: Waker::new(|| {}),
             icons: HashMap::new(),
             icons_gen: 0,
+            masks: HashMap::new(),
+            masks_gen: 0,
             focus: None,
             hover: None,
             hover_since: None,
@@ -337,6 +348,31 @@ impl Context {
     }
 
     /// size × size 画素のアイコンの、形の表の中の場所（初めてなら塗って入れる）
+    /// 自由に描く面の線や多角形の濃さの形（w×h）を、形の表に入れる。同じ形は前に入れた場所を使う
+    pub fn mask_slot(&mut self, key: u64, w: u32, h: u32, make: impl FnOnce() -> Vec<u8>) -> Option<Slot> {
+        if self.masks_gen != self.text.atlas.generation {
+            self.masks.clear();
+            self.masks_gen = self.text.atlas.generation;
+        }
+        if let Some(s) = self.masks.get(&key) {
+            return *s;
+        }
+        let px = make();
+        let slot = match self.text.atlas.alloc(w, h) {
+            Some((x, y)) => {
+                self.text.atlas.write(x, y, w, h, &px);
+                Some(Slot { x: x as u16, y: y as u16, w: w as u16, h: h as u16, left: 0, top: 0 })
+            }
+            None => {
+                log::event("mask.atlas", &format!("w={w} h={h}"), "full; reset");
+                self.text.reset();
+                return None;
+            }
+        };
+        self.masks.insert(key, slot);
+        slot
+    }
+
     pub fn icon_slot(&mut self, icon: Icon, size: u32) -> Option<Slot> {
         if self.icons_gen != self.text.atlas.generation {
             self.icons.clear();

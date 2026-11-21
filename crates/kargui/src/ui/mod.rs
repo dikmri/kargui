@@ -59,6 +59,7 @@ use context::{Context, TipState};
 pub use layout::{Align, Size};
 use layout::{Dir, LayoutNode};
 
+use crate::geom::{Color, Rect};
 use crate::input::{Event, Key, Mods};
 use crate::wake::Waker;
 use crate::icon::Icon;
@@ -167,6 +168,14 @@ pub(crate) enum Kind {
     SpinButton { up: bool },
     /// ツールバー
     Toolbar,
+    /// 格子の入れ物
+    Grid,
+    /// 仕切りで分けた 2 つの区画の入れ物（stacked なら上下）
+    Split { stacked: bool },
+    /// 区画の間の仕切り（value は 1 つ目の区画の長さ、論理ピクセル）
+    Splitter { stacked: bool, value: f32, min: f32, max: f32 },
+    /// 自由に描く面
+    Canvas { ops: Vec<DrawOp> },
     /// メニューバー（見出しを横に並べる入れ物）
     MenuBar,
     /// メニューバーの見出し（tab_stop は Tab で止まる 1 つ。最初の見出し）
@@ -264,6 +273,7 @@ impl Kind {
                 | Kind::MenuItem { .. }
                 | Kind::Tab { .. }
                 | Kind::NumberInput { .. }
+                | Kind::Splitter { .. }
         )
     }
 }
@@ -1616,6 +1626,191 @@ impl<'a> Ui<'a> {
             self.tree.info[c].skip_tab = Some(i) != stop;
         }
         self.handle(idx, id)
+    }
+
+    /// A grid: the widgets created in `f` go into cells left to right, then top to bottom, wrapping
+    /// after `columns.len()` cells. Each column is as wide as its widest cell ([`Size::Auto`]), a
+    /// fixed width, or a share of the remaining width ([`Size::Fill`]). Each row is as tall as its
+    /// tallest cell, and cells are centered vertically in their row. Good for forms.
+    ///
+    /// ```
+    /// use kargui::Size;
+    /// # let (mut name, mut email) = (String::new(), String::new());
+    /// # kargui::test::example(|ui| {
+    /// ui.grid(&[Size::Auto, Size::Fill(1.0)], |ui| {
+    ///     ui.label("Name");
+    ///     ui.text_input(&mut name).label("Name");
+    ///     ui.label("E-mail address");
+    ///     ui.text_input(&mut email).label("E-mail address");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn grid(&mut self, columns: &[Size], f: impl FnOnce(&mut Ui)) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::Grid, Dir::Grid);
+        let scale = self.cx.scale;
+        let gap = self.px(10.0);
+        let l = &mut self.tree.layout[idx];
+        l.columns = columns.iter().map(|&c| if let Size::Fixed(v) = c { Size::Fixed((v * scale).round()) } else { c }).collect();
+        l.gap = gap;
+        l.align = Align::Stretch;
+        f(&mut self.child(idx));
+        self.handle(idx, id)
+    }
+
+    /// Two panes side by side with a divider between them that can be dragged, or moved with the
+    /// keyboard (Tab stops on it; Left and Right move it by 10, Home and End to the ends).
+    /// `*left` is the left pane's width in logical pixels; each pane keeps at least 48. `f` is
+    /// called for each pane with its number (0 for the left, 1 for the right). The divider's
+    /// screen-reader name is "Resize" until you give it one with `.label(..)`.
+    ///
+    /// ```
+    /// # let mut left = 220.0;
+    /// # kargui::test::example(|ui| {
+    /// ui.split_left_right(&mut left, |ui, pane| {
+    ///     if pane == 0 {
+    ///         ui.label("Folders");
+    ///     } else {
+    ///         ui.label("Files");
+    ///     }
+    /// })
+    /// .label("Resize the folder list")
+    /// .grow();
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn split_left_right(&mut self, left: &mut f32, f: impl FnMut(&mut Ui, usize)) -> Split<'_> {
+        self.split(left, false, f)
+    }
+
+    /// Two panes, one above the other, with a divider between them. Like
+    /// [`Ui::split_left_right`], but `*top` is the top pane's height, and Up and Down move the
+    /// divider. Pane 0 is the top one.
+    ///
+    /// ```
+    /// # let mut top = 160.0;
+    /// # kargui::test::example(|ui| {
+    /// ui.split_top_bottom(&mut top, |ui, pane| {
+    ///     ui.label(if pane == 0 { "Messages" } else { "Preview" });
+    /// })
+    /// .grow();
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn split_top_bottom(&mut self, top: &mut f32, f: impl FnMut(&mut Ui, usize)) -> Split<'_> {
+        self.split(top, true, f)
+    }
+
+    #[track_caller]
+    fn split(&mut self, first: &mut f32, stacked: bool, mut f: impl FnMut(&mut Ui, usize)) -> Split<'_> {
+        /// どちらの区画も、これより狭くしない（論理ピクセル）
+        const MIN: f32 = 48.0;
+        let (idx, id) = self.add(Kind::Split { stacked }, if stacked { Dir::Column } else { Dir::Row });
+        self.tree.layout[idx].align = Align::Stretch;
+        let (p0, bar, bar_id, p1) = {
+            let mut ui = self.child(idx);
+            let (p0, _) = ui.add(Kind::Column, Dir::Column);
+            let (bar, bar_id) = ui.add(Kind::Splitter { stacked, value: 0.0, min: MIN, max: MIN }, Dir::Leaf);
+            let (p1, _) = ui.add(Kind::Column, Dir::Column);
+            (p0, bar, bar_id, p1)
+        };
+        self.tree.info[bar].label = Some("Resize".to_string());
+        let scale = self.cx.scale;
+        // 仕切りの幅（つかめる幅。線は真ん中に 1 本）
+        let bar_len = self.px(12.0);
+        // 前のフレームの、仕切りの入れ物の始まりと長さ（物理ピクセル）
+        let total = self.cx.prev.splits.get(&bar_id).copied();
+        let max = total.map_or(f32::MAX, |(_, len)| ((len - bar_len) / scale - MIN).max(MIN));
+        let mut v = *first;
+        if !self.disabled {
+            let cx = &mut *self.cx;
+            // つかんで動かす: 仕切りの真ん中がポインターの下に来るように
+            if cx.pressed == Some(bar_id) || cx.released == Some(bar_id) {
+                if let (Some((px, py)), Some((start, _))) = (cx.pointer, total) {
+                    let pos = if stacked { py } else { px };
+                    v = (pos - start - bar_len / 2.0) / scale;
+                }
+            }
+            if cx.focus == Some(bar_id) {
+                for e in std::mem::take(&mut cx.keys) {
+                    if let Event::Key { key, mods } = e {
+                        if mods.ctrl || mods.alt {
+                            continue;
+                        }
+                        match key {
+                            Key::Left | Key::Up => v -= 10.0,
+                            Key::Right | Key::Down => v += 10.0,
+                            Key::Home => v = MIN,
+                            Key::End => v = max,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        let v = v.clamp(MIN, max).round();
+        let changed = v != *first;
+        if changed {
+            crate::log::event("split.resize", &format!("from={} to={v}", *first), "ok");
+        }
+        *first = v;
+        let gap = self.px(10.0);
+        {
+            let lay = &mut self.tree.layout;
+            let (a, b) = (Size::Fixed((v * scale).round()), Size::Fixed(bar_len));
+            if stacked {
+                (lay[p0].height, lay[bar].height, lay[p1].height) = (a, b, Size::Fill(1.0));
+            } else {
+                (lay[p0].width, lay[bar].width, lay[p1].width) = (a, b, Size::Fill(1.0));
+            }
+            lay[p0].gap = gap;
+            lay[p1].gap = gap;
+        }
+        if let Kind::Splitter { value, max: m, .. } = &mut self.tree.info[bar].kind {
+            *value = v;
+            *m = if max == f32::MAX { v } else { max };
+        }
+        f(&mut self.child(p0), 0);
+        f(&mut self.child(p1), 1);
+        Split { h: self.handle(idx, id), bar, changed }
+    }
+
+    /// A surface of `width` × `height` logical pixels to draw on with the [`Drawing`] given to `f`
+    /// (rectangles, circles, lines, polygons, text and images, in the surface's own coordinates
+    /// from its top left corner). Ask the returned [`CanvasView`] where the pointer is while the
+    /// surface is pressed, and where it was clicked. Name it with `.label(..)` for screen readers.
+    ///
+    /// ```
+    /// use kargui::rgb;
+    /// # let mut dots: Vec<(f32, f32)> = Vec::new();
+    /// # kargui::test::example(|ui| {
+    /// let canvas = ui.canvas(240.0, 160.0, |d| {
+    ///     for &(x, y) in &dots {
+    ///         d.circle((x, y), 4.0, rgb(0x2060c0));
+    ///     }
+    /// });
+    /// if let Some(at) = canvas.label("Dots").clicked_at() {
+    ///     dots.push(at);
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn canvas(&mut self, width: f32, height: f32, f: impl FnOnce(&mut Drawing)) -> CanvasView<'_> {
+        let mut d = Drawing { ops: Vec::new() };
+        f(&mut d);
+        let (idx, id) = self.add(Kind::Canvas { ops: d.ops }, Dir::Leaf);
+        let (w, h) = (self.px(width), self.px(height));
+        let l = &mut self.tree.layout[idx];
+        (l.width, l.height) = (Size::Fixed(w), Size::Fixed(h));
+        // ポインターの位置を、面の左上からの論理ピクセルにする（前のフレームの場所を使う）
+        let scale = self.cx.scale;
+        let origin = self.cx.prev.canvases.get(&id).map(|r| (r.x, r.y));
+        let local = |p: (f32, f32)| origin.map(|(ox, oy)| ((p.0 - ox) / scale, (p.1 - oy) / scale));
+        let cx = &*self.cx;
+        let on = !self.disabled;
+        let pointer = if on && (cx.pressed == Some(id) || cx.released == Some(id)) { cx.pointer.and_then(local) } else { None };
+        let clicked_at = if on && cx.clicked == Some(id) { cx.pointer.and_then(local) } else { None };
+        CanvasView { h: self.handle(idx, id), pointer, clicked_at }
     }
 
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
@@ -4092,6 +4287,265 @@ fn format_number(v: f64, integer: bool, step: f64) -> String {
     let s = format!("{:.*}", step_decimals(step).max(1), v);
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s == "-0" { "0".to_string() } else { s.to_string() }
+}
+
+/// Two panes with a divider. See [`Ui::split_left_right`].
+///
+/// ```
+/// # let mut left = 200.0;
+/// # kargui::test::example(|ui| {
+/// let split = ui.split_left_right(&mut left, |ui, pane| {
+///     ui.label(if pane == 0 { "List" } else { "Details" });
+/// });
+/// if split.changed() {
+///     // remember the new width
+/// }
+/// # });
+/// ```
+pub struct Split<'t> {
+    h: Handle<'t>,
+    /// 仕切りの番号（名前を付ける）
+    bar: usize,
+    changed: bool,
+}
+
+impl Split<'_> {
+    /// The divider's name for screen readers ("Resize" if not set).
+    ///
+    /// ```
+    /// # let mut left = 200.0;
+    /// # kargui::test::example(|ui| {
+    /// ui.split_left_right(&mut left, |ui, _| { ui.label("Pane"); }).label("Resize the list");
+    /// # });
+    /// ```
+    pub fn label(self, name: impl Into<String>) -> Self {
+        self.h.tree.info[self.bar].label = Some(name.into());
+        self
+    }
+
+    /// Takes the remaining space (usually the rest of the window's height). See [`Handle::grow`].
+    ///
+    /// ```
+    /// # let mut left = 200.0;
+    /// # kargui::test::example(|ui| {
+    /// ui.split_left_right(&mut left, |ui, _| { ui.label("Pane"); }).grow();
+    /// # });
+    /// ```
+    pub fn grow(self) -> Self {
+        Self { h: self.h.grow(), ..self }
+    }
+
+    /// Sets the height of both panes. See [`Handle::height`].
+    ///
+    /// ```
+    /// use kargui::Size;
+    /// # let mut left = 200.0;
+    /// # kargui::test::example(|ui| {
+    /// ui.split_left_right(&mut left, |ui, _| { ui.label("Pane"); }).height(Size::Fixed(300.0));
+    /// # });
+    /// ```
+    pub fn height(self, size: Size) -> Self {
+        Self { h: self.h.height(size), ..self }
+    }
+
+    /// Whether the divider moved in this frame.
+    ///
+    /// ```
+    /// # let mut left = 200.0;
+    /// # kargui::test::example(|ui| {
+    /// if ui.split_left_right(&mut left, |ui, _| { ui.label("Pane"); }).changed() {
+    ///     // save the layout
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+}
+
+/// 自由に描く面に描く物（座標は面の左上からの論理ピクセル）
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum DrawOp {
+    Rect { r: Rect, color: Color, radius: f32 },
+    /// 太さのある折れ線（端と角は丸い）
+    Line { points: Vec<(f32, f32)>, width: f32, color: Color },
+    Polygon { points: Vec<(f32, f32)>, color: Color },
+    Text { at: (f32, f32), text: String, color: Color },
+    Image { r: Rect, image: Image },
+}
+
+/// What to draw on a [`Ui::canvas`]. Coordinates are logical pixels from the surface's top left
+/// corner; later shapes are drawn over earlier ones, and nothing is drawn outside the surface.
+///
+/// ```
+/// use kargui::{Rect, rgb};
+/// # kargui::test::example(|ui| {
+/// ui.canvas(200.0, 100.0, |d| {
+///     d.rect(Rect::new(0.0, 0.0, 200.0, 100.0), rgb(0xf4f4f4));
+///     d.line((10.0, 90.0), (190.0, 10.0), 2.0, rgb(0x2060c0));
+///     d.text((10.0, 10.0), "Sales", rgb(0x000000));
+/// });
+/// # });
+/// ```
+pub struct Drawing {
+    ops: Vec<DrawOp>,
+}
+
+impl Drawing {
+    /// A filled rectangle.
+    ///
+    /// ```
+    /// use kargui::{Rect, rgb};
+    /// # kargui::test::example(|ui| {
+    /// ui.canvas(100.0, 100.0, |d| d.rect(Rect::new(10.0, 10.0, 80.0, 40.0), rgb(0xe04040)));
+    /// # });
+    /// ```
+    pub fn rect(&mut self, r: Rect, color: Color) {
+        self.ops.push(DrawOp::Rect { r, color, radius: 0.0 });
+    }
+
+    /// A filled rectangle with rounded corners.
+    ///
+    /// ```
+    /// use kargui::{Rect, rgb};
+    /// # kargui::test::example(|ui| {
+    /// ui.canvas(100.0, 100.0, |d| d.rounded_rect(Rect::new(10.0, 10.0, 80.0, 40.0), 8.0, rgb(0x4040e0)));
+    /// # });
+    /// ```
+    pub fn rounded_rect(&mut self, r: Rect, radius: f32, color: Color) {
+        self.ops.push(DrawOp::Rect { r, color, radius });
+    }
+
+    /// A filled circle.
+    ///
+    /// ```
+    /// use kargui::rgb;
+    /// # kargui::test::example(|ui| {
+    /// ui.canvas(100.0, 100.0, |d| d.circle((50.0, 50.0), 20.0, rgb(0x40a040)));
+    /// # });
+    /// ```
+    pub fn circle(&mut self, center: (f32, f32), radius: f32, color: Color) {
+        let r = Rect::new(center.0 - radius, center.1 - radius, 2.0 * radius, 2.0 * radius);
+        self.ops.push(DrawOp::Rect { r, color, radius });
+    }
+
+    /// A straight line `width` pixels thick, with round ends.
+    ///
+    /// ```
+    /// use kargui::rgb;
+    /// # kargui::test::example(|ui| {
+    /// ui.canvas(100.0, 100.0, |d| d.line((0.0, 0.0), (100.0, 100.0), 2.0, rgb(0x000000)));
+    /// # });
+    /// ```
+    pub fn line(&mut self, from: (f32, f32), to: (f32, f32), width: f32, color: Color) {
+        self.ops.push(DrawOp::Line { points: vec![from, to], width, color });
+    }
+
+    /// Lines through `points` (a chart's line, a free-hand stroke), with round ends and joins.
+    ///
+    /// ```
+    /// use kargui::rgb;
+    /// # kargui::test::example(|ui| {
+    /// let points = [(0.0, 80.0), (40.0, 30.0), (80.0, 60.0), (120.0, 10.0)];
+    /// ui.canvas(120.0, 90.0, |d| d.polyline(&points, 2.0, rgb(0x2060c0)));
+    /// # });
+    /// ```
+    pub fn polyline(&mut self, points: &[(f32, f32)], width: f32, color: Color) {
+        if points.len() >= 2 {
+            self.ops.push(DrawOp::Line { points: points.to_vec(), width, color });
+        }
+    }
+
+    /// A filled shape with corners at `points` (closed from the last point back to the first).
+    ///
+    /// ```
+    /// use kargui::rgb;
+    /// # kargui::test::example(|ui| {
+    /// ui.canvas(100.0, 100.0, |d| d.polygon(&[(50.0, 10.0), (90.0, 90.0), (10.0, 90.0)], rgb(0xf0a020)));
+    /// # });
+    /// ```
+    pub fn polygon(&mut self, points: &[(f32, f32)], color: Color) {
+        if points.len() >= 3 {
+            self.ops.push(DrawOp::Polygon { points: points.to_vec(), color });
+        }
+    }
+
+    /// Text in the body size, with its top left corner at `at`.
+    ///
+    /// ```
+    /// use kargui::rgb;
+    /// # kargui::test::example(|ui| {
+    /// ui.canvas(100.0, 40.0, |d| d.text((4.0, 4.0), "42 °C", rgb(0x000000)));
+    /// # });
+    /// ```
+    pub fn text(&mut self, at: (f32, f32), text: impl Into<String>, color: Color) {
+        self.ops.push(DrawOp::Text { at, text: text.into(), color });
+    }
+
+    /// An image stretched to `r` (drawn by the CPU renderer; the Direct3D 11 renderer does not
+    /// draw images yet).
+    ///
+    /// ```
+    /// use kargui::{Image, Rect};
+    /// # let photo = Image::from_rgba(2, 2, vec![255; 16]).unwrap();
+    /// # kargui::test::example(|ui| {
+    /// ui.canvas(100.0, 100.0, |d| d.image(Rect::new(0.0, 0.0, 100.0, 100.0), &photo));
+    /// # });
+    /// ```
+    pub fn image(&mut self, r: Rect, image: &Image) {
+        self.ops.push(DrawOp::Image { r, image: image.clone() });
+    }
+}
+
+/// A drawing surface. See [`Ui::canvas`].
+///
+/// ```
+/// # let mut last = None;
+/// # kargui::test::example(|ui| {
+/// let canvas = ui.canvas(100.0, 100.0, |_| {}).label("Pad");
+/// if let Some(at) = canvas.clicked_at() {
+///     last = Some(at);
+/// }
+/// # });
+/// ```
+pub struct CanvasView<'t> {
+    h: Handle<'t>,
+    pointer: Option<(f32, f32)>,
+    clicked_at: Option<(f32, f32)>,
+}
+
+common!(CanvasView, "", "canvas(100.0, 50.0, |d| d.circle((50.0, 25.0), 10.0, kargui::rgb(0x000000)))");
+
+impl CanvasView<'_> {
+    /// Where the pointer is while the surface is pressed (also outside it, while dragging), in
+    /// the surface's coordinates. `None` when it is not pressed.
+    ///
+    /// ```
+    /// # let mut stroke: Vec<(f32, f32)> = Vec::new();
+    /// # kargui::test::example(|ui| {
+    /// if let Some(at) = ui.canvas(200.0, 200.0, |_| {}).pointer() {
+    ///     stroke.push(at);
+    /// }
+    /// # });
+    /// ```
+    pub fn pointer(&self) -> Option<(f32, f32)> {
+        self.pointer
+    }
+
+    /// Where the surface was clicked in this frame (pressed and released on it), in its
+    /// coordinates.
+    ///
+    /// ```
+    /// # let mut marks: Vec<(f32, f32)> = Vec::new();
+    /// # kargui::test::example(|ui| {
+    /// if let Some(at) = ui.canvas(200.0, 200.0, |_| {}).clicked_at() {
+    ///     marks.push(at);
+    /// }
+    /// # });
+    /// ```
+    pub fn clicked_at(&self) -> Option<(f32, f32)> {
+        self.clicked_at
+    }
 }
 
 /// 入力欄の種類（edit の振る舞いを変える）

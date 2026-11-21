@@ -471,6 +471,34 @@ impl<A: App> Harness<A> {
         self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }])
     }
 
+    /// Presses the widget with this name, moves the pointer by `dx`, `dy` (physical pixels) and
+    /// releases it there: drags a slider, a divider, or a stroke on a canvas.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Panes {
+    ///     left: f32,
+    /// }
+    ///
+    /// impl App for Panes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.split_left_right(&mut self.left, |ui, _| {
+    ///             ui.label("Pane");
+    ///         });
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Panes { left: 200.0 });
+    /// h.drag("Resize", 40.0, 0.0);
+    /// assert_eq!(h.app().left, 240.0);
+    /// ```
+    pub fn drag(&mut self, name: &str, dx: f32, dy: f32) -> &mut Self {
+        let (x, y) = self.center(name);
+        let (x2, y2) = (x + dx, y + dy);
+        self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerMove { x: x2, y: y2 }, Event::PointerUp { x: x2, y: y2 }])
+    }
+
     /// Right-clicks the widget with this name (opens its
     /// [`Handle::context_menu`](crate::ui::Handle::context_menu)).
     ///
@@ -3224,5 +3252,139 @@ mod tests {
         assert_eq!(h.enabled("Find"), Some(false));
         h.hover("New").wait(std::time::Duration::from_millis(600));
         assert!(h.find_all("New").len() >= 2, "名前をツールチップにも出す");
+    }
+
+    /// 格子の見本: 名前の列はいちばん長い名前の幅、欄の列は残り
+    #[derive(Default)]
+    struct GridForm {
+        name: String,
+        email: String,
+    }
+
+    impl App for GridForm {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.grid(&[Size::Auto, Size::Fill(1.0)], |ui| {
+                ui.label("Name");
+                ui.text_input(&mut self.name).label("Name field");
+                ui.label("E-mail address");
+                ui.text_input(&mut self.email).label("E-mail field");
+            });
+            ui.label("Below");
+        }
+    }
+
+    #[test]
+    fn grids_line_up_cells_in_columns_and_rows() {
+        let h = Harness::new(GridForm::default());
+        let (name, mail) = (h.find("Name").unwrap(), h.find("E-mail address").unwrap());
+        let (f1, f2) = (h.find("Name field").unwrap(), h.find("E-mail field").unwrap());
+        assert_eq!(name.x, mail.x);
+        assert_eq!(f1.x, f2.x, "2 列目は同じ x から");
+        assert!(f1.x > mail.right(), "1 列目はいちばん長い名前の幅");
+        assert_eq!(f1.w, f2.w);
+        assert!((f1.right() - (h.rt.cx.width - 16.0)).abs() < 1.0, "Fill の列は残りの幅を取る: {f1:?}");
+        assert!(f2.y >= f1.bottom(), "2 行目は 1 行目の下");
+        assert!((name.y + name.h / 2.0 - (f1.y + f1.h / 2.0)).abs() <= 1.0, "行の中は縦の真ん中にそろう");
+        assert!(h.find("Below").unwrap().y >= f2.bottom());
+    }
+
+    /// 仕切りの見本
+    struct Panes {
+        left: f32,
+    }
+
+    impl App for Panes {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.split_left_right(&mut self.left, |ui, pane| {
+                if pane == 0 {
+                    ui.label("Folders");
+                } else {
+                    ui.label("Files");
+                }
+            })
+            .label("Resize folders");
+        }
+    }
+
+    #[test]
+    fn splitters_resize_with_the_pointer_and_the_keyboard() {
+        let mut h = Harness::new(Panes { left: 200.0 });
+        let (folders, files, bar) = (h.find("Folders").unwrap(), h.find("Files").unwrap(), h.find("Resize folders").unwrap());
+        assert_eq!(folders.x, 16.0);
+        assert!((bar.x - (16.0 + 200.0)).abs() <= 1.0, "仕切りは左の幅の右: {bar:?}");
+        assert!(files.x >= bar.right());
+        h.drag("Resize folders", 50.0, 0.0);
+        assert_eq!(h.app().left, 250.0);
+        let bar = h.find("Resize folders").unwrap();
+        assert!((bar.x - (16.0 + 250.0)).abs() <= 1.0);
+        // 狭すぎる・広すぎる幅には寄せない
+        h.drag("Resize folders", -1000.0, 0.0);
+        assert_eq!(h.app().left, 48.0);
+        // キーボード: Tab で止まり、左右で 10 ずつ、Home と End で端へ
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("Resize folders"));
+        h.press(Key::Right).press(Key::Right);
+        assert_eq!(h.app().left, 68.0);
+        h.press(Key::End);
+        let max = h.app().left;
+        assert!(max > 600.0 && max < h.rt.cx.width - 32.0, "{max}");
+        h.press(Key::Home);
+        assert_eq!(h.app().left, 48.0);
+        let n = a11y_node(&h, "Resize folders");
+        assert_eq!((n.role(), n.numeric_value()), (accesskit::Role::Splitter, Some(48.0)));
+    }
+
+    /// 自由に描く面の見本: 押した所に点を打つ
+    #[derive(Default)]
+    struct Sketch {
+        dots: Vec<(f32, f32)>,
+        held: Option<(f32, f32)>,
+    }
+
+    impl App for Sketch {
+        fn view(&mut self, ui: &mut Ui) {
+            let dots = self.dots.clone();
+            let c = ui
+                .canvas(200.0, 120.0, |d| {
+                    d.rect(crate::Rect::new(0.0, 0.0, 200.0, 120.0), crate::rgb(0xf0f0f0));
+                    d.line((0.0, 0.0), (200.0, 120.0), 2.0, crate::rgb(0x808080));
+                    for &(x, y) in &dots {
+                        d.circle((x, y), 4.0, crate::rgb(0x2060c0));
+                    }
+                    d.text((8.0, 8.0), "Sketch", crate::rgb(0x000000));
+                })
+                .label("Drawing");
+            self.held = c.pointer();
+            if let Some(p) = c.clicked_at() {
+                self.dots.push(p);
+            }
+        }
+    }
+
+    #[test]
+    fn canvases_draw_shapes_and_report_the_pointer_in_their_own_coordinates() {
+        let mut h = Harness::new(Sketch::default());
+        let area = h.find("Drawing").unwrap();
+        assert_eq!((area.w, area.h), (200.0, 120.0));
+        let quads = h.rt.draw.quads.len();
+        h.click("Drawing");
+        assert_eq!(h.app().dots, vec![(100.0, 60.0)], "面の左上からの位置（論理ピクセル）");
+        assert!(h.rt.draw.quads.len() > quads, "点の円が増える");
+        // 押している間の位置
+        let (x, y) = (area.x + 10.0, area.y + 20.0);
+        h.send(vec![Event::PointerDown { x, y, shift: false }]);
+        assert_eq!(h.app().held, Some((10.0, 20.0)));
+        h.send(vec![Event::PointerMove { x: x + 30.0, y }]);
+        assert_eq!(h.app().held, Some((40.0, 20.0)));
+        h.send(vec![Event::PointerUp { x: x + 30.0, y }]);
+        assert_eq!(h.app().dots.last(), Some(&(40.0, 20.0)), "離した所で clicked_at");
+        let n = a11y_node(&h, "Drawing");
+        assert_eq!(n.role(), accesskit::Role::Canvas);
+        // 斜めの線と文字は CPU で描いた絵にも出る（線の真ん中の画素が背景と違う）
+        let img = h.render();
+        // (50, 30) は線の上（点から離れた所）、(150, 20) は何も描いていない所
+        let on_line = img.rgb((area.x + 50.0) as u32, (area.y + 30.0) as u32);
+        let bg = img.rgb((area.x + 150.0) as u32, (area.y + 20.0) as u32);
+        assert_ne!(on_line, bg, "線が描かれている");
     }
 }

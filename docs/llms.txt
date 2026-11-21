@@ -451,6 +451,75 @@ ui.toolbar(|tb| {
 .label("Tasks");
 ```
 
+### `pub fn grid(&mut self, columns: &[Size], f: impl FnOnce(&mut Ui)) -> Handle<'_>`
+
+A grid: the widgets created in `f` go into cells left to right, then top to bottom, wrapping
+after `columns.len()` cells. Each column is as wide as its widest cell ([`Size::Auto`]), a
+fixed width, or a share of the remaining width ([`Size::Fill`]). Each row is as tall as its
+tallest cell, and cells are centered vertically in their row. Good for forms.
+
+```
+use kargui::Size;
+ui.grid(&[Size::Auto, Size::Fill(1.0)], |ui| {
+    ui.label("Name");
+    ui.text_input(&mut name).label("Name");
+    ui.label("E-mail address");
+    ui.text_input(&mut email).label("E-mail address");
+});
+```
+
+### `pub fn split_left_right(&mut self, left: &mut f32, f: impl FnMut(&mut Ui, usize)) -> Split<'_>`
+
+Two panes side by side with a divider between them that can be dragged, or moved with the
+keyboard (Tab stops on it; Left and Right move it by 10, Home and End to the ends).
+`*left` is the left pane's width in logical pixels; each pane keeps at least 48. `f` is
+called for each pane with its number (0 for the left, 1 for the right). The divider's
+screen-reader name is "Resize" until you give it one with `.label(..)`.
+
+```
+ui.split_left_right(&mut left, |ui, pane| {
+    if pane == 0 {
+        ui.label("Folders");
+    } else {
+        ui.label("Files");
+    }
+})
+.label("Resize the folder list")
+.grow();
+```
+
+### `pub fn split_top_bottom(&mut self, top: &mut f32, f: impl FnMut(&mut Ui, usize)) -> Split<'_>`
+
+Two panes, one above the other, with a divider between them. Like
+[`Ui::split_left_right`], but `*top` is the top pane's height, and Up and Down move the
+divider. Pane 0 is the top one.
+
+```
+ui.split_top_bottom(&mut top, |ui, pane| {
+    ui.label(if pane == 0 { "Messages" } else { "Preview" });
+})
+.grow();
+```
+
+### `pub fn canvas(&mut self, width: f32, height: f32, f: impl FnOnce(&mut Drawing)) -> CanvasView<'_>`
+
+A surface of `width` × `height` logical pixels to draw on with the [`Drawing`] given to `f`
+(rectangles, circles, lines, polygons, text and images, in the surface's own coordinates
+from its top left corner). Ask the returned [`CanvasView`] where the pointer is while the
+surface is pressed, and where it was clicked. Name it with `.label(..)` for screen readers.
+
+```
+use kargui::rgb;
+let canvas = ui.canvas(240.0, 160.0, |d| {
+    for &(x, y) in &dots {
+        d.circle((x, y), 4.0, rgb(0x2060c0));
+    }
+});
+if let Some(at) = canvas.label("Dots").clicked_at() {
+    dots.push(at);
+}
+```
+
 ### `pub fn icon(&mut self, icon: Icon) -> IconView<'_>`
 
 A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:

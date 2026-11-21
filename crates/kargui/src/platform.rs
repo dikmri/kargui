@@ -732,8 +732,15 @@ impl State {
                     let _ = GetCursorPos(&mut p);
                     let _ = ScreenToClient(self.hwnd, &mut p);
                 }
-                let over_input = self.rt.cx.hit(p.x as f32, p.y as f32).is_some_and(|h| h.text_input);
-                if let Ok(c) = unsafe { LoadCursorW(None, if over_input { IDC_IBEAM } else { IDC_ARROW }) } {
+                let hit = self.rt.cx.hit(p.x as f32, p.y as f32).cloned();
+                // 仕切りの上は左右か上下の矢印、入力欄の上は I の形
+                let cursor = match hit.as_ref().and_then(|h| self.rt.cx.prev.split_bars.get(&h.id).copied()) {
+                    Some(true) => IDC_SIZENS,
+                    Some(false) => IDC_SIZEWE,
+                    None if hit.is_some_and(|h| h.text_input) => IDC_IBEAM,
+                    None => IDC_ARROW,
+                };
+                if let Ok(c) = unsafe { LoadCursorW(None, cursor) } {
                     unsafe { SetCursor(Some(c)) };
                 }
                 Some(LRESULT(1))

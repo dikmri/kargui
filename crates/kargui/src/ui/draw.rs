@@ -136,6 +136,8 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             (laid.width.ceil() + 2.0 * p(12.0), p(38.0))
         }
         Kind::SpinButton { .. } => (p(28.0), p(24.0)),
+        // 大きさは作る時に決める
+        Kind::Splitter { .. } | Kind::Canvas { .. } => (0.0, 0.0),
         Kind::Image { w, h, .. } => (p(*w as f32), p(*h as f32)),
         Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => {
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
@@ -373,7 +375,14 @@ impl Painter<'_> {
         let arrows = enabled
             && matches!(
                 tree.info[i].kind,
-                Kind::Slider { .. } | Kind::Dropdown { .. } | Kind::ListOption { .. } | Kind::MenuButton { .. } | Kind::MenuBarItem { .. } | Kind::MenuItem { .. } | Kind::Tab { .. }
+                Kind::Slider { .. }
+                    | Kind::Dropdown { .. }
+                    | Kind::ListOption { .. }
+                    | Kind::MenuButton { .. }
+                    | Kind::MenuBarItem { .. }
+                    | Kind::MenuItem { .. }
+                    | Kind::Tab { .. }
+                    | Kind::Splitter { .. }
             )
             || (enabled && focusable && self.toolbar);
         let vertical = matches!(tree.info[i].kind, Kind::TextArea { .. } | Kind::NumberInput { .. });
@@ -403,6 +412,67 @@ impl Painter<'_> {
         }
     }
 
+    /// 自由に描く面の中身（面の外は描かない）
+    fn canvas(&mut self, r: Rect, ops: &[crate::ui::DrawOp]) {
+        use crate::ui::DrawOp;
+        let s = self.cx.scale;
+        let at = |(x, y): (f32, f32)| (r.x + x * s, r.y + y * s);
+        let rect = |q: &Rect| Rect::new(r.x + q.x * s, r.y + q.y * s, q.w * s, q.h * s);
+        self.d.push_clip(IRect::covering(r), None);
+        for op in ops {
+            match op {
+                DrawOp::Rect { r: q, color, radius } => self.d.fill(rect(q), *color, radius * s),
+                DrawOp::Line { points, width, color } => {
+                    let pts: Vec<(f32, f32)> = points.iter().map(|&p| at(p)).collect();
+                    let polys = crate::vector::stroke(&pts, (width * s).max(1.0));
+                    self.mask(&polys, *color);
+                }
+                DrawOp::Polygon { points, color } => {
+                    let pts: Vec<(f32, f32)> = points.iter().map(|&p| at(p)).collect();
+                    self.mask(&[crate::vector::solid(pts)], *color);
+                }
+                DrawOp::Text { at: p, text, color } => {
+                    let laid = self.cx.text.layout(text, style(self.cx, TextKind::Body, false), None);
+                    let (x, y) = at(*p);
+                    put(self.d, &laid, x.round(), y.round(), *color);
+                }
+                DrawOp::Image { r: q, image } => self.d.image(rect(q), image),
+            }
+        }
+        self.d.pop_clip();
+    }
+
+    /// 多角形の集まりを濃さの形に塗って形の表に入れ、color で描く（斜めの線と多角形。CPU と GPU のどちらでも描ける）。
+    /// 同じ形（位置の端数を含む）は表の同じ場所を使う
+    fn mask(&mut self, polys: &[Vec<(f32, f32)>], color: Color) {
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &(x, y) in polys.iter().flatten() {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+        if x0 > x1 {
+            return;
+        }
+        let (x0, y0) = (x0.floor(), y0.floor());
+        let (w, h) = ((x1.ceil() - x0) as u32 + 1, (y1.ceil() - y0) as u32 + 1);
+        // 大きすぎる形は描かない（表に入らない）
+        if w > 2048 || h > 2048 {
+            crate::log::event("canvas.mask", &format!("w={w} h={h}"), "too large; skipped");
+            return;
+        }
+        let local: Vec<Vec<(f32, f32)>> = polys.iter().map(|p| p.iter().map(|&(x, y)| (x - x0, y - y0)).collect()).collect();
+        let key = super::hash_of((w, h, local.iter().map(|p| p.iter().map(|&(x, y)| ((x * 16.0) as i32, (y * 16.0) as i32)).collect::<Vec<_>>()).collect::<Vec<_>>()));
+        let make = || {
+            let mut ras = crate::vector::Raster::new(w as usize, h as usize);
+            for p in &local {
+                ras.polygon(p);
+            }
+            ras.coverage()
+        };
+        if let Some(slot) = self.cx.mask_slot(key, w, h, make) {
+            self.d.glyph(x0, y0, w as f32, h as f32, slot.x as f32, slot.y as f32, color);
+        }
+    }
+
     fn focus_ring(&mut self, tree: &Tree, i: usize, radius: f32) {
         if self.cx.focus_visible && self.cx.focus == Some(tree.info[i].id) {
             let r = tree.layout[i].rect;
@@ -427,7 +497,7 @@ impl Painter<'_> {
         match &tree.info[i].kind {
             // 重ねる物は親に付かないので、ここには来ない（Painter::overlay で描く）
             Kind::Overlay { .. } => {}
-            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar | Kind::Tabs | Kind::TabPanel => {
+            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar | Kind::Tabs | Kind::TabPanel | Kind::Grid => {
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
                 }
@@ -697,6 +767,35 @@ impl Painter<'_> {
                 let s = self.px(14.0);
                 let icon = if *up { Icon::ChevronUp } else { Icon::ChevronDown };
                 self.icon(icon, (r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                self.hit(tree, i, false, false);
+            }
+            Kind::Split { stacked } => {
+                for &c in &tree.layout[i].children {
+                    if matches!(tree.info[c].kind, Kind::Splitter { .. }) {
+                        let span = if *stacked { (r.y, r.h) } else { (r.x, r.w) };
+                        self.prev.splits.insert(tree.info[c].id, span);
+                    }
+                    self.node(tree, c);
+                }
+            }
+            Kind::Splitter { stacked, .. } => {
+                self.prev.split_bars.insert(id, *stacked);
+                let t = self.cx.theme.clone();
+                self.focus_ring(tree, i, self.px(2.0));
+                let off = tree.info[i].disabled;
+                let hot = !off && (self.cx.pressed == Some(id) || self.cx.hover == Some(id));
+                let w = if hot { self.px(3.0) } else { line };
+                let bar = if *stacked {
+                    Rect::new(r.x, (r.y + (r.h - w) / 2.0).round(), r.w, w)
+                } else {
+                    Rect::new((r.x + (r.w - w) / 2.0).round(), r.y, w, r.h)
+                };
+                self.d.fill(bar, if hot { t.accent } else { t.border }, 0.0);
+                self.hit(tree, i, true, false);
+            }
+            Kind::Canvas { ops } => {
+                self.prev.canvases.insert(id, r);
+                self.canvas(r, ops);
                 self.hit(tree, i, false, false);
             }
             Kind::Toolbar => {

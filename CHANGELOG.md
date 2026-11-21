@@ -73,6 +73,20 @@
   `Toolbar::separator`, `Toolbar::more(|m| ..)` (a "More options" menu) and `Toolbar::ui()`.
   Buttons are drawn without borders and show their names as tooltips. Tab stops once (on the button
   used last); Left/Right/Home/End move between buttons, skipping unavailable ones.
+- Grids: `Ui::grid(&[Size, ..], |ui| ..)` places widgets in cells left to right, wrapping after
+  the number of columns. Columns are `Auto` (widest cell), `Fixed` or `Fill` (share of the rest);
+  rows are as tall as their tallest cell, with cells centered vertically.
+- Split panes: `Ui::split_left_right(&mut width, |ui, pane| ..)` and `Ui::split_top_bottom`
+  return a `Split` with `.label`, `.grow`, `.height` and `.changed`. The divider can be dragged,
+  stops Tab, moves by 10 with the arrow keys and to the ends with Home and End, keeps both panes at
+  least 48 wide, shows a resize pointer on Windows, and is a splitter with its value for screen
+  readers.
+- Drawing surfaces: `Ui::canvas(w, h, |d| ..)` with `Drawing::rect`, `rounded_rect`, `circle`,
+  `line`, `polyline`, `polygon`, `text` and `image`, in the surface's own coordinates and clipped to
+  it. kargui fills diagonal lines and polygons itself into the text atlas, so both renderers draw
+  them (images: CPU renderer only for now). `CanvasView::pointer` (while pressed) and
+  `CanvasView::clicked_at`. Screen readers see a canvas with its name.
+- Tests: `Harness::drag(name, dx, dy)`.
 - Fix: when a popup, dialog, list or menu opens or closes, the focus that moves into it (or back)
   is drawn at once. Before, the frame was drawn before the focus moved, and the old focus stayed on
   screen until the next input.
