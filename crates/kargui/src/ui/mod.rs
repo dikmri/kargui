@@ -97,7 +97,7 @@ pub(crate) enum Kind {
     Row,
     Column,
     Stack,
-    Label { text: String, size: TextKind, bold: bool, weak: bool, strike: bool, wrap: bool },
+    Label { text: String, size: TextKind, bold: bool, weak: bool, strike: bool, wrap: bool, right: bool },
     Button { text: String, primary: bool, small: bool },
     Checkbox { checked: bool, text: String, strike: bool },
     Toggle { on: bool, text: String },
@@ -106,6 +106,8 @@ pub(crate) enum Kind {
     Space,
     List { count: usize, separators: bool, view_h: f32 },
     Scroll,
+    /// 選べる一覧の行（tab_stop: Tab で移る行。選んだ行、無ければ見えている最初の行）
+    Item { selected: bool, tab_stop: bool },
     Slider { value: f64, min: f64, max: f64, step: f64 },
 }
 
@@ -113,7 +115,13 @@ impl Kind {
     pub fn interactive(&self) -> bool {
         matches!(
             self,
-            Kind::Button { .. } | Kind::Checkbox { .. } | Kind::Toggle { .. } | Kind::Segment { .. } | Kind::TextInput { .. } | Kind::Slider { .. }
+            Kind::Button { .. }
+                | Kind::Checkbox { .. }
+                | Kind::Toggle { .. }
+                | Kind::Segment { .. }
+                | Kind::TextInput { .. }
+                | Kind::Slider { .. }
+                | Kind::Item { .. }
         )
     }
 }
@@ -351,7 +359,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn label(&mut self, text: impl Into<String>) -> Label<'_> {
-        let kind = Kind::Label { text: text.into(), size: TextKind::Body, bold: false, weak: false, strike: false, wrap: false };
+        let kind = Kind::Label { text: text.into(), size: TextKind::Body, bold: false, weak: false, strike: false, wrap: false, right: false };
         let (idx, id) = self.add(kind, Dir::Leaf);
         Label(self.handle(idx, id))
     }
@@ -365,7 +373,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn heading(&mut self, text: impl Into<String>) -> Label<'_> {
-        let kind = Kind::Label { text: text.into(), size: TextKind::Heading, bold: true, weak: false, strike: false, wrap: false };
+        let kind = Kind::Label { text: text.into(), size: TextKind::Heading, bold: true, weak: false, strike: false, wrap: false, right: false };
         let (idx, id) = self.add(kind, Dir::Leaf);
         Label(self.handle(idx, id))
     }
@@ -667,7 +675,7 @@ impl<'a> Ui<'a> {
         let (idx, id) = self.add(Kind::List { count, separators: true, view_h: 0.0 }, Dir::List);
         let row_h = self.px(row_height).max(1.0);
         self.tree.layout[idx].row_h = row_h;
-        List { ui: self, idx, id, count, row_h, scroll_to: None }
+        List { ui: self, idx, id, count, row_h, scroll_to: None, selection: None }
     }
 
     // ---- そのほか ----
@@ -881,6 +889,23 @@ impl Label<'_> {
     pub fn wrap(self) -> Self {
         self.text_kind(|_, _, _, _, w| *w = true).grow()
     }
+    /// Puts the text at the right end of its space (for example numbers in a table column).
+    /// Give the label a width with [`Label::width`] or [`Label::grow`] for this to show.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.label("Apples").grow();
+    ///     ui.label("1,280").right().width(kargui::Size::Fixed(80.0));
+    /// });
+    /// # });
+    /// ```
+    pub fn right(mut self) -> Self {
+        if let Kind::Label { right, .. } = self.0.kind() {
+            *right = true;
+        }
+        self
+    }
     /// Takes the remaining space. See [`Handle::grow`].
     pub fn grow(self) -> Self {
         Label(self.0.grow())
@@ -1032,9 +1057,10 @@ pub struct List<'u, 'a> {
     count: usize,
     row_h: f32,
     scroll_to: Option<f32>,
+    selection: Option<&'u mut Option<usize>>,
 }
 
-impl List<'_, '_> {
+impl<'u> List<'u, '_> {
     /// Takes the remaining space. See [`Handle::grow`].
     pub fn grow(self) -> Self {
         let dir = self.ui.parent_dir();
@@ -1072,6 +1098,27 @@ impl List<'_, '_> {
         self.ui.cx.scrolls.get(&self.id).copied().unwrap_or(0.0)
     }
 
+    /// Lets the user select one row: clicking a row selects it, the up and down arrows move the
+    /// selection (Home and End jump to the ends), and the list scrolls to show it. `selected` holds
+    /// the selected row's index. The whole list is one stop for the Tab key.
+    ///
+    /// ```
+    /// # let files = vec!["a.txt", "b.txt", "c.txt"];
+    /// # let mut selected: Option<usize> = None;
+    /// # kargui::test::example(|ui| {
+    /// ui.list(files.len(), 28.0).grow().selection(&mut selected).show(|ui, i| {
+    ///     ui.label(files[i]);
+    /// });
+    /// if let Some(i) = selected {
+    ///     ui.label(format!("Selected: {}", files[i]));
+    /// }
+    /// # });
+    /// ```
+    pub fn selection(mut self, selected: &'u mut Option<usize>) -> Self {
+        self.selection = Some(selected);
+        self
+    }
+
     /// Creates the visible rows. `row` is called with each visible row's index.
     ///
     /// Rows are told apart by their position, so when items are inserted or removed above,
@@ -1095,33 +1142,76 @@ impl List<'_, '_> {
     /// # });
     /// ```
     pub fn show_keyed<K: Hash>(self, key: impl Fn(usize) -> K, mut row: impl FnMut(&mut Ui, usize)) -> Id {
-        let cx = &mut *self.ui.cx;
+        let List { ui, idx, id, count, row_h, scroll_to, mut selection } = self;
+        let row_id = |i: usize| Id(hash_of((id.0, key(i))));
+        let cx = &mut *ui.cx;
         // 見えている範囲は前のフレームの一覧の高さで決める（初めてなら窓の高さ）
-        let view_h = cx.prev.lists.iter().find(|l| l.id == self.id).map_or(cx.height, |l| l.rect.h);
-        let content_h = self.count as f32 * self.row_h;
-        let max = ((content_h - view_h) / cx.scale).max(0.0);
-        let offset = self.scroll_to.unwrap_or_else(|| cx.scrolls.get(&self.id).copied().unwrap_or(0.0)).clamp(0.0, max);
-        cx.scrolls.insert(self.id, offset);
-        let off_px = (offset * cx.scale).round();
+        let view_h = cx.prev.lists.iter().find(|l| l.id == id).map_or(cx.height, |l| l.rect.h);
         let scale = cx.scale;
-        self.ui.tree.layout[self.idx].offset = off_px;
-        if let Kind::List { view_h: v, .. } = &mut self.ui.tree.info[self.idx].kind {
+        // 選べる一覧: 押した行を選び、焦点がある時は矢印で選ぶ行を動かして、見えるようにスクロールする
+        let mut sel = selection.as_deref().copied().flatten().filter(|&s| s < count);
+        if let Some(out) = selection.as_deref_mut() {
+            if let Some(&(list, i)) = cx.clicked.and_then(|c| cx.prev.items.get(&c)) {
+                if list == id && i < count {
+                    sel = Some(i);
+                }
+            }
+            let focused = cx.focus.and_then(|f| cx.prev.items.get(&f)).filter(|(l, _)| *l == id).map(|&(_, i)| i);
+            if let (Some(at), true) = (focused, count > 0) {
+                let start = sel.unwrap_or(at.min(count - 1));
+                let mut next = start;
+                for e in std::mem::take(&mut cx.keys) {
+                    if let Event::Key { key, .. } = e {
+                        next = match key {
+                            Key::Up => next.saturating_sub(1),
+                            Key::Down => (next + 1).min(count - 1),
+                            Key::Home => 0,
+                            Key::End => count - 1,
+                            _ => next,
+                        };
+                    }
+                }
+                if next != start {
+                    sel = Some(next);
+                    cx.focus = Some(row_id(next));
+                    let (rh, view) = (row_h / scale, view_h / scale);
+                    let top = next as f32 * rh;
+                    let off = cx.scrolls.entry(id).or_insert(0.0);
+                    if top < *off {
+                        *off = top;
+                    } else if top + rh > *off + view {
+                        *off = top + rh - view;
+                    }
+                }
+            }
+            *out = sel;
+        }
+        let content_h = count as f32 * row_h;
+        let max = ((content_h - view_h) / scale).max(0.0);
+        let offset = scroll_to.unwrap_or_else(|| cx.scrolls.get(&id).copied().unwrap_or(0.0)).clamp(0.0, max);
+        cx.scrolls.insert(id, offset);
+        let off_px = (offset * scale).round();
+        ui.tree.layout[idx].offset = off_px;
+        if let Kind::List { view_h: v, .. } = &mut ui.tree.info[idx].kind {
             *v = view_h;
         }
         // 見えている行に加えて、上下に 1 行ずつ見えない行も作る。Tab でその行へ移ると、見えるようにスクロールする
-        let first = ((off_px / self.row_h).floor() as usize).min(self.count).saturating_sub(1);
-        let last = ((((off_px + view_h) / self.row_h).ceil() as usize) + 1).min(self.count);
+        let first = ((off_px / row_h).floor() as usize).min(count).saturating_sub(1);
+        let last = ((((off_px + view_h) / row_h).ceil() as usize) + 1).min(count);
+        // Tab で移る行: 選んだ行。無ければ見えている最初の行
+        let tab_row = sel.unwrap_or(((off_px / row_h).floor() as usize).min(count.saturating_sub(1)));
         for i in first..last {
-            let rid = Id(hash_of((self.id.0, key(i))));
-            let mut list_ui = self.ui.child(self.idx);
-            let (ridx, _) = list_ui.push(rid, Kind::Row, Dir::Row);
+            let rid = row_id(i);
+            let kind = if selection.is_some() { Kind::Item { selected: sel == Some(i), tab_stop: i == tab_row } } else { Kind::Row };
+            let mut list_ui = ui.child(idx);
+            let (ridx, _) = list_ui.push(rid, kind, Dir::Row);
             list_ui.tree.layout[ridx].row_index = i;
             list_ui.tree.layout[ridx].gap = (8.0 * scale).round();
             list_ui.tree.layout[ridx].pad = ((8.0 * scale).round(), 0.0);
             let mut row_ui = list_ui.child(ridx);
             row(&mut row_ui, i);
         }
-        self.id
+        id
     }
 }
 

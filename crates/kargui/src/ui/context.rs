@@ -87,6 +87,8 @@ pub(crate) struct Prev {
     pub inputs: HashMap<Id, (Rect, f32)>,
     /// 一覧の行の中の、焦点を持てる部品 → (一覧の id, 行の範囲)
     pub rows: HashMap<Id, (Id, Rect)>,
+    /// 選べる一覧の行 → (一覧の id, 何行目)
+    pub items: HashMap<Id, (Id, usize)>,
 }
 
 pub(crate) struct Context {

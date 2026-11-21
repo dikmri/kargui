@@ -774,6 +774,53 @@ mod tests {
         assert_eq!(h.app().size, 11);
     }
 
+    struct Table {
+        rows: Vec<(u32, String)>,
+        sel: Option<usize>,
+        query: String,
+    }
+
+    impl App for Table {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.text_input(&mut self.query).hint("Search");
+            let rows = &self.rows;
+            ui.list(rows.len(), 30.0).grow().selection(&mut self.sel).show_keyed(
+                |i| rows[i].0,
+                |ui, i| {
+                    ui.label(&rows[i].1);
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn selectable_lists_move_with_arrows_and_are_one_tab_stop() {
+        let rows = (0..100).map(|i| (1000 + i, format!("Row {i}"))).collect();
+        let mut h = Harness::with_size(Table { rows, sel: None, query: String::new() }, 400.0, 300.0, 1.0);
+        h.frame();
+        h.click("Row 2");
+        assert_eq!(h.app().sel, Some(2));
+        h.press(Key::Down).press(Key::Down);
+        assert_eq!(h.app().sel, Some(4));
+        // End で最後の行へ。見えるようにスクロールする
+        h.press(Key::End);
+        assert_eq!(h.app().sel, Some(99));
+        let list = h.rt.cx.prev.lists[0].rect;
+        let r = h.find("Row 99").unwrap();
+        assert!(r.y >= list.y && r.bottom() <= list.bottom() + 0.5, "Row 99 {r:?} が一覧 {list:?} の中に見える");
+        h.press(Key::Home).press(Key::Up);
+        assert_eq!(h.app().sel, Some(0), "上の端で止まる");
+        // 選んだ行は読み上げでも「選ばれている」
+        let i = (0..h.rt.tree.info.len()).find(|&i| a11y::name_of(&h.rt.tree, i).as_deref() == Some("Row 0")).unwrap();
+        assert!(matches!(h.rt.tree.info[i].kind, crate::ui::Kind::Item { selected: true, .. }));
+        // Tab: 検索の欄から 1 回で一覧（選んだ行）へ、もう 1 回で一覧の外（検索の欄に戻る）へ
+        h.click("Search");
+        h.press(Key::Tab).press(Key::Down);
+        assert_eq!(h.app().sel, Some(1), "Tab で一覧に移った");
+        h.press(Key::Tab).type_text("x");
+        assert_eq!(h.app().query, "x", "次の Tab で一覧を出た");
+    }
+
     fn id_of(h: &Harness<Shelf>, name: &str) -> crate::ui::Id {
         let i = (0..h.rt.tree.info.len()).find(|&i| a11y::name_of(&h.rt.tree, i).as_deref() == Some(name)).unwrap();
         h.rt.tree.info[i].id

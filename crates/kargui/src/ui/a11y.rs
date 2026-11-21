@@ -25,6 +25,7 @@ pub(crate) fn name_of(tree: &Tree, i: usize) -> Option<String> {
     }
     match &n.kind {
         Kind::TextInput { hint, .. } if !hint.is_empty() => Some(hint.clone()),
+        Kind::Item { .. } => Some(row_name(tree, i)).filter(|s| !s.is_empty()),
         k => visible_text(k).filter(|t| !t.is_empty()).map(str::to_string),
     }
 }
@@ -143,6 +144,17 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n
             }
             Kind::Scroll => Node::new(Role::ScrollView),
+            Kind::Item { selected, .. } => {
+                let mut n = Node::new(Role::ListItem);
+                if let Some(count) = list_count[i] {
+                    n.set_size_of_set(count);
+                    n.set_position_in_set(l.row_index + 1);
+                }
+                n.set_selected(*selected);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
             Kind::Slider { value, min, max, step } => {
                 let mut n = Node::new(Role::Slider);
                 n.set_numeric_value(*value);

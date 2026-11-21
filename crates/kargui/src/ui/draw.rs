@@ -235,15 +235,42 @@ impl Painter<'_> {
                     self.node(tree, c);
                 }
             }
-            Kind::Label { text, size, bold, weak, strike, wrap } => {
+            Kind::Label { text, size, bold, weak, strike, wrap, right } => {
                 let st = style(self.cx, *size, *bold);
                 let color = if *weak { self.cx.theme.weak_text } else { self.cx.theme.text };
                 let laid = self.cx.text.layout(text, st, if *wrap { Some(r.w) } else { None });
                 let y = if *wrap { r.y } else { (r.y + (r.h - laid.height) / 2.0).round() };
-                put(self.d, &laid, r.x, y, color);
+                let x = if *right && !*wrap { (r.right() - laid.width).round() } else { r.x };
+                put(self.d, &laid, x, y, color);
                 if *strike {
                     let color = self.cx.theme.done_text;
-                    self.d.fill(Rect::new(r.x, (y + laid.height * 0.55).round(), laid.width, line), color, 0.0);
+                    self.d.fill(Rect::new(x, (y + laid.height * 0.55).round(), laid.width, line), color, 0.0);
+                }
+            }
+            Kind::Item { selected, tab_stop } => {
+                let t = self.cx.theme.clone();
+                if *selected {
+                    self.d.fill(r, t.selected, 0.0);
+                } else if self.cx.hover == Some(id) {
+                    self.d.fill(r, t.button_hover, 0.0);
+                }
+                if self.cx.focus_visible && self.cx.focus == Some(id) {
+                    let bg = if *selected { t.selected } else { t.background };
+                    self.d.boxed(r.inset(line), bg, t.accent, 2.0 * line, self.px(4.0));
+                }
+                // 行そのものの当たり（中の部品は後に入るので、部品が先に当たる）
+                if let Some((list, row)) = self.row {
+                    self.prev.items.insert(id, (list, tree.layout[i].row_index));
+                    self.prev.rows.insert(id, (list, row));
+                }
+                if let Some(v) = intersect(r, self.clip) {
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: true, text_input: false, arrows: true });
+                }
+                if *tab_stop {
+                    self.prev.focus_order.push(id);
+                }
+                for &c in &tree.layout[i].children {
+                    self.node(tree, c);
                 }
             }
             Kind::Button { text, primary, small } => {
