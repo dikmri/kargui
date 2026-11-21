@@ -59,6 +59,9 @@ cargo run --release -p taskbook-kargui -- --items 10000   # タスク帳（前�
 cargo run --release -p settings-kargui                    # 設定画面
 cargo run --release -p reader-kargui                      # 長い文を読む画面
 cargo run --release -p table-kargui                       # 1 万件の表
+cargo run --release -p notepad-kargui                     # メモ帳（メニュー・ファイルのダイアログ・閉じる前の確認）
+cargo run --release -p expenses-kargui                    # 家計簿（入力の格子・表・タブ・グラフ）
+cargo run --release -p files-kargui                       # ファイルの閲覧（木の表示・仕切り・別の窓）
 ```
 
 記録は `logs/<アプリ>.log` に 1 行ずつ書く（時刻・出来事・引数・結果）。
@@ -85,7 +88,7 @@ cargo run -p xtask -- check                      # 説明と例の割合・部�
 
 ## 今の状態と今後
 
-0.1 は最初の版で、ふつうのアプリを作るには足りない物がまだ多い。これまで試したのは、タスク帳と、形の違うアプリ 3 本（設定画面・長い文を読む画面・1 万件の表）だけ。今後は、実際のアプリを作りながら足りない部品と仕組みを調べ、よく使う物から足して完成度を上げていく。足すたびに、同じ道具で軽さが保たれているかを測る。
+0.1 は最初の版。その後の main（まだ版にしていない）で、ふつうのデスクトップアプリに要る部品と仕組みの多くを足した。確かめとして、メモ帳・家計簿・ファイルの閲覧の 3 本を kargui だけで書き（`examples/notepad`・`examples/expenses`・`examples/files`）、書いて見つかった不足は kargui の側で直した。次は、下の残りと、Linux と macOS の窓。足すたびに、同じ道具で軽さが保たれているかを測る。
 
 まだ無い主な物:
 

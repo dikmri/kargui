@@ -117,7 +117,8 @@
 - File dialogs: `Ui::file_dialog(key, FileDialog::open()/save())` with `.title`, `.filter`,
   `.file_name`, `.folder` and `.multiple`; the system's dialog is shown after the frame (on Windows,
   IFileOpenDialog and IFileSaveDialog; the window thread is now a COM single-threaded apartment),
-  and the chosen files arrive once through `Ui::chosen_files` / `Ui::chosen_file`. Tests:
+  and the chosen files arrive once through `Ui::chosen_files` / `Ui::chosen_file` (a cancel once
+  through `Ui::file_dialog_cancelled`). Tests:
   `Harness::file_dialog_key`, `file_dialog`, `choose_files`, `cancel_file_dialog`.
 - Closing: `App::close_requested` (return false to keep the main window open, for example to ask
   about unsaved changes) and `Ui::quit`. Tests: `Harness::request_close`, `Harness::is_closed`.
@@ -125,6 +126,16 @@
   `Options::min_size` (the smallest inside size the user can resize to). `Options` has two new
   fields, so code that builds it with every field listed must add them (`..Options::new(..)`
   avoids this).
+- Three ordinary apps as the final check that apps can be written with kargui alone:
+  `examples/notepad` (menu bar with shortcuts, multi-line text, open and save dialogs, asking before
+  closing, window icon), `examples/expenses` (a form on a grid with a date picker, drop-down and
+  number input, tabs, a sortable table with row context menus, a toolbar, a bar chart on a canvas)
+  and `examples/files` (a folder tree next to a file table in split panes, properties in another
+  window). Writing them found and fixed: `Ui::file_dialog_cancelled`, `TableRow::context_menu`, tree
+  keys only need `Clone` (paths work), `Date::from_unix_days` / `Date::unix_days`, grown tabs give
+  their panel the remaining height, and the test harness clicks what a user would see: among
+  widgets with the same name, one in the open menu or dialog first, then a usable one on top, then
+  any interactive one (a field rather than its label). `Harness::click_at(x, y)`.
 - Fix: when a popup, dialog, list or menu opens or closes, the focus that moves into it (or back)
   is drawn at once. Before, the frame was drawn before the focus moved, and the old focus stayed on
   screen until the next input.

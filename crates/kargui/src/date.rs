@@ -118,6 +118,30 @@ impl Date {
         days_in_month(self.year, self.month)
     }
 
+    /// The date `days` days after 1970-01-01 (before it if negative). With the seconds of a
+    /// [`SystemTime`](std::time::SystemTime) since the Unix epoch divided by 86,400, this is that
+    /// day in UTC.
+    ///
+    /// ```
+    /// use kargui::Date;
+    /// assert_eq!(Date::from_unix_days(0), Date::new(1970, 1, 1).unwrap());
+    /// assert_eq!(Date::from_unix_days(20_414), Date::new(2025, 11, 22).unwrap());
+    /// ```
+    pub fn from_unix_days(days: i64) -> Date {
+        Date::from_days(days)
+    }
+
+    /// The number of days since 1970-01-01. See [`Date::from_unix_days`].
+    ///
+    /// ```
+    /// use kargui::Date;
+    /// let d = Date::new(2026, 11, 22).unwrap();
+    /// assert_eq!(Date::from_unix_days(d.unix_days()), d);
+    /// ```
+    pub fn unix_days(self) -> i64 {
+        self.days()
+    }
+
     /// 1970-01-01 からの日数
     pub(crate) fn days(self) -> i64 {
         let (m, d) = (self.month as i64, self.day as i64);

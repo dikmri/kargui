@@ -1,5 +1,5 @@
-<!-- source: ja/17-app-mechanisms.md fnv=85e0764aab8cb84e -->
-<!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=a6efd1cf07d52d3c -->
+<!-- source: ja/17-app-mechanisms.md fnv=71239366e1ef6394 -->
+<!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # App mechanisms
 
 ## Dialogs to open and save files
@@ -25,7 +25,7 @@ if let Some(path) = ui.chosen_file("save") {
 # });
 ```
 
-`ui.file_dialog(key, ..)` shows the dialog after the frame is drawn. The chosen file arrives once, in a later frame, from `ui.chosen_file(key)`. Nothing arrives when the user cancels. The app keeps running and drawing while the dialog is open.
+`ui.file_dialog(key, ..)` shows the dialog after the frame is drawn. The chosen file arrives once, in a later frame, from `ui.chosen_file(key)`. When the user cancels, `ui.file_dialog_cancelled(key)` is true once, in the next frame. The app keeps running and drawing while the dialog is open.
 
 - `FileDialog::open()` opens, `FileDialog::save()` saves (and asks before replacing a file with the same name)
 - `.filter(name, &[extensions])` sets the kinds of files, `.title(..)` the title, `.file_name(..)` the starting name and `.folder(..)` the starting folder

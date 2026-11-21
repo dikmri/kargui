@@ -520,7 +520,7 @@ if let Some(at) = canvas.label("Dots").clicked_at() {
 }
 ```
 
-### `pub fn tree<K: Copy + PartialEq + Hash>(&mut self, selected: &mut Option<K>, f: impl FnOnce(&mut TreeBuilder<K>)) -> TreeView<'_>`
+### `pub fn tree<K: Clone + PartialEq + Hash>(&mut self, selected: &mut Option<K>, f: impl FnOnce(&mut TreeBuilder<K>)) -> TreeView<'_>`
 
 A tree of items that open and close, such as folders or an outline. Build it in `f` with
 [`TreeBuilder::branch`] (an item with children; closed at first) and [`TreeBuilder::leaf`].
@@ -637,6 +637,18 @@ if ui.button("Add photos…").clicked() {
 }
 if let Some(files) = ui.chosen_files("photos") {
     photos.extend(files);
+}
+```
+
+### `pub fn file_dialog_cancelled(&mut self, key: &str) -> bool`
+
+Whether the user cancelled the dialog shown with `key`: true once, in the frame after it
+closed. Use it to drop what the app meant to do with the file.
+
+```
+use kargui::FileDialog;
+if ui.file_dialog_cancelled("save") {
+    close_after_saving = false;
 }
 ```
 

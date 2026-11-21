@@ -1,5 +1,5 @@
-<!-- source: ja/15-trees-tables-dates.md fnv=355f6e35d3872a65 -->
-<!-- covers: Ui::tree TreeBuilder::leaf TreeBuilder::branch TreeView::changed Ui::table Table::sort Table::selection Table::label Table::grow Table::show Table::show_keyed TableRow::cell TableRow::text TableColumn::new TableColumn::width TableColumn::fill TableColumn::right Ui::date_picker DatePicker::changed Ui::set_date_text Ui::today Date::new Date::today Date::year Date::month Date::day Date::weekday Date::add_days Date::add_months Date::days_in_month DateText::english DateText::japanese sig=b1c6279801c80c93 -->
+<!-- source: ja/15-trees-tables-dates.md fnv=5add5f8d1405a104 -->
+<!-- covers: Ui::tree TreeBuilder::leaf TreeBuilder::branch TreeView::changed Ui::table Table::sort Table::selection Table::label Table::grow Table::show Table::show_keyed TableRow::cell TableRow::text TableRow::context_menu TableColumn::new TableColumn::width TableColumn::fill TableColumn::right Ui::date_picker DatePicker::changed Ui::set_date_text Ui::today Date::new Date::today Date::year Date::month Date::day Date::weekday Date::add_days Date::add_months Date::days_in_month Date::from_unix_days Date::unix_days DateText::english DateText::japanese sig=1e24c244697ffaa8 -->
 # Trees, tables and dates
 
 ## Trees
@@ -59,6 +59,7 @@ ui.table(&columns, files.len(), 30.0).sort(&mut sort).selection(&mut selected).l
 - With `.sort(&mut order)`, each click on a heading switches between `Some((column, true))` (ascending) and `Some((column, false))`. Sorting the data is up to the app
 - `.selection(&mut selected_row)` makes rows selectable (as `selection` on a list)
 - In a row, add the cells in column order with `row.text(text)` or `row.cell(|ui| ..)`
+- `row.context_menu(|m| ..)` adds a menu that opens when the row is right-clicked
 
 Drag the small grip at the right of a heading to change the column's width (kargui remembers it). Tab stops once on the headings; Left and Right move between them, and Enter or Space sorts. Without `.grow()`, the table is 8 rows tall and scrolls.
 
@@ -84,4 +85,4 @@ In the calendar, the arrow keys move by a day or a week, Home and End to the sta
 
 The field shows the date as `2026-11-22`. The names of days and months come from `ui.set_date_text(..)` (English by default, Japanese with `DateText::japanese()`). Screen readers hear a date field with its value, and a calendar grid whose days have full names (such as November 22, 2026).
 
-`Date` holds a year, a month and a day. Make one with `Date::new(year, month, day)` (`None` if there is no such day), and calculate with `add_days`, `add_months` and `weekday`. `ui.today()` is today's date (always 2026-11-22 in tests).
+`Date` holds a year, a month and a day. Make one with `Date::new(year, month, day)` (`None` if there is no such day), and calculate with `add_days`, `add_months` and `weekday`. From a file's modification time and the like, `Date::from_unix_days(seconds / 86400)` gives the day in UTC (and `unix_days` goes back). `ui.today()` is today's date (always 2026-11-22 in tests).

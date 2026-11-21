@@ -1,4 +1,4 @@
-<!-- covers: Ui::tree TreeBuilder::leaf TreeBuilder::branch TreeView::changed Ui::table Table::sort Table::selection Table::label Table::grow Table::show Table::show_keyed TableRow::cell TableRow::text TableColumn::new TableColumn::width TableColumn::fill TableColumn::right Ui::date_picker DatePicker::changed Ui::set_date_text Ui::today Date::new Date::today Date::year Date::month Date::day Date::weekday Date::add_days Date::add_months Date::days_in_month DateText::english DateText::japanese sig=b1c6279801c80c93 -->
+<!-- covers: Ui::tree TreeBuilder::leaf TreeBuilder::branch TreeView::changed Ui::table Table::sort Table::selection Table::label Table::grow Table::show Table::show_keyed TableRow::cell TableRow::text TableRow::context_menu TableColumn::new TableColumn::width TableColumn::fill TableColumn::right Ui::date_picker DatePicker::changed Ui::set_date_text Ui::today Date::new Date::today Date::year Date::month Date::day Date::weekday Date::add_days Date::add_months Date::days_in_month Date::from_unix_days Date::unix_days DateText::english DateText::japanese sig=1e24c244697ffaa8 -->
 # 木の表示・表・日付
 
 ## 木の表示
@@ -58,6 +58,7 @@ ui.table(&columns, files.len(), 30.0).sort(&mut sort).selection(&mut selected).l
 - `.sort(&mut 並べ方)` を付けると、見出しを押すたびに `Some((列, true))`（小さい順）と `Some((列, false))` が入れ替わります。データの並べ替えはアプリが行います
 - `.selection(&mut 選んでいる行)` で行を選べるようにします（一覧の `selection` と同じ）
 - 行の中では、`row.text(文字)` か `row.cell(|ui| ..)` で、列の順に升を足します
+- `row.context_menu(|m| ..)` で、行に右クリックのメニューを付けます
 
 見出しの右の小さいつまみをつかむと、列の幅を変えられます（kargui が覚えます）。見出しは Tab で 1 回だけ止まり、左右で移り、Enter か Space で並べ替えます。`.grow()` を付けない時は、8 行分の高さで表示してスクロールします。
 
@@ -83,4 +84,4 @@ if ui.date_picker(&mut due).label("期限").changed() {
 
 欄は日付を `2026-11-22` の形で出します。曜日と月の名前は `ui.set_date_text(..)` で決めます（既定は英語、`DateText::japanese()` で日本語）。読み上げソフトには、値を持つ日付の欄と、日ごとの名前（2026年11月22日など）を持つ暦の格子として伝わります。
 
-`Date` は、年・月・日を持つ型です。`Date::new(年, 月, 日)` で作り（無い日なら `None`）、`add_days`・`add_months`・`weekday` で計算します。`ui.today()` は今日の日付です（試験の中では、いつも 2026-11-22）。
+`Date` は、年・月・日を持つ型です。`Date::new(年, 月, 日)` で作り（無い日なら `None`）、`add_days`・`add_months`・`weekday` で計算します。ファイルの更新日時などからは、`Date::from_unix_days(秒 / 86400)` で UTC の日付を作れます（逆は `unix_days`）。`ui.today()` は今日の日付です（試験の中では、いつも 2026-11-22）。

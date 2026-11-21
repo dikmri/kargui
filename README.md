@@ -78,6 +78,9 @@ cargo run --release -p taskbook-kargui -- --items 10000   # the task book (same 
 cargo run --release -p settings-kargui                    # a settings screen
 cargo run --release -p reader-kargui                      # a long-text reader
 cargo run --release -p table-kargui                       # a 10,000-row table
+cargo run --release -p notepad-kargui                     # a text editor (menus, file dialogs, asking before closing)
+cargo run --release -p expenses-kargui                    # a household budget (form, table, tabs, chart)
+cargo run --release -p files-kargui                       # a file browser (tree, split panes, another window)
 ```
 
 Each app writes one line per event to `logs/<app>.log` (time, event, arguments, result).
@@ -105,10 +108,11 @@ The input method checks type into the foreground window, so they run only while 
 
 ## Status and next steps
 
-0.1 is the first release, and a lot is still missing for everyday apps. So far kargui has been tried
-with the task book and three apps of other shapes (a settings screen, a long-text reader and a
-10,000-row table). Next, we will build real apps with it, find the widgets and mechanisms they need,
-and add the most common ones first. Each addition is measured with the same tools to keep kargui light.
+0.1 was the first release. Since then, the main branch (not released yet) has gained the widgets and
+mechanisms most everyday desktop apps need. As a check, three ordinary apps were written with kargui
+alone: a text editor, a household budget and a file browser (`examples/notepad`, `examples/expenses`,
+`examples/files`); what they showed was fixed in kargui. Next: the items below, and windows on Linux
+and macOS. Each addition is measured with the same tools to keep kargui light.
 
 Not there yet:
 

@@ -1405,6 +1405,8 @@ impl<'a> Ui<'a> {
             ui.tree.layout[p].pad = (0.0, pad);
             ui.tree.layout[p].gap = gap;
             ui.tree.layout[p].align = Align::Stretch;
+            // タブを伸ばした時（.grow()）は、中身が残りの高さを取る（伸ばさなければ中身の高さのまま）
+            ui.tree.layout[p].height = Size::Fill(1.0);
             panel(&mut ui.child(p), tabs[k].0);
         }
         let n = heads.len();
@@ -1860,13 +1862,13 @@ impl<'a> Ui<'a> {
     /// # });
     /// ```
     #[track_caller]
-    pub fn tree<K: Copy + PartialEq + Hash>(&mut self, selected: &mut Option<K>, f: impl FnOnce(&mut TreeBuilder<K>)) -> TreeView<'_> {
+    pub fn tree<K: Clone + PartialEq + Hash>(&mut self, selected: &mut Option<K>, f: impl FnOnce(&mut TreeBuilder<K>)) -> TreeView<'_> {
         let (idx, id) = self.add(Kind::Tree, Dir::Column);
         self.tree.layout[idx].align = Align::Stretch;
-        let mut b = TreeBuilder { ui: self.child(idx), tree: id, depth: 0, parent: None, rows: Vec::new(), selected: *selected, picked: None };
+        let mut b = TreeBuilder { ui: self.child(idx), tree: id, depth: 0, parent: None, rows: Vec::new(), selected: selected.clone(), picked: None };
         f(&mut b);
         let TreeBuilder { rows, picked, .. } = b;
-        let mut sel = picked.or(*selected);
+        let mut sel = picked.or_else(|| selected.clone());
         let n = rows.len();
         let cx = &mut *self.cx;
         let at = cx.focus.filter(|_| !self.disabled).and_then(|f| rows.iter().position(|r| r.id == f));
@@ -1908,15 +1910,15 @@ impl<'a> Ui<'a> {
             }
             type_ahead(cx, &items);
             if let Some(k) = cx.focus.and_then(|f| rows.iter().position(|r| r.id == f)).filter(|&k| k != at) {
-                sel = Some(rows[k].key);
+                sel = Some(rows[k].key.clone());
             }
         }
         // Tab は選んでいる行（無ければ最初の行）にだけ止まる
-        let stop = rows.iter().position(|r| Some(r.key) == sel).unwrap_or(0);
+        let stop = rows.iter().position(|r| sel.as_ref() == Some(&r.key)).unwrap_or(0);
         for (k, r) in rows.iter().enumerate() {
             self.tree.info[r.idx].skip_tab = k != stop;
             if let Kind::TreeItem { selected, .. } = &mut self.tree.info[r.idx].kind {
-                *selected = Some(r.key) == sel;
+                *selected = sel.as_ref() == Some(&r.key);
             }
         }
         let changed = sel != *selected;
@@ -2197,7 +2199,31 @@ impl<'a> Ui<'a> {
     /// # });
     /// ```
     pub fn chosen_files(&mut self, key: &str) -> Option<Vec<PathBuf>> {
-        self.cx.file_results.remove(key)
+        // 取り消し（空の答え）は file_dialog_cancelled のために残す
+        match self.cx.file_results.get(key) {
+            Some(files) if !files.is_empty() => self.cx.file_results.remove(key),
+            _ => None,
+        }
+    }
+
+    /// Whether the user cancelled the dialog shown with `key`: true once, in the frame after it
+    /// closed. Use it to drop what the app meant to do with the file.
+    ///
+    /// ```
+    /// use kargui::FileDialog;
+    /// # let mut close_after_saving = true;
+    /// # kargui::test::example(|ui| {
+    /// if ui.file_dialog_cancelled("save") {
+    ///     close_after_saving = false;
+    /// }
+    /// # });
+    /// ```
+    pub fn file_dialog_cancelled(&mut self, key: &str) -> bool {
+        if self.cx.file_results.get(key).is_some_and(|f| f.is_empty()) {
+            self.cx.file_results.remove(key);
+            return true;
+        }
+        false
     }
 
     /// The first file chosen in the dialog shown with `key`. See [`Ui::chosen_files`].
@@ -5003,7 +5029,7 @@ pub struct TreeBuilder<'m, K> {
     picked: Option<K>,
 }
 
-impl<'m, K: Copy + PartialEq + Hash> TreeBuilder<'m, K> {
+impl<'m, K: Clone + PartialEq + Hash> TreeBuilder<'m, K> {
     /// An item without children.
     ///
     /// ```
@@ -5030,7 +5056,7 @@ impl<'m, K: Copy + PartialEq + Hash> TreeBuilder<'m, K> {
     /// # });
     /// ```
     pub fn branch(&mut self, key: K, text: impl Into<String>, f: impl FnOnce(&mut TreeBuilder<'m, K>)) {
-        let rid = Id(hash_of((self.tree.0, key)));
+        let rid = Id(hash_of((self.tree.0, &key)));
         let open = *self.ui.cx.expanded.entry(rid).or_insert(false);
         let k = self.row(key, text.into(), Some(open));
         if self.ui.cx.expanded.get(&rid).copied().unwrap_or(false) {
@@ -5044,13 +5070,13 @@ impl<'m, K: Copy + PartialEq + Hash> TreeBuilder<'m, K> {
     }
 
     fn row(&mut self, key: K, text: String, open: Option<bool>) -> usize {
-        let rid = Id(hash_of((self.tree.0, key)));
-        let selected = self.selected == Some(key);
+        let rid = Id(hash_of((self.tree.0, &key)));
+        let selected = self.selected.as_ref() == Some(&key);
         let depth = self.depth;
         let (idx, _) = self.ui.push(rid, Kind::TreeItem { text: text.clone(), depth, open, selected }, Dir::Leaf);
         let cx = &mut *self.ui.cx;
         if !self.ui.disabled && cx.clicked == Some(rid) {
-            self.picked = Some(key);
+            self.picked = Some(key.clone());
             // 枝は、Enter・Space か、左の印（シェブロン）を押した時に開閉する
             if let Some(o) = open {
                 let scale = cx.scale;
@@ -5451,6 +5477,34 @@ impl TableRow<'_, '_> {
         l.pad = (pad, 0.0);
         l.align = if self.rights.get(k).copied().unwrap_or(false) { Align::End } else { Align::Start };
         f(&mut self.ui.child(c));
+    }
+
+    /// A menu that opens when the row is right-clicked (or with Shift+F10 or the context menu
+    /// key while the focus is in the row). See [`Handle::context_menu`].
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # let mut names = vec!["a.txt".to_string(), "b.txt".to_string()];
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Name").fill()];
+    /// let mut remove = None;
+    /// ui.table(&columns, names.len(), 28.0).show(|row, i| {
+    ///     row.text(&names[i]);
+    ///     row.context_menu(|m| {
+    ///         if m.item("Delete").clicked() {
+    ///             remove = Some(i);
+    ///         }
+    ///     });
+    /// });
+    /// if let Some(i) = remove {
+    ///     names.remove(i);
+    /// }
+    /// # });
+    /// ```
+    pub fn context_menu(&mut self, f: impl FnOnce(&mut Menu)) {
+        let idx = self.ui.parent;
+        let id = self.ui.tree.info[idx].id;
+        let _ = self.ui.handle(idx, id).context_menu(f);
     }
 
     /// The next cell, with text.

@@ -474,9 +474,58 @@ impl<A: App> Harness<A> {
         self.frame()
     }
 
+    /// 名前の部品の真ん中。同じ名前が並ぶ時は、利用者が押す物を選ぶ: 押せる部品で、真ん中を押すとその部品に当たる物
+    /// （開いたメニューの項目など、いちばん上に見えている物）、次に押せる部品（見える名前と、その名前を付けた欄なら欄）
     fn center(&self, name: &str) -> (f32, f32) {
-        let r = self.find(name).unwrap_or_else(|| panic!("no widget named {name:?}; on screen: {:?}", self.names()));
+        let rt = self.cur();
+        let named: Vec<usize> = (0..rt.tree.info.len()).filter(|&i| a11y::name_of(&rt.tree, i).as_deref() == Some(name)).collect();
+        let usable = |i: usize| rt.tree.info[i].kind.interactive() && !rt.tree.info[i].disabled;
+        let on_top = |i: usize| {
+            let r = rt.tree.layout[i].rect;
+            rt.cx.hit(r.x + r.w / 2.0, r.y + r.h / 2.0).is_some_and(|h| h.id == rt.tree.info[i].id)
+        };
+        // メニューやダイアログが開いている間は、利用者はその中を押す（外を押すと閉じる）
+        let top_layer = rt.tree.overlays.iter().rev().find(|o| o.kind != crate::ui::OverlayKind::Tooltip).map(|o| o.idx);
+        let in_layer = |i: usize| top_layer.is_some_and(|o| o == i || under(&rt.tree, o, i));
+        let i = named
+            .iter()
+            .copied()
+            .find(|&i| usable(i) && in_layer(i))
+            .or(named.iter().copied().find(|&i| usable(i) && on_top(i)))
+            .or(named.iter().copied().find(|&i| rt.tree.info[i].kind.interactive()))
+            .or(named.first().copied())
+            .unwrap_or_else(|| panic!("no widget named {name:?}; on screen: {:?}", self.names()));
+        let r = rt.tree.layout[i].rect;
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
+    }
+
+    /// Clicks at a point (physical pixels from the window's top left), for widgets that share a
+    /// name. When names differ, [`Harness::click`] is clearer.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Two {
+    ///     second: bool,
+    /// }
+    ///
+    /// impl App for Two {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.button("Remove");
+    ///         if ui.button("Remove").clicked() {
+    ///             self.second = true;
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Two::default());
+    /// let r = h.find_all("Remove")[1];
+    /// h.click_at(r.x + r.w / 2.0, r.y + r.h / 2.0);
+    /// assert!(h.app().second);
+    /// ```
+    pub fn click_at(&mut self, x: f32, y: f32) -> &mut Self {
+        self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }])
     }
 
     /// Clicks the widget with this name (and focuses it if it can take focus).
@@ -786,7 +835,10 @@ impl<A: App> Harness<A> {
     /// assert_eq!(h.file_dialog_key(), None);
     /// ```
     pub fn cancel_file_dialog(&mut self) -> &mut Self {
-        self.file_dialog = None;
+        if let Some((key, _)) = self.file_dialog.take() {
+            self.rt.cx.file_results.insert(key, Vec::new());
+        }
+        self.main_window();
         self.send(Vec::new())
     }
 
@@ -1268,6 +1320,11 @@ pub fn example(f: impl FnOnce(&mut Ui)) {
     f(&mut Ui::new(&mut rt.cx, &mut tree));
     crate::ui::draw::layout(&mut tree, &mut rt.cx);
     crate::ui::draw::paint(&tree, &mut rt.cx, &mut rt.draw);
+}
+
+/// 部品 a の下に部品 t があるか（a 自身を含まない）
+fn under(tree: &crate::ui::Tree, a: usize, t: usize) -> bool {
+    tree.layout[a].children.iter().any(|&c| c == t || under(tree, c, t))
 }
 
 #[cfg(test)]
@@ -4128,5 +4185,55 @@ mod tests {
         assert!(h.find("Unsaved changes").is_some(), "アプリが聞く");
         h.click("Discard");
         assert!(h.is_closed(), "ui.quit で閉じる");
+    }
+
+    /// 伸ばしたタブの中身は残りの高さを取る（家計簿を書いて見つけた: 中の表の高さが 0 で行が無かった）
+    struct GrownTabs;
+
+    impl App for GrownTabs {
+        fn view(&mut self, ui: &mut Ui) {
+            let mut page = 0;
+            ui.tabs(&mut page, &[(0, "Rows")], |ui, _| {
+                ui.list(50, 20.0).grow().show(|ui, i| {
+                    ui.label(format!("Row {i}"));
+                });
+            })
+            .grow();
+        }
+    }
+
+    #[test]
+    fn grown_tabs_give_their_panel_the_remaining_height() {
+        let h = Harness::new(GrownTabs);
+        assert!(h.find("Row 10").is_some(), "中の一覧が残りの高さを取る");
+    }
+
+    /// 同じ名前のボタンとメニューの項目（ファイルの閲覧を書いて見つけた: 試験台が開いたメニューの外のボタンを押していた）
+    #[derive(Default)]
+    struct SameName {
+        from_menu: u32,
+        from_button: u32,
+    }
+
+    impl App for SameName {
+        fn view(&mut self, ui: &mut Ui) {
+            if ui.button("Delete").clicked() {
+                self.from_button += 1;
+            }
+            ui.menu_button("More", |m| {
+                if m.item("Delete").clicked() {
+                    self.from_menu += 1;
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn the_harness_clicks_what_a_user_would_see_on_top() {
+        let mut h = Harness::new(SameName::default());
+        h.click("More").click("Delete");
+        assert_eq!((h.app().from_menu, h.app().from_button), (1, 0), "メニューが開いている間はメニューの項目");
+        h.click("Delete");
+        assert_eq!((h.app().from_menu, h.app().from_button), (1, 1), "閉じていればボタン");
     }
 }

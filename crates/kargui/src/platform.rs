@@ -507,12 +507,11 @@ fn do_post(p: Post) {
             Post::FileDialog(hwnd, key, d) => {
                 let files = show_file_dialog(hwnd, &d);
                 log::event("file_dialog.answer", &format!("key={key} save={}", d.save), &format!("files={}", files.len()));
-                if !files.is_empty() {
-                    with_window(hwnd, |st| {
-                        st.rt.cx.file_results.insert(key, files);
-                        st.need_frame = true;
-                    });
-                }
+                // 取り消しは空の答え（Ui::file_dialog_cancelled が読む）
+                with_window(hwnd, |st| {
+                    st.rt.cx.file_results.insert(key, files);
+                    st.need_frame = true;
+                });
             }
             Post::Quit => {
                 if let Some(h) = with_state(|st| st.hwnd) {

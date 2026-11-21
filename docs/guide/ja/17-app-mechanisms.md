@@ -1,4 +1,4 @@
-<!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=a6efd1cf07d52d3c -->
+<!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # アプリの仕組み
 
 ## ファイルを開く・保存するダイアログ
@@ -24,7 +24,7 @@ if let Some(path) = ui.chosen_file("save") {
 # });
 ```
 
-`ui.file_dialog(キー, ..)` で頼むと、そのフレームを描いた後でダイアログを出します。選んだファイルは、後のフレームで `ui.chosen_file(キー)` から 1 回だけ受け取れます。取り消した時は何も届きません。ダイアログの間も、アプリは止まらずに描き続けます。
+`ui.file_dialog(キー, ..)` で頼むと、そのフレームを描いた後でダイアログを出します。選んだファイルは、後のフレームで `ui.chosen_file(キー)` から 1 回だけ受け取れます。利用者が取り消した時は、次のフレームで `ui.file_dialog_cancelled(キー)` が 1 回だけ true を返します。ダイアログの間も、アプリは止まらずに描き続けます。
 
 - `FileDialog::open()` は開く、`FileDialog::save()` は保存する（同じ名前のファイルがあれば、置き換えてよいかを聞く）
 - `.filter(名前, &[拡張子])` で選べる種類、`.title(..)` で題、`.file_name(..)` で始めの名前、`.folder(..)` で始めのフォルダー
