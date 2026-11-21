@@ -327,7 +327,14 @@ impl Painter<'_> {
         let line_h = laid.height.max(st.size * 1.3);
         let ty = (r.y + (r.h - line_h) / 2.0).round();
         let caret_byte = cursor + preedit.len();
-        let caret_x = laid.x_of(edit::utf16_of(&shown, caret_byte));
+        // 変換中は、IME が示した位置にキャレットを置く（無ければ変換中の文字の終わり）
+        let clauses = if preedit.is_empty() { None } else { self.cx.preedit_clauses.clone() };
+        let start16 = edit::utf16_of(&shown, cursor);
+        let n16 = preedit.encode_utf16().count();
+        let caret_x = match clauses.as_ref().and_then(|c| c.cursor).filter(|&c| c <= n16) {
+            Some(c) => laid.x_of(start16 + c),
+            None => laid.x_of(edit::utf16_of(&shown, caret_byte)),
+        };
         // キャレットが見えるように横にずらす
         let mut scroll = self.cx.edit_scroll.get(&id).copied().unwrap_or(0.0);
         if caret_x - scroll > inner.w - line {
@@ -355,16 +362,25 @@ impl Painter<'_> {
             put(self.d, &laid, x0, ty, t.text);
         }
         if !preedit.is_empty() {
-            let xa = laid.x_of(edit::utf16_of(&shown, cursor));
-            let xb = laid.x_of(edit::utf16_of(&shown, caret_byte));
-            self.d.fill(Rect::new(x0 + xa, ty + line_h - 2.0 * line, xb - xa, line), t.text, 0.0);
+            let xa = laid.x_of(start16);
+            let xb = laid.x_of(start16 + n16);
+            // 文節ごとに下線を引き、今変換している文節は太くする（文節の間は少しあける）
+            let bounds = clauses.as_ref().map(|c| c.bounds.clone()).filter(|b| b.last() == Some(&n16)).unwrap_or_else(|| vec![0, n16]);
+            let target = clauses.as_ref().and_then(|c| c.target);
+            let gap = (2.0 * self.cx.scale).round();
+            for w in bounds.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let thick = target.is_some_and(|(t0, t1)| a < t1 && t0 < b);
+                let x1 = laid.x_of(start16 + a);
+                let x2 = laid.x_of(start16 + b) - if b < n16 { gap } else { 0.0 };
+                let h = if thick { 2.0 * line } else { line };
+                self.d.fill(Rect::new(x0 + x1, ty + line_h - 2.0 * line, (x2 - x1).max(0.0), h), t.text, 0.0);
+            }
             self.cx.preedit_rect = Some(Rect::new((x0 + xa).round(), ty, xb - xa, line_h));
         }
         let caret = Rect::new((x0 + caret_x).round(), ty, (1.5 * self.cx.scale).round().max(1.0), line_h.round());
         if focused {
             // IME の問い合わせに答えるための写し。変換中の文字の境目ごとの x も覚える
-            let start16 = edit::utf16_of(&shown, cursor);
-            let n16 = preedit.encode_utf16().count();
             let preedit_xs = if preedit.is_empty() { Vec::new() } else { (0..=n16).map(|k| (x0 + laid.x_of(start16 + k)).round()).collect() };
             self.cx.ime_field = Some(ImeField { id, value: value.to_string(), cursor, anchor, preedit_xs });
             self.d.fill(caret, t.text, 0.0);

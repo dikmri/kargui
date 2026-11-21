@@ -237,7 +237,8 @@ struct State {
     composing: bool,
     high_surrogate: Option<u16>,
     last_caret: Option<IRect>,
-    ime_requests: u32,
+    /// IME の問い合わせの数（種類ごと: 文字の位置・前後の文字・再変換・再変換の範囲・その他）。変換の始めと終わりで数え直す
+    ime_requests: [u32; 5],
     /// CPU の道: 前のフレームの描く物の要約と背景の色
     summary: Summary,
     background: Color,
@@ -500,6 +501,13 @@ impl State {
     }
 
     fn ime_string(&self, kind: IME_COMPOSITION_STRING) -> Option<String> {
+        let bytes = self.ime_raw(kind)?;
+        let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+        Some(String::from_utf16_lossy(&units))
+    }
+
+    /// 変換中の文字の情報（文字・文字ごとの属性・文節の境目）をそのまま読む。IME が答えなければ None
+    fn ime_raw(&self, kind: IME_COMPOSITION_STRING) -> Option<Vec<u8>> {
         unsafe {
             let himc = ImmGetContext(self.hwnd);
             if himc.is_invalid() {
@@ -507,16 +515,29 @@ impl State {
             }
             let bytes = ImmGetCompositionStringW(himc, kind, None, 0);
             let result = if bytes > 0 {
-                let mut buf = vec![0u16; bytes as usize / 2];
+                let mut buf = vec![0u8; bytes as usize];
                 ImmGetCompositionStringW(himc, kind, Some(buf.as_mut_ptr().cast()), bytes as u32);
-                Some(String::from_utf16_lossy(&buf))
+                Some(buf)
             } else if bytes == 0 {
-                Some(String::new())
+                Some(Vec::new())
             } else {
                 None
             };
             let _ = ImmReleaseContext(self.hwnd, himc);
             result
+        }
+    }
+
+    /// 変換中の文字の中のキャレットの位置（UTF-16 の位置）。IME が答えなければ None
+    fn ime_cursor(&self) -> Option<usize> {
+        unsafe {
+            let himc = ImmGetContext(self.hwnd);
+            if himc.is_invalid() {
+                return None;
+            }
+            let pos = ImmGetCompositionStringW(himc, GCS_CURSORPOS, None, 0);
+            let _ = ImmReleaseContext(self.hwnd, himc);
+            usize::try_from(pos).ok()
         }
     }
 
@@ -731,7 +752,9 @@ impl State {
             WM_IME_STARTCOMPOSITION => {
                 self.composing = true;
                 self.last_caret = None;
-                log::event("ime.start", "", "ok");
+                // 変換の前の問い合わせ（再変換など）の数を記録して、変換の中の数え直しを始める
+                let [pos, feed, reconv, confirm, other] = std::mem::take(&mut self.ime_requests);
+                log::event("ime.start", &format!("before charpos={pos} feed={feed} reconvert={reconv} confirm={confirm} other={other}"), "ok");
                 self.need_frame = true;
                 // DefWindowProc に渡さない = IME の既定の変換中の窓を出さない（入力欄の中に描く）
                 Some(LRESULT(0))
@@ -747,24 +770,44 @@ impl State {
                 }
                 if flags & GCS_COMPSTR.0 != 0 {
                     if let Some(s) = self.ime_string(GCS_COMPSTR) {
-                        log::event("ime.preedit", &format!("text={s}"), "shown");
+                        // 文節の境目（u32 の並び）・文字ごとの属性・キャレットの位置も読む（文節ごとの下線に使う）
+                        let len16 = s.encode_utf16().count();
+                        let raw: Vec<u32> = self
+                            .ime_raw(GCS_COMPCLAUSE)
+                            .unwrap_or_default()
+                            .chunks_exact(4)
+                            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                            .collect();
+                        let bounds = ime::clause_bounds(&raw, len16);
+                        let target = ime::target_range(&self.ime_raw(GCS_COMPATTR).unwrap_or_default());
+                        let cursor = self.ime_cursor();
+                        log::event("ime.preedit", &format!("text={s}"), &format!("shown clauses={bounds:?} target={target:?} cursor={cursor:?}"));
                         self.push(Event::ImePreedit(s));
+                        self.push(Event::ImeClauses { bounds, target, cursor });
                     }
                 }
                 Some(LRESULT(0))
             }
             WM_IME_ENDCOMPOSITION => {
                 self.composing = false;
-                log::event("ime.end", &format!("requests={}", self.ime_requests), "ok");
-                self.ime_requests = 0;
+                let [pos, feed, reconv, confirm, other] = std::mem::take(&mut self.ime_requests);
+                log::event("ime.end", &format!("requests charpos={pos} feed={feed} reconvert={reconv} confirm={confirm} other={other}"), "ok");
                 self.push(Event::ImePreedit(String::new()));
                 Some(LRESULT(0))
             }
             WM_IME_CHAR => Some(LRESULT(0)),
             WM_IME_REQUEST => {
                 let imr = wp.0 as u32;
-                self.ime_requests += 1;
-                let log_this = self.ime_requests <= IME_REQUEST_LOG_MAX;
+                // 種類ごとに数える。再変換の 2 つは必ず記録し、ほかは種類ごとに最初の数件だけ記録する
+                let kind = match imr {
+                    IMR_QUERYCHARPOSITION => 0,
+                    IMR_DOCUMENTFEED => 1,
+                    IMR_RECONVERTSTRING => 2,
+                    IMR_CONFIRMRECONVERTSTRING => 3,
+                    _ => 4,
+                };
+                self.ime_requests[kind] += 1;
+                let log_this = kind == 2 || kind == 3 || self.ime_requests[kind] <= IME_REQUEST_LOG_MAX;
                 if imr == IMR_QUERYCHARPOSITION && lp.0 != 0 {
                     let info = unsafe { &mut *(lp.0 as *mut IMECHARPOSITION) };
                     let ok = self.answer_char_position(info);
@@ -980,7 +1023,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             composing: false,
             high_surrogate: None,
             last_caret: None,
-            ime_requests: 0,
+            ime_requests: [0; 5],
             summary: Summary::default(),
             background: [0.0; 4],
             dark_title: None,

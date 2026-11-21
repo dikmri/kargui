@@ -35,6 +35,33 @@ pub(crate) struct Reconvert {
     pub target: (usize, usize),
 }
 
+/// 変換中の文字の文節（位置は変換中の文字の中の UTF-16 の位置）
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Clauses {
+    /// 文節の境目。先頭は 0、最後は文字数
+    pub bounds: Vec<usize>,
+    /// 今変換している文節（始まり, 終わり）
+    pub target: Option<(usize, usize)>,
+    /// キャレットの位置（IME が示した位置。無ければ変換中の文字の終わり）
+    pub cursor: Option<usize>,
+}
+
+/// GCS_COMPATTR（文字ごとの属性）から、今変換している文節の範囲（始まり, 終わり）を取り出す。
+/// 属性 1（ATTR_TARGET_CONVERTED）と 3（ATTR_TARGET_NOTCONVERTED）が変換中の文節
+pub(crate) fn target_range(attrs: &[u8]) -> Option<(usize, usize)> {
+    let is_target = |a: &u8| *a == 1 || *a == 3;
+    let start = attrs.iter().position(is_target)?;
+    let end = attrs.iter().rposition(is_target)? + 1;
+    Some((start, end))
+}
+
+/// GCS_COMPCLAUSE（境目の並び）を確かめる。先頭が 0 で、増え続け、最後が文字数なら使い、そうでなければ全体を 1 つの文節にする
+pub(crate) fn clause_bounds(raw: &[u32], len: usize) -> Vec<usize> {
+    let v: Vec<usize> = raw.iter().map(|&x| x as usize).collect();
+    let ok = v.len() >= 2 && v[0] == 0 && *v.last().unwrap() == len && v.windows(2).all(|w| w[0] < w[1]);
+    if ok { v } else { vec![0, len] }
+}
+
 /// RECONVERTSTRING の頭の大きさ（DWORD が 8 個）
 pub(crate) const HEADER: usize = 32;
 
@@ -81,6 +108,25 @@ pub(crate) fn confirmed_range(value: &str, comp_offset_bytes: u32, comp_len: u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_range_finds_the_clause_being_converted() {
+        // 「明日は|東京に|行く」で 2 つ目の文節を変換中。属性 2 = 変換済み、1 = 変換中の文節
+        assert_eq!(target_range(&[2, 2, 2, 1, 1, 1, 2, 2]), Some((3, 6)));
+        // 変換の前（かなのまま、属性 0）は変換中の文節が無い
+        assert_eq!(target_range(&[0, 0, 0]), None);
+        // まだ変換していない文節を選んでいる（属性 3）
+        assert_eq!(target_range(&[3, 3, 0]), Some((0, 2)));
+    }
+
+    #[test]
+    fn clause_bounds_fall_back_to_one_clause_when_broken() {
+        assert_eq!(clause_bounds(&[0, 3, 6, 8], 8), vec![0, 3, 6, 8]);
+        // 終わりが文字数と合わない、増えていない、空 → 全体を 1 つの文節にする
+        assert_eq!(clause_bounds(&[0, 3, 9], 8), vec![0, 8]);
+        assert_eq!(clause_bounds(&[0, 3, 3, 8], 8), vec![0, 8]);
+        assert_eq!(clause_bounds(&[], 4), vec![0, 4]);
+    }
 
     fn field(value: &str, cursor: usize, anchor: usize) -> ImeField {
         ImeField { id: Id(1), value: value.into(), cursor, anchor, preedit_xs: Vec::new() }

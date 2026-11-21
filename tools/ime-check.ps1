@@ -5,6 +5,8 @@
 #   (3) 変換中の文字が入力欄の中に出る（記録の ime.preedit と写真）
 #   (4) 候補の窓が文字の位置に出る（IME に答えた文字の位置と、新しく出た窓の位置を比べる）
 #   (5) 変換の途中で焦点を移しても、変換中の文字が消えない（元の入力欄に確定される）
+#   (6) 再変換: 確定した文字を選んで変換キーを押すと、変換し直せる
+#   あわせて、変換中の文字の文節（区切りと変換中の文節）が IME から届いているかを数える
 # 注意: キー入力は前面の窓に届く。走らせている間（約 20 秒）はキーボードとマウスに触らない。
 #   タスク帳が前面でなくなったら、その時点で止める（ほかの窓に文字を打たないため）。
 # 使い方: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ime-check.ps1 [-Pos -1410,200]
@@ -31,7 +33,7 @@ public static class K {
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
-  [DllImport("user32.dll")] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
   delegate bool EnumProc(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
@@ -105,6 +107,23 @@ Tap 0x0D; Start-Sleep -Milliseconds 400   # 確定
 $addsAfterCommit = LogCount 'event=add '
 Tap 0x0D; Start-Sleep -Milliseconds 400   # 追加
 $addsAfterSubmit = LogCount 'event=add '
+# (6) 再変換: 「牛乳を買う」を確定し、Home と Shift+→ 2 回で「牛乳」を選んで変換キーを押す
+TypeRoma 'gyuunyuuwokau'; Start-Sleep -Milliseconds 300
+Tap 0x20; Start-Sleep -Milliseconds 500   # 変換
+Tap 0x0D; Start-Sleep -Milliseconds 400   # 確定（まだ追加しない）
+Tap 0x24                                   # Home
+Guard; [K]::Key(0x10, $false); Tap 0x27; Tap 0x27; [K]::Key(0x10, $true)   # Shift+→ を 2 回
+Start-Sleep -Milliseconds 300
+$startsBefore = LogCount 'event=ime.start'
+Tap 0x1C; Start-Sleep -Milliseconds 800   # 変換キー（VK_CONVERT）
+Shot '4-reconvert'
+$reconvStarted = (LogCount 'event=ime.start') -gt $startsBefore
+Tap 0x20; Start-Sleep -Milliseconds 500   # 次の候補
+Tap 0x0D; Start-Sleep -Milliseconds 400   # 確定
+Shot '5-after-reconvert'
+# 欄を空にする（Ctrl+A と Delete）
+Guard; [K]::Key(0x11, $false); Tap 0x41; [K]::Key(0x11, $true); Tap 0x2E
+Start-Sleep -Milliseconds 300
 # (5) 変換の途中で絞り込みの欄（130,112）を押す
 TypeRoma 'shiryou'; Start-Sleep -Milliseconds 400
 Click 130 112
@@ -127,6 +146,10 @@ $add = @($lines | Where-Object { $_ -match 'event=add args="text=' } | Select-Ob
 $pos = @($lines | Where-Object { $_ -match 'imr=QUERYCHARPOSITION' -and $_ -match 'answered=true' })
 $preedit = @($lines | Where-Object { $_ -match 'event=ime.preedit' })
 $focusCommit = @($lines | Where-Object { $_ -match 'event=ime.commit_on_focus' })
+$reconv = @($lines | Where-Object { $_ -match 'imr=RECONVERTSTRING' })
+$confirm = @($lines | Where-Object { $_ -match 'imr=CONFIRMRECONVERTSTRING' })
+$split = @($preedit | Where-Object { $_ -match 'clauses=\[0, \d+, ' })
+$targeted = @($preedit | Where-Object { $_ -match 'target=Some' })
 $out = @()
 $out += "(1) 確定の Enter で追加されない: 確定の後の追加 $addsAfterCommit 回、次の Enter の後 $addsAfterSubmit 回 → " + $(if ($addsAfterCommit -eq 0 -and $addsAfterSubmit -eq 1) { '合格' } else { '不合格' })
 $out += "    確定: $commit"
@@ -136,5 +159,8 @@ $out += "(3) 変換中の文字: ime.preedit $($preedit.Count) 件（写真 1-co
 $out += "(4) 文字の位置の答え $($pos.Count) 件。最後: $($pos | Select-Object -Last 1)"
 $out += "    候補の窓で新しく出た窓: " + $(if ($new.Count) { $new -join ' / ' } else { 'なし' }) + "（写真 2-candidates.png）"
 $out += "(5) 焦点を移した時の確定: " + $(if ($focusCommit.Count) { "$($focusCommit[0]) → 合格" } else { 'ime.commit_on_focus が無い → 不合格' })
+$out += "(6) 再変換: 変換が始まった=$reconvStarted、RECONVERTSTRING $($reconv.Count) 件、範囲の確定 $($confirm.Count) 件 → " + $(if ($reconvStarted -and $confirm.Count -gt 0) { '合格' } else { '不合格' })
+$reconv + $confirm | Select-Object -First 6 | ForEach-Object { $out += "    $_" }
+$out += "文節: 2 つ以上に分かれて届いた ime.preedit $($split.Count) 件、変換中の文節があった $($targeted.Count) 件（写真 2-candidates.png で太い下線を見る）"
 $out | Set-Content -Path (Join-Path $OutDir 'summary.txt') -Encoding UTF8
 $out

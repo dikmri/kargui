@@ -11,7 +11,7 @@ use crate::log;
 use crate::text::Text;
 use crate::theme::Theme;
 use crate::ui::Id;
-use crate::ime::ImeField;
+use crate::ime::{Clauses, ImeField};
 use crate::ui::edit::EditState;
 
 /// クリップボードの読み書き（窓では OS のもの、試験台では手元の文字列）
@@ -118,6 +118,8 @@ pub(crate) struct Context {
     pub pointer_text: Option<(Id, f32, f32, bool)>,
     /// 変換中の文字（焦点のある入力欄の中に描く）
     pub preedit: String,
+    /// 変換中の文字の文節（IME が知らせた時だけ）
+    pub preedit_clauses: Option<Clauses>,
     /// 焦点が移る前に、元の入力欄へ確定する変換中の文字（入力欄の id と文字）
     pub pending_commit: Option<(Id, String)>,
     /// IME の変換を取り消すように頼む（変換中の文字をこちらで確定した時）。窓の処理が読んで戻す
@@ -156,6 +158,7 @@ impl Context {
             keys: Vec::new(),
             pointer_text: None,
             preedit: String::new(),
+            preedit_clauses: None,
             pending_commit: None,
             ime_cancel: false,
             want_frame: false,
@@ -320,6 +323,13 @@ impl Context {
                         self.keys.push(Event::ImePreedit(s.clone()));
                     }
                     self.preedit = s;
+                    // 文節の区切りは、新しい変換中の文字のすぐ後に届く。古い区切りは捨てる
+                    self.preedit_clauses = None;
+                }
+                Event::ImeClauses { bounds, target, cursor } => {
+                    if !self.preedit.is_empty() {
+                        self.preedit_clauses = Some(Clauses { bounds, target, cursor });
+                    }
                 }
                 e @ (Event::Key { .. } | Event::Char(_) | Event::ImeCommit(_) | Event::ImeSelect { .. }) => {
                     if self.focus.is_some_and(|f| self.is_text_input(f)) {
@@ -357,6 +367,7 @@ impl Context {
         }
         let Some(f) = self.focus.filter(|&f| self.is_text_input(f)) else { return };
         let t = std::mem::take(&mut self.preedit);
+        self.preedit_clauses = None;
         log::event("ime.commit_on_focus", &format!("why={why} text={t}"), "cancel_ime");
         self.pending_commit = Some((f, t));
         self.ime_cancel = true;

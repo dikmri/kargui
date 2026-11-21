@@ -598,6 +598,37 @@ mod tests {
     }
 
     #[test]
+    fn the_clause_being_converted_gets_a_thick_underline() {
+        // 作者の手の確かめ（段階 2）の写真で、どの文節を変換しているかが入力欄から分からなかった
+        let mut h = book(0);
+        h.click("New item");
+        let clauses = Event::ImeClauses { bounds: vec![0, 3, 6, 8], target: Some((3, 6)), cursor: Some(6) };
+        h.send(vec![Event::ImePreedit("明日は東京に行く".into()), clauses]);
+        let f = h.rt.cx.ime_field.clone().unwrap();
+        let p = h.rt.cx.preedit_rect.unwrap();
+        let img = h.render();
+        // 文節の真ん中の列で、下線のあたり（縦 6 画素）の暗さを合計して比べる。太い下線はおよそ 2 倍暗い
+        let bottom = p.bottom().round() as u32;
+        let dark = |x: f32| -> u32 {
+            (bottom - 4..bottom + 2)
+                .map(|y| {
+                    let c = img.rgb(x as u32, y);
+                    765 - (((c >> 16) & 0xff) + ((c >> 8) & 0xff) + (c & 0xff))
+                })
+                .sum()
+        };
+        let mid = |a: usize, b: usize| (f.preedit_xs[a] + f.preedit_xs[b]) / 2.0;
+        let (first, target, last) = (dark(mid(0, 3)), dark(mid(3, 6)), dark(mid(6, 8)));
+        assert!(first > 300 && last > 300, "ほかの文節にも下線がある: {first} {last}");
+        assert!(target * 2 > first * 3 && target * 2 > last * 3, "変換中の文節 {target} / ほかの文節 {first} {last}");
+        // キャレットは IME が示した位置（変換中の文節の終わり）
+        assert_eq!(h.rt.cx.caret.unwrap().x, f.preedit_xs[6]);
+        // 新しい変換中の文字が届くと、前の文節の区切りは捨てる
+        h.ime_compose("あ");
+        assert!(h.rt.cx.preedit_clauses.is_none());
+    }
+
+    #[test]
     fn ime_field_remembers_where_each_composing_character_is() {
         let mut h = book(0);
         h.click("New item").type_text("ab");

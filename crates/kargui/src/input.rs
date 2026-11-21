@@ -77,6 +77,8 @@ pub(crate) enum Event {
     Char(char),
     /// 変換中の文字（空なら変換が終わった）
     ImePreedit(String),
+    /// 変換中の文字の文節と、今変換している文節（ImePreedit のすぐ後に届く）
+    ImeClauses { bounds: Vec<usize>, target: Option<(usize, usize)>, cursor: Option<usize> },
     /// 確定した変換の結果
     ImeCommit(String),
     /// 再変換で IME が決めた範囲を選ぶ（入力欄の文字の UTF-8 の位置）
