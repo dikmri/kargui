@@ -88,6 +88,8 @@ FW = {
         lock=None,
     ),
 }
+# 説明と kargui を直した後の版（AI の試験で見つけた所を直した後に、同じ課題で回し直す）
+FW['kargui2'] = dict(FW['kargui'])
 
 
 def write(path, text, bom=False):
