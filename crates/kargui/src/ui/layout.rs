@@ -126,7 +126,7 @@ fn fixed_or(size: Size, measured: f32) -> f32 {
     }
 }
 
-fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
+pub(crate) fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
     let children = nodes[i].children.clone();
     let sizes: Vec<(f32, f32)> = children.iter().map(|&c| measure(nodes, c)).collect();
     let n = &nodes[i];
@@ -186,7 +186,7 @@ fn cross(size: Size, measured: f32, avail: f32, align: Align) -> (f32, f32) {
     (at, len)
 }
 
-fn arrange(nodes: &mut [LayoutNode], i: usize, rect: Rect) {
+pub(crate) fn arrange(nodes: &mut [LayoutNode], i: usize, rect: Rect) {
     nodes[i].rect = rect;
     let n = nodes[i].clone();
     let inner = Rect::new(rect.x + n.pad.0, rect.y + n.pad.1, (rect.w - 2.0 * n.pad.0).max(0.0), (rect.h - 2.0 * n.pad.1).max(0.0));
@@ -240,9 +240,63 @@ pub(crate) fn layout(nodes: &mut [LayoutNode], root: usize, rect: Rect) {
     arrange(nodes, root, rect);
 }
 
+/// 出す元（anchor）の近くに w×h の重ねる物を置く場所。下に入れば下、入らなければ上、どちらも入らなければ
+/// 広い方に出して窓の中に寄せる。横は出す元の左端にそろえ、窓からはみ出すなら内側へ寄せる。
+/// margin は窓の端との間、gap は出す元との間（物理ピクセル）
+pub(crate) fn place_near(anchor: Rect, w: f32, h: f32, window: Rect, margin: f32, gap: f32) -> Rect {
+    let (top, bottom) = (window.y + margin, window.bottom() - margin);
+    let below = anchor.bottom() + gap;
+    let above = anchor.y - gap - h;
+    let y = if below + h <= bottom {
+        below
+    } else if above >= top {
+        above
+    } else if bottom - anchor.bottom() >= anchor.y - top {
+        below
+    } else {
+        above
+    };
+    let y = y.min(bottom - h).max(top);
+    let x = anchor.x.min(window.right() - margin - w).max(window.x + margin);
+    Rect::new(x.round(), y.round(), w, h)
+}
+
+/// 窓の真ん中に w×h を置く場所
+pub(crate) fn place_center(w: f32, h: f32, window: Rect) -> Rect {
+    Rect::new((window.x + (window.w - w) / 2.0).max(window.x).round(), (window.y + (window.h - h) / 2.0).max(window.y).round(), w, h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placing_near_an_anchor_prefers_below_then_above_and_stays_inside() {
+        let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+        // 下に入る
+        let r = place_near(Rect::new(20.0, 40.0, 80.0, 30.0), 120.0, 100.0, window, 8.0, 4.0);
+        assert_eq!((r.x, r.y), (20.0, 74.0));
+        // 下に入らないので上
+        let r = place_near(Rect::new(20.0, 220.0, 80.0, 30.0), 120.0, 100.0, window, 8.0, 4.0);
+        assert_eq!((r.x, r.y), (20.0, 116.0));
+        // 右の端からはみ出すので内側へ
+        let r = place_near(Rect::new(350.0, 40.0, 40.0, 30.0), 120.0, 100.0, window, 8.0, 4.0);
+        assert_eq!(r.x, 400.0 - 8.0 - 120.0);
+        // どちらにも入らない: 広い方（上）に出して、窓の中に収める
+        let r = place_near(Rect::new(20.0, 200.0, 80.0, 30.0), 120.0, 250.0, window, 8.0, 4.0);
+        assert_eq!(r.y, 8.0);
+        // 窓より大きい物は上の端から
+        let r = place_near(Rect::new(20.0, 20.0, 80.0, 30.0), 120.0, 400.0, window, 8.0, 4.0);
+        assert_eq!(r.y, 8.0);
+    }
+
+    #[test]
+    fn placing_in_the_center() {
+        let r = place_center(100.0, 50.0, Rect::new(0.0, 0.0, 400.0, 300.0));
+        assert_eq!((r.x, r.y), (150.0, 125.0));
+        let r = place_center(500.0, 50.0, Rect::new(0.0, 0.0, 400.0, 300.0));
+        assert_eq!(r.x, 0.0);
+    }
 
     fn leaf(w: f32, h: f32) -> LayoutNode {
         let mut n = LayoutNode::new(Dir::Leaf);

@@ -134,6 +134,49 @@ ui.enabled(app.notify, |ui| {
 });
 ```
 
+### `pub fn popup(&mut self, open: &mut bool, anchor: Id, f: impl FnOnce(&mut Ui))`
+
+A box shown next to `anchor` (usually the button that opens it) while `*open` is true, above
+everything else. The keyboard focus moves into it when it opens. Clicking outside it or
+pressing Escape sets `*open` to false; that click does not reach the widget underneath. When
+it closes, the focus goes back to where it was. Clicking `anchor` again is left to your code
+(toggle `*open`). It opens below `anchor`, or above it when there is no room below.
+
+```
+let more = ui.button("More");
+let anchor = more.id();
+if more.clicked() {
+    open = !open;
+}
+ui.popup(&mut open, anchor, |ui| {
+    ui.button("Rename");
+    ui.button("Delete");
+});
+```
+
+### `pub fn dialog(&mut self, open: &mut bool, title: impl Into<String>, f: impl FnOnce(&mut Ui))`
+
+A modal dialog with a title, in the middle of the window while `*open` is true. The rest of
+the window is dimmed and cannot be used; Tab moves only between the dialog's widgets, and the
+focus moves into it when it opens. Escape sets `*open` to false. Close it from your code (for
+example on OK or Cancel) by setting `*open` to false after this call; the focus then goes
+back to where it was. Screen readers announce it as a dialog with the title as its name.
+
+```
+let mut close = false;
+ui.dialog(&mut open, "Rename", |ui| {
+    ui.text_input(&mut name).hint("New name");
+    ui.row(|ui| {
+        ui.fill();
+        close |= ui.button("OK").primary().clicked();
+        close |= ui.button("Cancel").clicked();
+    });
+});
+if close {
+    open = false;
+}
+```
+
 ### `pub fn fill(&mut self)`
 
 Empty space that takes the rest of the row (or column), pushing the following widgets to the end.
@@ -455,6 +498,19 @@ let toolbar = ui.row(|ui| {
 });
 let id = toolbar.id();
 assert_eq!(id, id);
+```
+
+### `pub fn tooltip(self, text: impl Into<String>) -> Self`
+
+Shows `text` in a small box below the widget when the pointer rests on it for half a second
+or the keyboard moves the focus to it, and gives it to screen readers as the widget's
+description. Escape and pressing the widget hide it.
+
+```
+ui.row(|ui| {
+    ui.label("Status");
+})
+.tooltip("Shows whether the last save worked");
 ```
 
 ### `pub fn scroll_into_view(self) -> Self`

@@ -4,13 +4,14 @@
 //! 入力はビューの 1 回目（入力を渡す回）で部品に届き、2 回目（描く回）は入力なしで描く。
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::geom::Rect;
 use crate::input::{A11yAction, Event, Key, Mods};
 use crate::log;
 use crate::text::Text;
 use crate::theme::Theme;
-use crate::ui::Id;
+use crate::ui::{Id, OverlayKind};
 use crate::ime::{Clauses, ImeField};
 use crate::ui::edit::EditState;
 
@@ -47,6 +48,29 @@ pub(crate) struct Hit {
     /// 押せる。押せない部品も当たりには入れ、下の部品へクリックが抜けないようにする
     pub enabled: bool,
 }
+
+/// 前のフレームで重ねて出した物（閉じる・焦点を戻す・Tab を閉じ込めるのに使う）
+#[derive(Clone, Debug)]
+pub(crate) struct OverlayInfo {
+    pub id: Id,
+    pub anchor: Option<Id>,
+    pub kind: OverlayKind,
+    pub rect: Rect,
+    /// 中の焦点を持てる部品（Tab の順）
+    pub focus: Vec<Id>,
+}
+
+/// ツールチップを出すか
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TipState {
+    Hidden,
+    /// ポインターが乗ってから、まだ時間がたっていない
+    Waiting,
+    Shown,
+}
+
+/// ポインターが止まってからツールチップを出すまでの時間
+pub(crate) const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
 
 /// 点 (x, y) から四角までの距離の 2 乗（中なら 0）
 fn distance2(r: &Rect, x: f32, y: f32) -> f32 {
@@ -93,6 +117,8 @@ pub(crate) struct Prev {
     pub items: HashMap<Id, (Id, usize)>,
     /// 押せない部品（読み上げソフトから届いた操作を捨てるため）
     pub disabled: HashSet<Id>,
+    /// 重ねて出した物（描いた順。後ろほど上）
+    pub overlays: Vec<OverlayInfo>,
 }
 
 pub(crate) struct Context {
@@ -111,6 +137,12 @@ pub(crate) struct Context {
     pub scrolls: HashMap<Id, f32>,
     pub focus: Option<Id>,
     pub hover: Option<Id>,
+    /// ポインターが今の部品に乗った時刻（ツールチップを出すまでの時間を数える）
+    pub hover_since: Option<Instant>,
+    /// Esc や押したことで消したツールチップの部品（ポインターか焦点が別の部品へ移るまで出さない）
+    pub tooltip_hidden: Option<Id>,
+    /// 重ねて出した物 → 開く前に焦点があった部品（閉じた時に戻す）
+    pub overlay_return: HashMap<Id, Id>,
     pub pressed: Option<Id>,
     /// ポインターが乗っているスクロールの棒（一覧の id）
     pub bar_hover: Option<Id>,
@@ -120,6 +152,8 @@ pub(crate) struct Context {
     pub focus_visible: bool,
     // ---- この回の入力 ----
     pub clicked: Option<Id>,
+    /// 閉じる重ねた物（外を押した・Esc）。Ui::popup と Ui::dialog が open を false にする
+    pub closing: HashSet<Id>,
     /// 焦点のある入力欄へ届ける入力
     pub keys: Vec<Event>,
     /// 入力欄の中のクリック（場所と Shift）
@@ -164,11 +198,15 @@ impl Context {
             scrolls: HashMap::new(),
             focus: None,
             hover: None,
+            hover_since: None,
+            tooltip_hidden: None,
+            overlay_return: HashMap::new(),
             pressed: None,
             bar_hover: None,
             drag: None,
             focus_visible: false,
             clicked: None,
+            closing: HashSet::new(),
             keys: Vec::new(),
             pointer_text: None,
             pointer: None,
@@ -192,6 +230,42 @@ impl Context {
             self.dark = dark;
             self.theme = if dark { Theme::dark() } else { Theme::light() };
         }
+    }
+
+    /// ポインターが乗っている部品を変える（変わった時だけ、乗った時刻を覚え直す）
+    pub fn set_hover(&mut self, id: Option<Id>) {
+        if id != self.hover {
+            self.hover = id;
+            self.hover_since = id.map(|_| Instant::now());
+            self.tooltip_hidden = None;
+        }
+    }
+
+    /// id の部品のツールチップを出すか。キーボードで焦点が来た時はすぐ、ポインターは止まってから
+    pub fn tip_state(&self, id: Id) -> TipState {
+        if self.tooltip_hidden == Some(id) || self.pressed == Some(id) {
+            TipState::Hidden
+        } else if self.focus_visible && self.focus == Some(id) {
+            TipState::Shown
+        } else if self.hover == Some(id) {
+            match self.hover_since {
+                Some(t) if t.elapsed() >= TOOLTIP_DELAY => TipState::Shown,
+                Some(_) => TipState::Waiting,
+                None => TipState::Hidden,
+            }
+        } else {
+            TipState::Hidden
+        }
+    }
+
+    /// 一番上の、外を押すと閉じる浮き出し（その上にダイアログがあれば無し）
+    fn top_popup(&self) -> Option<&OverlayInfo> {
+        self.prev.overlays.iter().rev().find(|o| o.kind != OverlayKind::Tooltip).filter(|o| o.kind == OverlayKind::Popup)
+    }
+
+    /// 一番上のダイアログ（焦点を中に閉じ込める）
+    fn top_dialog(&self) -> Option<&OverlayInfo> {
+        self.prev.overlays.iter().rev().find(|o| o.kind == OverlayKind::Dialog)
     }
 
     /// 前のフレームで (x, y) にあった、押せる部品（上に重なっている物）。
@@ -253,7 +327,10 @@ impl Context {
     }
 
     fn move_focus(&mut self, back: bool) {
-        let order = &self.prev.focus_order;
+        let order = match self.top_dialog() {
+            Some(d) => &d.focus,
+            None => &self.prev.focus_order,
+        };
         if order.is_empty() {
             return;
         }
@@ -273,6 +350,18 @@ impl Context {
             match e {
                 Event::PointerDown { x, y, shift } => {
                     self.commit_preedit("pointer");
+                    // 押した部品のツールチップは消す
+                    self.tooltip_hidden = self.hover;
+                    // 浮き出しの外（出す元の部品も除く）を押したら閉じる。そのクリックは下の部品に届けない
+                    if let Some(o) = self.top_popup() {
+                        let on_anchor = o.anchor.and_then(|a| self.prev.hits.iter().find(|h| h.id == a)).is_some_and(|h| h.rect.contains(x, y));
+                        if !o.rect.contains(x, y) && !on_anchor {
+                            log::event("popup.close", &format!("x={x} y={y} why=outside"), &format!("id={:x}", o.id.0));
+                            self.closing.insert(o.id);
+                            self.pressed = None;
+                            continue;
+                        }
+                    }
                     // 部品の本来の範囲が先。次にスクロールの棒、最後に部品の当たりの余白
                     if let Some(l) = self.scrollbar_at(x, y).cloned() {
                         self.pressed = None;
@@ -284,7 +373,11 @@ impl Context {
                     self.pressed = hit.as_ref().map(|h| h.id);
                     self.pointer = Some((x, y));
                     self.focus_visible = false;
-                    self.focus = hit.as_ref().filter(|h| h.focusable).map(|h| h.id);
+                    // ダイアログや浮き出しの空いた所を押しても、焦点は中に残す
+                    let in_layer = self.top_dialog().is_some() || self.prev.overlays.iter().any(|o| o.kind != OverlayKind::Tooltip && o.rect.contains(x, y));
+                    if hit.is_some() || !in_layer {
+                        self.focus = hit.as_ref().filter(|h| h.focusable).map(|h| h.id);
+                    }
                     if let Some(h) = hit.filter(|h| h.text_input) {
                         self.pointer_text = Some((h.id, x, y, shift));
                     }
@@ -315,17 +408,39 @@ impl Context {
                     }
                 }
                 Event::Wheel { x, y, dy } => {
+                    // ダイアログの後ろはスクロールしない
+                    if self.top_dialog().is_some_and(|d| !d.rect.contains(x, y)) {
+                        continue;
+                    }
                     if let Some(l) = self.prev.lists.iter().rev().find(|l| l.rect.contains(x, y)) {
                         let max = ((l.content_h - l.rect.h) / self.scale).max(0.0);
                         let v = self.scrolls.entry(l.id).or_insert(0.0);
                         *v = (*v + dy).clamp(0.0, max);
                     }
                 }
+                // Esc は一番上の重ねた物を閉じる（ツールチップは消すだけ）
+                Event::Key { key: Key::Escape, .. } if !self.prev.overlays.is_empty() => {
+                    let o = self.prev.overlays.last().unwrap().clone();
+                    if o.kind == OverlayKind::Tooltip {
+                        self.tooltip_hidden = o.anchor;
+                    } else {
+                        self.commit_preedit("escape");
+                        log::event("overlay.close", "why=escape", &format!("id={:x} kind={:?}", o.id.0, o.kind));
+                        self.closing.insert(o.id);
+                    }
+                }
                 Event::Key { key: Key::Tab, mods } => {
                     self.commit_preedit("tab");
                     self.focus_visible = true;
+                    self.tooltip_hidden = None;
                     self.move_focus(mods.shift);
                     self.reveal_focus();
+                    // Tab で浮き出しの外へ出たら閉じる
+                    if let Some(o) = self.top_popup() {
+                        if !self.focus.is_some_and(|f| o.focus.contains(&f)) {
+                            self.closing.insert(o.id);
+                        }
+                    }
                 }
                 Event::Key { key: Key::Enter | Key::Space, mods: Mods { ctrl: false, alt: false, .. } }
                     if self.focus.is_some_and(|f| !self.is_text_input(f)) =>
@@ -413,6 +528,7 @@ impl Context {
     pub fn end_input(&mut self) {
         self.pending_commit = None;
         self.clicked = None;
+        self.closing.clear();
         self.keys.clear();
         self.pointer_text = None;
         self.released = None;

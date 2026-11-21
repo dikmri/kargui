@@ -234,6 +234,71 @@ fn shots() -> Vec<Shot> {
             },
             setup: no_setup,
         },
+        Shot {
+            name: "disabled",
+            size: (520.0, 130.0),
+            view: |ui| {
+                ui.checkbox(&mut false, "Notifications");
+                ui.enabled(false, |ui| {
+                    ui.checkbox(&mut true, "Play a sound");
+                    ui.row(|ui| {
+                        ui.slider(&mut 6, 0..=10).label("Volume");
+                        ui.button("Test").primary();
+                        ui.text_input(&mut String::new()).hint("Sound file");
+                    });
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "popup",
+            size: (320.0, 200.0),
+            view: |ui| {
+                ui.row(|ui| {
+                    let more = ui.button("More");
+                    let anchor = more.id();
+                    ui.popup(&mut true, anchor, |ui| {
+                        ui.button("Rename");
+                        ui.button("Duplicate");
+                        ui.button("Delete");
+                    });
+                    ui.label("report-2026.pdf");
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "dialog",
+            size: (440.0, 240.0),
+            view: |ui| {
+                ui.heading("Files");
+                ui.label("report-2026.pdf");
+                ui.button("Rename");
+                ui.dialog(&mut true, "Rename", |ui| {
+                    ui.text_input(&mut String::from("report-2026.pdf")).width(Size::Fixed(260.0));
+                    ui.row(|ui| {
+                        ui.fill();
+                        ui.button("OK").primary();
+                        ui.button("Cancel");
+                    });
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "tooltip",
+            size: (320.0, 100.0),
+            view: |ui| {
+                ui.row(|ui| {
+                    ui.button("Save").tooltip("Saves the file (Ctrl+S)");
+                    ui.button("Share");
+                });
+            },
+            // キーボードで焦点を当てると、すぐに出る
+            setup: |h| {
+                h.press(kargui::Key::Tab);
+            },
+        },
     ]
 }
 

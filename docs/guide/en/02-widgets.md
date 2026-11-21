@@ -1,5 +1,5 @@
-<!-- source: ja/02-widgets.md fnv=db57685494c09b95 -->
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Toggled::changed Toggled::strike Slider::changed sig=88f7d390ba1c570d -->
+<!-- source: ja/02-widgets.md fnv=77999a55f8f9e50c -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Toggled::changed Toggled::strike Slider::changed sig=0af435d8eecb0df6 -->
 # Widgets
 
 Widgets are created with methods on `ui`. Widgets that change a value take the state with `&mut`; ask the return value what happened.
@@ -113,3 +113,45 @@ if ui.button("Send").enabled(!name.is_empty()).clicked() {
 ```
 
 A widget that has the focus loses it when it becomes disabled. `ui.enabled` does not create a row or column, so the widgets inside are placed in the current row (or column) as they are.
+
+## Layers
+
+Create a popup next to a button with `ui.popup(&mut is_open, anchor_id, |ui| ..)` and a confirmation in the middle of the window with `ui.dialog(&mut is_open, title, |ui| ..)`. Both move the focus to their first widget when they open, close with Escape, and give the focus back to where it was when they close. A popup also closes when you click outside it (that click does not reach the widget underneath). While a dialog is open, the widgets behind it cannot be used and Tab moves only inside the dialog.
+
+```rust
+# let (mut menu, mut confirm) = (false, false);
+# kargui::test::example(|ui| {
+let more = ui.button("More");
+let anchor = more.id();
+if more.clicked() {
+    menu = !menu;
+}
+ui.popup(&mut menu, anchor, |ui| {
+    if ui.button("Delete").clicked() {
+        confirm = true;
+    }
+});
+let mut close = false;
+ui.dialog(&mut confirm, "Delete this?", |ui| {
+    ui.label("This cannot be undone.");
+    ui.row(|ui| {
+        ui.fill();
+        close |= ui.button("Delete").primary().clicked();
+        close |= ui.button("Keep").clicked();
+    });
+});
+if close {
+    confirm = false;
+}
+# });
+```
+
+A popup opens below its anchor, or above it when there is no room below. Layers are drawn inside the window, so they never extend past its edges.
+
+Give a widget a description with `.tooltip("text")`. It appears below the widget when the pointer rests on it for half a second or the keyboard moves the focus to it, and screen readers read it as the widget's description.
+
+```rust
+# kargui::test::example(|ui| {
+ui.button("Save").tooltip("Saves the current content to the file");
+# });
+```

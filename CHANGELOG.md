@@ -6,6 +6,13 @@
   `Button::enabled(bool)` disables one button. Disabled widgets are drawn dimmed, ignore the
   pointer, the keyboard and screen-reader actions, are skipped by Tab, lose the focus, and are
   announced as unavailable. `Harness::enabled(name)` tells whether a widget can be used.
+- Layers drawn above everything else, inside the window: `Ui::popup` (next to an anchor widget,
+  below it or above it when there is no room; closes on a click outside or Escape), `Ui::dialog`
+  (modal, in the middle of the window: dims and blocks the rest, keeps Tab inside, closes on
+  Escape) and `.tooltip(text)` on any widget (shown after the pointer rests for half a second or
+  when the keyboard focuses the widget; also the widget's screen-reader description). Opening moves
+  the focus inside; closing gives it back. Screen readers see them as a pane, a modal dialog with
+  its title and a tooltip.
 - Linux and macOS (preparation): kargui now builds on them, and its tests (widgets, layout,
   drawing, the test harness) pass there. Text on these systems is laid out with parley and drawn
   with swash; Windows keeps DirectWrite and gains no dependencies. Windows cannot be opened there

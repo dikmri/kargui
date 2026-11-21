@@ -4,10 +4,10 @@ use crate::geom::{Color, IRect, Rect};
 use crate::paint::{DrawList, Scroll};
 use crate::text::{Laid, TextStyle};
 use crate::ime::ImeField;
-use crate::ui::context::{Context, Hit, ListInfo, Prev};
+use crate::ui::context::{Context, Hit, ListInfo, OverlayInfo, Prev};
 use crate::ui::edit;
 use crate::ui::layout::{self, Dir, Size};
-use crate::ui::{Kind, TextKind, Tree};
+use crate::ui::{Kind, Overlay, OverlayKind, TextKind, Tree};
 
 /// 論理ピクセルの大きさ（拡大率を掛ける前）
 mod sz {
@@ -144,6 +144,23 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
             }
         }
     }
+    place_overlays(tree, cx, window);
+}
+
+/// 重ねて出す物を置く（ふつうの配置の後。出す元の部品の場所が決まってから）
+fn place_overlays(tree: &mut Tree, cx: &Context, window: Rect) {
+    let (margin, gap) = (px(cx, 8.0), px(cx, 4.0));
+    for o in tree.overlays.clone() {
+        let (w, h) = layout::measure(&mut tree.layout, o.idx);
+        let w = w.min((window.w - 2.0 * margin).max(0.0));
+        let h = h.min((window.h - 2.0 * margin).max(0.0));
+        let anchor = o.anchor.and_then(|a| tree.info.iter().position(|n| n.id == a)).map(|i| tree.layout[i].rect);
+        let rect = match (o.kind, anchor) {
+            (OverlayKind::Popup | OverlayKind::Tooltip, Some(a)) => layout::place_near(a, w, h, window, margin, gap),
+            _ => layout::place_center(w, h, window),
+        };
+        layout::arrange(&mut tree.layout, o.idx, rect);
+    }
 }
 
 /// a の下に t があるか（a 自身を含まない）
@@ -188,6 +205,9 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     cx.ime_field = None;
     let mut p = Painter { cx, d, prev: Prev::default(), clip: window.to_rect(), row: None, scroller: None };
     p.node(tree, 0);
+    for o in &tree.overlays {
+        p.overlay(tree, o);
+    }
     p.d.finish();
     let prev = std::mem::take(&mut p.prev);
     cx.prev = prev;
@@ -265,6 +285,8 @@ impl Painter<'_> {
         let id = tree.info[i].id;
         let line = self.line();
         match &tree.info[i].kind {
+            // 重ねる物は親に付かないので、ここには来ない（Painter::overlay で描く）
+            Kind::Overlay { .. } => {}
             Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space => {
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
@@ -457,6 +479,35 @@ impl Painter<'_> {
                 self.hit(tree, i, true, false);
             }
         }
+    }
+
+    /// 重ねて出す物を描く。ダイアログは後ろを暗くして押せなくする。浮き出しとダイアログの空いた所も、
+    /// 下の部品へクリックが抜けないように当たりに入れる（押せない当たり）
+    fn overlay(&mut self, tree: &Tree, o: &Overlay) {
+        let r = tree.layout[o.idx].rect;
+        let t = self.cx.theme.clone();
+        let line = self.line();
+        let window = Rect::new(0.0, 0.0, self.cx.width, self.cx.height);
+        let start = self.prev.focus_order.len();
+        let block = |p: &mut Self, rect: Rect| p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, enabled: false });
+        let radius = self.px(if o.kind == OverlayKind::Tooltip { 4.0 } else { 8.0 });
+        if o.kind == OverlayKind::Dialog {
+            self.d.fill(window, [0.0, 0.0, 0.0, if self.cx.dark { 0.55 } else { 0.35 }], 0.0);
+            block(self, window);
+        }
+        // 影（少し下にずらした薄い黒）と、背景の箱
+        if o.kind != OverlayKind::Tooltip {
+            let sh = self.px(3.0);
+            self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.10], radius + sh);
+            block(self, r);
+        }
+        let bg = if o.kind == OverlayKind::Tooltip { t.button } else { t.background };
+        self.d.boxed(r, bg, t.border, line, radius);
+        for &c in &tree.layout[o.idx].children {
+            self.node(tree, c);
+        }
+        let focus = self.prev.focus_order[start..].to_vec();
+        self.prev.overlays.push(OverlayInfo { id: o.id, anchor: o.anchor, kind: o.kind, rect: r, focus });
     }
 
     /// 見えない所にある部品は描かずに、Tab で移れるように覚えるだけにする

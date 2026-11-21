@@ -665,7 +665,7 @@ impl State {
                     log::event("scrollbar.hover", &format!("x={x} y={y}"), &format!("on={}", bar.is_some()));
                 }
                 if hover != self.rt.cx.hover || bar != self.rt.cx.bar_hover {
-                    self.rt.cx.hover = hover;
+                    self.rt.cx.set_hover(hover);
                     self.rt.cx.bar_hover = bar;
                     self.need_frame = true;
                 }
@@ -677,7 +677,9 @@ impl State {
                 if bar {
                     log::event("scrollbar.hover", "leave", "on=false");
                 }
-                if self.rt.cx.hover.take().is_some() | bar {
+                let had = self.rt.cx.hover.is_some();
+                self.rt.cx.set_hover(None);
+                if had | bar {
                     self.need_frame = true;
                 }
                 Some(LRESULT(0))

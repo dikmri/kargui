@@ -13,8 +13,8 @@ use crate::app::App;
 use crate::input::Event;
 use crate::paint::DrawList;
 use crate::text::Text;
-use crate::ui::context::{Clipboard, Context};
-use crate::ui::{Id, Tree, Ui, a11y, draw};
+use crate::ui::context::{Clipboard, Context, OverlayInfo};
+use crate::ui::{Id, OverlayKind, Tree, Ui, a11y, draw};
 
 /// 画面の木の根の番号（どのフレームでも同じ）
 pub(crate) const ROOT: Id = Id(0x6b61_7267_7569); // "kargui"
@@ -85,6 +85,8 @@ impl Runtime {
                 }
             }
         }
+        // 前のフレームで重ねて出していた物（開いた・閉じたを見分けて焦点を動かす）
+        let before = self.cx.prev.overlays.clone();
         draw::layout(&mut tree, &mut self.cx);
         draw::paint(&tree, &mut self.cx, &mut self.draw);
         // 一覧の見える範囲を決めた高さがずれていたら（最初のフレーム、窓の大きさが変わった時）、
@@ -96,6 +98,7 @@ impl Runtime {
             draw::layout(&mut tree, &mut self.cx);
             draw::paint(&tree, &mut self.cx, &mut self.draw);
         }
+        self.overlay_focus(&before, &tree);
         // 焦点のある部品が消えたら、焦点を外す
         if let Some(f) = self.cx.focus {
             if !tree.info.iter().any(|n| n.id == f) {
@@ -105,6 +108,34 @@ impl Runtime {
         self.tree = tree;
         self.frames += 1;
         FrameOut { want_frame: want }
+    }
+
+    /// 重ねて出す物が開いたら、開く前の焦点を覚えて中の最初の部品へ焦点を移す。閉じたら、焦点が中にあった
+    /// （か消えた）時に、開く前の焦点（無ければ出す元の部品）へ戻す。ツールチップは焦点に関わらない
+    fn overlay_focus(&mut self, before: &[OverlayInfo], tree: &Tree) {
+        let exists = |id: Id| tree.info.iter().any(|n| n.id == id);
+        let now = self.cx.prev.overlays.clone();
+        for o in before.iter().filter(|o| o.kind != OverlayKind::Tooltip) {
+            if now.iter().any(|n| n.id == o.id) {
+                continue;
+            }
+            let back = self.cx.overlay_return.remove(&o.id).or(o.anchor);
+            let inside = self.cx.focus.is_none_or(|f| o.focus.contains(&f) || !exists(f));
+            if let (true, Some(b)) = (inside, back.filter(|&b| exists(b))) {
+                self.cx.focus = Some(b);
+            }
+        }
+        for o in now.iter().filter(|o| o.kind != OverlayKind::Tooltip) {
+            if before.iter().any(|p| p.id == o.id) {
+                continue;
+            }
+            if let Some(f) = self.cx.focus {
+                self.cx.overlay_return.insert(o.id, f);
+            }
+            if let Some(&first) = o.focus.first() {
+                self.cx.focus = Some(first);
+            }
+        }
     }
 
     pub fn a11y(&mut self) -> (TreeUpdate, usize) {

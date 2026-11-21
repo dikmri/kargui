@@ -1873,5 +1873,175 @@ mod tests {
             assert!(b >= a + 120, "{name}: 押せる {a}、押せない {b}");
         }
     }
+
+    /// 重ねて出す層の見本: 「More」で開く浮き出し、「Open」で開くダイアログ、後ろの「Behind」、ツールチップ付きの「Save」
+    #[derive(Default)]
+    struct Layers {
+        menu: bool,
+        renamed: u32,
+        dialog: bool,
+        name: String,
+        behind: u32,
+        /// 部品の行を窓の下の端に置く（浮き出しが上に出るか確かめる）
+        bottom: bool,
+    }
+
+    impl App for Layers {
+        fn view(&mut self, ui: &mut Ui) {
+            if self.bottom {
+                ui.fill();
+            }
+            ui.row(|ui| {
+                let more = ui.button("More");
+                let anchor = more.id();
+                if more.clicked() {
+                    self.menu = !self.menu;
+                }
+                ui.popup(&mut self.menu, anchor, |ui| {
+                    if ui.button("Rename").clicked() {
+                        self.renamed += 1;
+                    }
+                    ui.button("Delete");
+                });
+                if ui.button("Open").clicked() {
+                    self.dialog = true;
+                }
+                if ui.button("Behind").clicked() {
+                    self.behind += 1;
+                }
+                ui.button("Save").tooltip("Saves the file");
+            });
+            ui.label("Body");
+            let mut cancel = false;
+            ui.dialog(&mut self.dialog, "Rename item", |ui| {
+                ui.text_input(&mut self.name).hint("Name");
+                ui.row(|ui| {
+                    ui.button("OK");
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+            if cancel {
+                self.dialog = false;
+            }
+        }
+    }
+
+    #[test]
+    fn popup_opens_below_its_anchor_takes_focus_and_closes_outside_or_on_escape() {
+        let mut h = Harness::new(Layers::default());
+        assert!(h.find("Rename").is_none());
+        h.click("More");
+        let (more, rename) = (h.find("More").unwrap(), h.find("Rename").unwrap());
+        assert!(rename.y >= more.bottom(), "下に出る: {more:?} {rename:?}");
+        assert_eq!(focused_name(&h).as_deref(), Some("Rename"), "開くと中へ焦点が移る");
+        // 中の部品は押せる。押しても閉じない（閉じるかはアプリが決める）
+        h.click("Rename");
+        assert_eq!(h.app().renamed, 1);
+        assert!(h.app().menu);
+        // 外を押すと閉じ、焦点は開いた部品へ戻る。閉じるためのクリックは下の部品に届かない
+        h.click("Behind");
+        assert!(!h.app().menu);
+        assert_eq!(h.app().behind, 0);
+        assert!(h.find("Rename").is_none());
+        assert_eq!(focused_name(&h).as_deref(), Some("More"));
+        // Esc でも閉じる
+        h.click("More");
+        h.press(Key::Escape);
+        assert!(!h.app().menu);
+        assert_eq!(focused_name(&h).as_deref(), Some("More"));
+        // 開いた部品をもう一度押すと閉じる（閉じてすぐ開き直さない）
+        h.click("More").click("More");
+        assert!(!h.app().menu);
+    }
+
+    #[test]
+    fn popup_near_the_bottom_opens_above_and_stays_in_the_window() {
+        let mut h = Harness::with_size(Layers { bottom: true, ..Default::default() }, 600.0, 300.0, 1.0);
+        h.click("More");
+        let (more, rename, delete) = (h.find("More").unwrap(), h.find("Rename").unwrap(), h.find("Delete").unwrap());
+        assert!(delete.bottom() <= more.y, "上に出る: {more:?} {delete:?}");
+        assert!(rename.y >= 0.0 && delete.bottom() <= 300.0);
+    }
+
+    #[test]
+    fn dialog_blocks_what_is_behind_traps_focus_and_closes_on_escape() {
+        let mut h = Harness::new(Layers::default());
+        h.click("Open");
+        assert!(h.app().dialog);
+        assert_eq!(focused_name(&h).as_deref(), Some("Name"), "最初の部品へ焦点");
+        // 後ろの部品は押せない（ダイアログは開いたまま、焦点も動かない）
+        h.click("Behind");
+        assert_eq!(h.app().behind, 0);
+        assert!(h.app().dialog);
+        assert_eq!(focused_name(&h).as_deref(), Some("Name"));
+        // Tab はダイアログの中だけを回る
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            h.press(Key::Tab);
+            seen.push(focused_name(&h).unwrap());
+        }
+        assert_eq!(seen, ["OK", "Cancel", "Name", "OK"]);
+        h.click("Name").type_text("x");
+        assert_eq!(h.app().name, "x");
+        // Esc で閉じ、焦点は開いた部品へ戻る
+        h.press(Key::Escape);
+        assert!(!h.app().dialog);
+        assert_eq!(focused_name(&h).as_deref(), Some("Open"));
+        // アプリが閉じた時も戻る
+        h.click("Open").click("Cancel");
+        assert!(!h.app().dialog);
+        assert_eq!(focused_name(&h).as_deref(), Some("Open"));
+    }
+
+    #[test]
+    fn tooltip_shows_after_the_pointer_rests_and_on_keyboard_focus() {
+        let mut h = Harness::new(Layers::default());
+        let save = h.find("Save").unwrap();
+        let hover = h.rt.hover_at(save.x + 4.0, save.y + 4.0);
+        h.rt.cx.set_hover(hover);
+        h.frame();
+        assert!(h.find("Saves the file").is_none(), "すぐには出ない");
+        // 0.5 秒より長く止まったことにする
+        h.rt.cx.hover_since = Some(std::time::Instant::now() - std::time::Duration::from_millis(600));
+        h.frame();
+        let tip = h.find("Saves the file").expect("止まると出る");
+        assert!(tip.y >= save.bottom(), "下に出る: {save:?} {tip:?}");
+        h.press(Key::Escape);
+        assert!(h.find("Saves the file").is_none(), "Esc で消える");
+        // ポインターが離れたあと、キーボードで焦点を当てると出る
+        h.rt.cx.set_hover(None);
+        for _ in 0..4 {
+            h.press(Key::Tab);
+        }
+        assert_eq!(focused_name(&h).as_deref(), Some("Save"));
+        assert!(h.find("Saves the file").is_some(), "キーボードの焦点で出る");
+        h.press(Key::Tab);
+        assert!(h.find("Saves the file").is_none(), "焦点が離れると消える");
+    }
+
+    #[test]
+    fn layers_are_in_the_screen_reader_tree() {
+        let mut h = Harness::new(Layers::default());
+        h.click("More");
+        h.app_mut().dialog = true;
+        h.frame();
+        let built = a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new());
+        // 根から全部の部品へたどれる
+        let nodes: std::collections::HashMap<u64, &accesskit::Node> = built.update.nodes.iter().map(|(id, n)| (id.0, n)).collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![crate::runtime::ROOT.0];
+        while let Some(id) = stack.pop() {
+            if seen.insert(id) {
+                stack.extend(nodes[&id].children().iter().map(|c| c.0));
+            }
+        }
+        assert_eq!(seen.len(), nodes.len(), "たどれない部品がある");
+        let node = |name: &str| nodes[&id_named(&h, name).0];
+        assert_eq!(node("Save").description(), Some("Saves the file"));
+        let dialog = built.update.nodes.iter().find(|(_, n)| n.role() == accesskit::Role::Dialog).expect("ダイアログの役割").1.clone();
+        assert!(dialog.is_modal());
+        assert_eq!(dialog.label(), Some("Rename item"));
+        assert!(nodes.contains_key(&id_named(&h, "Rename").0));
+    }
 }
 

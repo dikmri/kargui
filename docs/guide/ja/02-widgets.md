@@ -1,4 +1,4 @@
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Toggled::changed Toggled::strike Slider::changed sig=88f7d390ba1c570d -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Toggled::changed Toggled::strike Slider::changed sig=0af435d8eecb0df6 -->
 # 部品
 
 部品は `ui` のメソッドで作ります。値を変える部品には `&mut` で状態を渡し、戻り値で何が起きたかを聞きます。
@@ -112,3 +112,45 @@ if ui.button("送る").enabled(!name.is_empty()).clicked() {
 ```
 
 焦点のある部品が押せなくなると、焦点は外れます。`ui.enabled` は行や列を作らないので、中の部品は今の行（列）にそのまま並びます。
+
+## 重ねて出す
+
+ボタンの近くに出す浮き出しは `ui.popup(&mut 開いているか, 出す元の id, |ui| ..)`、窓の真ん中に出す確認の画面は `ui.dialog(&mut 開いているか, 題, |ui| ..)` で作ります。どちらも、開くと中の最初の部品へ焦点が移り、Esc で閉じ、閉じると焦点が開く前の部品へ戻ります。浮き出しは外を押しても閉じます（そのクリックは下の部品に届きません）。ダイアログが出ている間は後ろの部品を使えず、Tab はダイアログの中だけを回ります。
+
+```rust
+# let (mut menu, mut confirm) = (false, false);
+# kargui::test::example(|ui| {
+let more = ui.button("その他");
+let anchor = more.id();
+if more.clicked() {
+    menu = !menu;
+}
+ui.popup(&mut menu, anchor, |ui| {
+    if ui.button("削除").clicked() {
+        confirm = true;
+    }
+});
+let mut close = false;
+ui.dialog(&mut confirm, "削除しますか？", |ui| {
+    ui.label("この操作は元に戻せません。");
+    ui.row(|ui| {
+        ui.fill();
+        close |= ui.button("削除").primary().clicked();
+        close |= ui.button("やめる").clicked();
+    });
+});
+if close {
+    confirm = false;
+}
+# });
+```
+
+浮き出しは出す元の下に出し、下に入らなければ上に出します。重ねる物は窓の中に描くので、窓の外にははみ出しません。
+
+部品の説明は `.tooltip("説明")` で付けます。ポインターが 0.5 秒止まった時と、キーボードで焦点が来た時に、部品の下に出ます。読み上げソフトには、部品の説明として伝わります。
+
+```rust
+# kargui::test::example(|ui| {
+ui.button("保存").tooltip("今の内容をファイルに保存します");
+# });
+```

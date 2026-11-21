@@ -113,9 +113,9 @@ and add the most common ones first. Each addition is measured with the same tool
 Not there yet:
 
 - **Widgets:** multi-line text input, password field, drop-down, radio buttons, menus (menu bar and
-  context menu), tooltips, dialogs (including opening and saving files), tabs, tree view, tables with
-  column headers, progress bar, images, a free drawing surface and links (disabled widgets were added
-  after 0.1).
+  context menu), open and save file dialogs, tabs, tree view, tables with column headers, progress
+  bar, images, a free drawing surface and links (disabled widgets, popups, in-window dialogs and
+  tooltips were added after 0.1).
 - **App mechanisms:** multiple windows, updating the screen from other threads or timers, receiving
   keys in the app (shortcuts), drag and drop, choosing fonts, window icon, minimum window size,
   confirming before close, and animations.

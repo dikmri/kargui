@@ -55,7 +55,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ops::RangeInclusive;
 
-use context::Context;
+use context::{Context, TipState};
 pub use layout::{Align, Size};
 use layout::{Dir, LayoutNode};
 
@@ -135,6 +135,29 @@ pub(crate) enum Kind {
     /// 選べる一覧の行（tab_stop: Tab で移る行。選んだ行、無ければ見えている最初の行）
     Item { selected: bool, tab_stop: bool },
     Slider { value: f64, min: f64, max: f64, step: f64 },
+    /// 重ねて出す物（浮き出し・ダイアログ・ツールチップ）。親に付けず、Tree::overlays から描く
+    Overlay { kind: OverlayKind, title: String },
+}
+
+/// 重ねて出す物の種類
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OverlayKind {
+    /// 出す元の近くに出し、外を押すか Esc で閉じる（Ui::popup）
+    Popup,
+    /// 窓の真ん中に出し、後ろを押せなくして焦点を中に閉じ込める（Ui::dialog）
+    Dialog,
+    /// 出す元の下に出す説明（Handle::tooltip）。押せない
+    Tooltip,
+}
+
+/// この回の画面で重ねて出す物
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Overlay {
+    pub idx: usize,
+    pub id: Id,
+    /// 近くに出す元の部品（ダイアログは無し）
+    pub anchor: Option<Id>,
+    pub kind: OverlayKind,
 }
 
 impl Kind {
@@ -160,19 +183,23 @@ pub(crate) struct NodeInfo {
     pub label: Option<String>,
     /// 押せない（Ui::enabled の範囲の中か、Button::enabled(false)）
     pub disabled: bool,
+    /// 読み上げの説明（ツールチップの文）
+    pub description: Option<String>,
 }
 
 /// ビュー 1 回分の画面の木。info と layout は同じ番号で並ぶ。親は子より前に入る
 pub(crate) struct Tree {
     pub info: Vec<NodeInfo>,
     pub layout: Vec<LayoutNode>,
+    /// 重ねて出す物（作った順。後ろほど上に重なる）
+    pub overlays: Vec<Overlay>,
     occurrences: HashMap<(u64, u64, &'static str, u32, u32), u32>,
 }
 
 impl Tree {
     /// 部品と、その並べ方の決まり（配置の結果の前）が同じか。ビューを回し直して画面が落ち着いたかを見るのに使う
     pub fn same_as(&self, other: &Tree) -> bool {
-        self.info == other.info && self.layout == other.layout
+        self.info == other.info && self.layout == other.layout && self.overlays == other.overlays
     }
 
     /// 根は縦に並べる。既定の余白は左右 16・上下 12、間は 10（論理ピクセル）
@@ -181,7 +208,12 @@ impl Tree {
         layout.align = Align::Stretch;
         layout.pad = ((16.0 * scale).round(), (12.0 * scale).round());
         layout.gap = (10.0 * scale).round();
-        Self { info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false }], layout: vec![layout], occurrences: HashMap::new() }
+        Self {
+            info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false, description: None }],
+            layout: vec![layout],
+            overlays: Vec::new(),
+            occurrences: HashMap::new(),
+        }
     }
 }
 
@@ -222,19 +254,32 @@ impl<'a> Ui<'a> {
 
     #[track_caller]
     fn add(&mut self, kind: Kind, dir: Dir) -> (usize, Id) {
-        let loc = std::panic::Location::caller();
+        let id = self.id_here(std::panic::Location::caller());
+        self.push(id, kind, dir)
+    }
+
+    /// 呼んだ場所（ソースの位置）と親と、その場所を呼んだ回数から id を作る
+    fn id_here(&mut self, loc: &'static std::panic::Location<'static>) -> Id {
         let pid = self.tree.info[self.parent].id.0;
         let key = (pid, self.salt, loc.file(), loc.line(), loc.column());
         let n = self.tree.occurrences.entry(key).or_insert(0);
         let occurrence = *n;
         *n += 1;
-        let id = Id(hash_of((key, occurrence)));
-        self.push(id, kind, dir)
+        Id(hash_of((key, occurrence)))
+    }
+
+    /// 重ねて出す物の入れ物を作る（親には付けず、Tree::overlays に入れる）
+    fn push_overlay(&mut self, id: Id, kind: OverlayKind, title: String, anchor: Option<Id>) -> usize {
+        let idx = self.tree.info.len();
+        self.tree.info.push(NodeInfo { id, kind: Kind::Overlay { kind, title }, label: None, disabled: self.disabled, description: None });
+        self.tree.layout.push(LayoutNode::new(Dir::Column));
+        self.tree.overlays.push(Overlay { idx, id, anchor, kind });
+        idx
     }
 
     fn push(&mut self, id: Id, kind: Kind, dir: Dir) -> (usize, Id) {
         let idx = self.tree.info.len();
-        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled });
+        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled, description: None });
         self.tree.layout.push(LayoutNode::new(dir));
         self.tree.layout[self.parent].children.push(idx);
         (idx, id)
@@ -250,7 +295,17 @@ impl<'a> Ui<'a> {
 
     fn handle(&mut self, idx: usize, id: Id) -> Handle<'_> {
         let parent_dir = self.parent_dir();
-        Handle { cx_scroll: &mut self.cx.scroll_into_view, tree: &mut *self.tree, idx, id, scale: self.cx.scale, parent_dir }
+        let tip = self.cx.tip_state(id);
+        Handle {
+            cx_scroll: &mut self.cx.scroll_into_view,
+            want_frame: &mut self.cx.want_frame,
+            tree: &mut *self.tree,
+            idx,
+            id,
+            scale: self.cx.scale,
+            parent_dir,
+            tip,
+        }
     }
 
     // ---- 入れ物 ----
@@ -406,6 +461,86 @@ impl<'a> Ui<'a> {
         let (parent, salt) = (self.parent, self.salt);
         let disabled = self.disabled || !enabled;
         f(&mut Ui { cx: &mut *self.cx, tree: &mut *self.tree, parent, salt, disabled });
+    }
+
+    /// A box shown next to `anchor` (usually the button that opens it) while `*open` is true, above
+    /// everything else. The keyboard focus moves into it when it opens. Clicking outside it or
+    /// pressing Escape sets `*open` to false; that click does not reach the widget underneath. When
+    /// it closes, the focus goes back to where it was. Clicking `anchor` again is left to your code
+    /// (toggle `*open`). It opens below `anchor`, or above it when there is no room below.
+    ///
+    /// ```
+    /// # let mut open = false;
+    /// # kargui::test::example(|ui| {
+    /// let more = ui.button("More");
+    /// let anchor = more.id();
+    /// if more.clicked() {
+    ///     open = !open;
+    /// }
+    /// ui.popup(&mut open, anchor, |ui| {
+    ///     ui.button("Rename");
+    ///     ui.button("Delete");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn popup(&mut self, open: &mut bool, anchor: Id, f: impl FnOnce(&mut Ui)) {
+        let id = self.id_here(std::panic::Location::caller());
+        if self.cx.closing.contains(&id) {
+            *open = false;
+        }
+        if !*open {
+            return;
+        }
+        let idx = self.push_overlay(id, OverlayKind::Popup, String::new(), Some(anchor));
+        let (pad, gap) = (self.px(6.0), self.px(4.0));
+        let l = &mut self.tree.layout[idx];
+        l.pad = (pad, pad);
+        l.gap = gap;
+        f(&mut self.child(idx));
+    }
+
+    /// A modal dialog with a title, in the middle of the window while `*open` is true. The rest of
+    /// the window is dimmed and cannot be used; Tab moves only between the dialog's widgets, and the
+    /// focus moves into it when it opens. Escape sets `*open` to false. Close it from your code (for
+    /// example on OK or Cancel) by setting `*open` to false after this call; the focus then goes
+    /// back to where it was. Screen readers announce it as a dialog with the title as its name.
+    ///
+    /// ```
+    /// # let (mut open, mut name) = (true, String::new());
+    /// # kargui::test::example(|ui| {
+    /// let mut close = false;
+    /// ui.dialog(&mut open, "Rename", |ui| {
+    ///     ui.text_input(&mut name).hint("New name");
+    ///     ui.row(|ui| {
+    ///         ui.fill();
+    ///         close |= ui.button("OK").primary().clicked();
+    ///         close |= ui.button("Cancel").clicked();
+    ///     });
+    /// });
+    /// if close {
+    ///     open = false;
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn dialog(&mut self, open: &mut bool, title: impl Into<String>, f: impl FnOnce(&mut Ui)) {
+        let id = self.id_here(std::panic::Location::caller());
+        if self.cx.closing.contains(&id) {
+            *open = false;
+        }
+        if !*open {
+            return;
+        }
+        let title = title.into();
+        let idx = self.push_overlay(id, OverlayKind::Dialog, title.clone(), None);
+        let (px, py, gap) = (self.px(24.0), self.px(20.0), self.px(12.0));
+        let l = &mut self.tree.layout[idx];
+        l.pad = (px, py);
+        l.gap = gap;
+        let mut ui = self.child(idx);
+        ui.heading(title);
+        f(&mut ui);
     }
 
     /// Empty space that takes the rest of the row (or column), pushing the following widgets to the end.
@@ -940,11 +1075,14 @@ impl<'a> Ui<'a> {
 /// ```
 pub struct Handle<'t> {
     cx_scroll: &'t mut Option<Id>,
+    want_frame: &'t mut bool,
     tree: &'t mut Tree,
     idx: usize,
     id: Id,
     scale: f32,
     parent_dir: Dir,
+    /// この部品のツールチップを出すか（Handle::tooltip が使う）
+    tip: TipState,
 }
 
 impl Handle<'_> {
@@ -1086,6 +1224,44 @@ impl Handle<'_> {
         self.id
     }
 
+    /// Shows `text` in a small box below the widget when the pointer rests on it for half a second
+    /// or the keyboard moves the focus to it, and gives it to screen readers as the widget's
+    /// description. Escape and pressing the widget hide it.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.label("Status");
+    /// })
+    /// .tooltip("Shows whether the last save worked");
+    /// # });
+    /// ```
+    pub fn tooltip(self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        self.tree.info[self.idx].description = Some(text.clone());
+        match self.tip {
+            // 0.5 秒たつまで描き直しを続ける（タイマーの土台ができたら、時間を決めて起こす形にする）
+            TipState::Waiting => *self.want_frame = true,
+            TipState::Shown => {
+                let (id, scale) = (self.id, self.scale);
+                let ov = Id(hash_of((id.0, "tooltip")));
+                let idx = self.tree.info.len();
+                let kind = Kind::Overlay { kind: OverlayKind::Tooltip, title: String::new() };
+                self.tree.info.push(NodeInfo { id: ov, kind, label: None, disabled: false, description: None });
+                let mut l = LayoutNode::new(Dir::Column);
+                l.pad = ((8.0 * scale).round(), (5.0 * scale).round());
+                self.tree.layout.push(l);
+                let label = Kind::Label { text, size: TextKind::Small, bold: false, weak: false, strike: false, wrap: false, right: false };
+                self.tree.info.push(NodeInfo { id: Id(hash_of((id.0, "tooltip-text"))), kind: label, label: None, disabled: false, description: None });
+                self.tree.layout.push(LayoutNode::new(Dir::Leaf));
+                self.tree.layout[idx].children.push(idx + 1);
+                self.tree.overlays.push(Overlay { idx, id: ov, anchor: Some(id), kind: OverlayKind::Tooltip });
+            }
+            TipState::Hidden => {}
+        }
+        self
+    }
+
     /// Scrolls the nearest [`Ui::scroll`] container that holds this widget so that the widget is at
     /// the top (or as close as the content allows), after this frame is laid out. Use it to jump to
     /// a chapter from a table of contents.
@@ -1181,6 +1357,17 @@ macro_rules! common {
             /// ```
             pub fn scroll_into_view(self) -> Self {
                 Self { h: self.h.scroll_into_view(), ..self }
+            }
+            /// Shows a tooltip and gives screen readers a description. See [`Handle::tooltip`].
+            ///
+            /// ```
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            #[doc = concat!(" ui.", $make, ".tooltip(\"More about this\");")]
+            /// # });
+            /// ```
+            pub fn tooltip(self, text: impl Into<String>) -> Self {
+                Self { h: self.h.tooltip(text), ..self }
             }
         }
     };

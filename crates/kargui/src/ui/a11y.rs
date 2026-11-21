@@ -11,7 +11,7 @@ use accesskit::{Action, Node, NodeId, Rect as AkRect, Role, Toggled, TreeId, Tre
 use crate::geom::Rect;
 use crate::log;
 use crate::ui::context::Context;
-use crate::ui::{Kind, Tree, visible_text};
+use crate::ui::{Kind, OverlayKind, Tree, visible_text};
 
 fn ak(r: Rect) -> AkRect {
     AkRect { x0: r.x as f64, y0: r.y as f64, x1: r.right() as f64, y1: r.bottom() as f64 }
@@ -166,8 +166,21 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Decrement);
                 n
             }
+            Kind::Overlay { kind, title } => match kind {
+                OverlayKind::Popup => Node::new(Role::Pane),
+                OverlayKind::Dialog => {
+                    let mut n = Node::new(Role::Dialog);
+                    n.set_modal();
+                    n.set_label(title.clone());
+                    n
+                }
+                OverlayKind::Tooltip => Node::new(Role::Tooltip),
+            },
             Kind::Space => unreachable!(),
         };
+        if let Some(d) = &info.description {
+            node.set_description(d.clone());
+        }
         if info.kind.interactive() || matches!(info.kind, Kind::List { .. }) {
             match &name {
                 Some(nm) => node.set_label(nm.clone()),
@@ -188,8 +201,12 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
         if !matches!(info.kind, Kind::Root) {
             node.set_bounds(ak(l.rect));
         }
-        let children: Vec<NodeId> =
+        let mut children: Vec<NodeId> =
             l.children.iter().filter(|&&c| !matches!(tree.info[c].kind, Kind::Space)).map(|&c| NodeId(tree.info[c].id.0)).collect();
+        // 重ねて出す物は親に付いていないので、根の子として読み上げの木に入れる
+        if i == 0 {
+            children.extend(tree.overlays.iter().map(|o| NodeId(o.id.0)));
+        }
         if !children.is_empty() {
             node.set_children(children);
         }
