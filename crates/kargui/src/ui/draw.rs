@@ -26,6 +26,8 @@ mod sz {
     pub const INPUT_PAD: f32 = 10.0;
     pub const RADIUS: f32 = 6.0;
     pub const SCROLLBAR_W: f32 = 6.0;
+    /// スクロールの棒の左に足す、押せる幅（棒は細いので）
+    pub const SCROLLBAR_SLOP: f32 = 4.0;
     /// チェックとスイッチの当たりの余白（左右・上下）
     pub const SLOP_X: f32 = 12.0;
     pub const SLOP_Y: f32 = 8.0;
@@ -381,15 +383,26 @@ impl Painter<'_> {
         self.clip = outer;
         self.d.pop_clip();
         // スクロールの位置を示す細い棒（中身が一覧より高いときだけ）
+        let (mut thumb, mut bar) = (None, None);
         if content_h > r.h + 0.5 {
             let w = self.px(sz::SCROLLBAR_W);
             let h = (r.h * r.h / content_h).max(self.px(24.0)).min(r.h);
             let y = r.y + (l.offset / (content_h - r.h)).clamp(0.0, 1.0) * (r.h - h);
+            let x = r.right() - w - self.px(3.0);
+            // ポインターが棒の上にある時とつかんでいる間は濃くする（つかめることが見て分かるように）
             let mut c = self.cx.theme.weak_text;
-            c[3] = 0.45;
-            self.d.fill(Rect::new(r.right() - w - self.px(3.0), y.round(), w, h.round()), c, w / 2.0);
+            c[3] = if self.cx.drag.is_some_and(|d| d.list == id) {
+                0.85
+            } else if self.cx.bar_hover == Some(id) {
+                0.65
+            } else {
+                0.45
+            };
+            self.d.fill(Rect::new(x, y.round(), w, h.round()), c, w / 2.0);
+            thumb = Some(Rect::new(x, y, w, h));
+            bar = Some(Rect::new(x - self.px(sz::SCROLLBAR_SLOP), r.y, r.right() - x + self.px(sz::SCROLLBAR_SLOP), r.h));
         }
-        self.prev.lists.push(ListInfo { id, rect: r, content_h });
+        self.prev.lists.push(ListInfo { id, rect: r, content_h, thumb, bar });
     }
 }
 

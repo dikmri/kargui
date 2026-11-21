@@ -68,6 +68,8 @@ pub(crate) enum Event {
     /// 位置は物理ピクセル
     PointerDown { x: f32, y: f32, shift: bool },
     PointerUp { x: f32, y: f32 },
+    /// 押したまま動かした（スクロールの棒をつかんでいる間だけ届く）
+    PointerMove { x: f32, y: f32 },
     /// dy は論理ピクセル（下へ回すと正）
     Wheel { x: f32, y: f32, dy: f32 },
     Key { key: Key, mods: Mods },

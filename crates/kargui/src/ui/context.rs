@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use crate::geom::Rect;
 use crate::input::{A11yAction, Event, Key, Mods};
+use crate::log;
 use crate::text::Text;
 use crate::theme::Theme;
 use crate::ui::Id;
@@ -55,6 +56,20 @@ pub(crate) struct ListInfo {
     pub id: Id,
     pub rect: Rect,
     pub content_h: f32,
+    /// スクロールの棒のつまみ（中身が一覧より高いときだけ）
+    pub thumb: Option<Rect>,
+    /// スクロールの棒を押せる範囲（つまみの列。一覧の高さ全部）
+    pub bar: Option<Rect>,
+}
+
+/// つかんでいるつまみ
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScrollDrag {
+    pub list: Id,
+    /// つかんだ所の、つまみの上の端からの距離（物理ピクセル）
+    pub grab: f32,
+    /// つかんでから届いた移動の数（記録用）
+    pub moves: u32,
 }
 
 /// 前のフレームの配置
@@ -86,6 +101,10 @@ pub(crate) struct Context {
     pub focus: Option<Id>,
     pub hover: Option<Id>,
     pub pressed: Option<Id>,
+    /// ポインターが乗っているスクロールの棒（一覧の id）
+    pub bar_hover: Option<Id>,
+    /// つかんでいるスクロールの棒のつまみ
+    pub drag: Option<ScrollDrag>,
     /// キーボードで焦点を動かしたあとだけ、焦点の輪を描く
     pub focus_visible: bool,
     // ---- この回の入力 ----
@@ -121,6 +140,8 @@ impl Context {
             focus: None,
             hover: None,
             pressed: None,
+            bar_hover: None,
+            drag: None,
             focus_visible: false,
             clicked: None,
             keys: Vec::new(),
@@ -154,6 +175,47 @@ impl Context {
             .min_by(|a, b| distance2(&a.rect, x, y).total_cmp(&distance2(&b.rect, x, y)))
     }
 
+    /// (x, y) にあるスクロールの棒の一覧。部品の本来の範囲の中なら None（部品が勝つ）
+    pub fn scrollbar_at(&self, x: f32, y: f32) -> Option<&ListInfo> {
+        if self.prev.hits.iter().any(|h| h.rect.contains(x, y)) {
+            return None;
+        }
+        self.prev.lists.iter().rev().find(|l| l.bar.is_some_and(|b| b.contains(x, y)))
+    }
+
+    /// 一覧のスクロールの位置（論理ピクセル）を、端で止めて設定する
+    fn set_scroll(&mut self, l: &ListInfo, v: f32) -> f32 {
+        let max = ((l.content_h - l.rect.h) / self.scale).max(0.0);
+        let v = v.clamp(0.0, max);
+        self.scrolls.insert(l.id, v);
+        v
+    }
+
+    /// スクロールの棒を押した。つまみならつかみ、空いた所ならそちらへ一覧の高さ 1 つ分動かす
+    fn press_scrollbar(&mut self, l: &ListInfo, y: f32) {
+        let Some(thumb) = l.thumb else { return };
+        let now = self.scrolls.get(&l.id).copied().unwrap_or(0.0);
+        if y >= thumb.y && y < thumb.bottom() {
+            self.drag = Some(ScrollDrag { list: l.id, grab: y - thumb.y, moves: 0 });
+            log::event("scrollbar.grab", &format!("y={y} thumb_y={:.0}", thumb.y), &format!("scroll={now:.0}"));
+        } else {
+            let page = l.rect.h / self.scale;
+            let up = y < thumb.y;
+            let v = self.set_scroll(l, if up { now - page } else { now + page });
+            log::event("scrollbar.page", &format!("y={y} dir={}", if up { "up" } else { "down" }), &format!("scroll={v:.0}"));
+        }
+    }
+
+    /// つかんだつまみを y まで動かす（つかんだ所がポインターの下に来るように）
+    fn drag_scrollbar(&mut self, d: ScrollDrag, y: f32) {
+        let Some(l) = self.prev.lists.iter().find(|l| l.id == d.list).cloned() else { return };
+        let Some(thumb) = l.thumb else { return };
+        let track = l.rect.h - thumb.h;
+        let f = if track > 0.0 { ((y - d.grab - l.rect.y) / track).clamp(0.0, 1.0) } else { 0.0 };
+        let max = ((l.content_h - l.rect.h) / self.scale).max(0.0);
+        self.set_scroll(&l, f * max);
+    }
+
     fn is_text_input(&self, id: Id) -> bool {
         self.prev.hits.iter().any(|h| h.id == id && h.text_input)
     }
@@ -178,6 +240,12 @@ impl Context {
         for e in events {
             match e {
                 Event::PointerDown { x, y, shift } => {
+                    // 部品の本来の範囲が先。次にスクロールの棒、最後に部品の当たりの余白
+                    if let Some(l) = self.scrollbar_at(x, y).cloned() {
+                        self.pressed = None;
+                        self.press_scrollbar(&l, y);
+                        continue;
+                    }
                     let hit = self.hit(x, y).cloned();
                     self.pressed = hit.as_ref().map(|h| h.id);
                     self.focus_visible = false;
@@ -187,11 +255,24 @@ impl Context {
                     }
                 }
                 Event::PointerUp { x, y } => {
+                    if let Some(d) = self.drag.take() {
+                        let v = self.scrolls.get(&d.list).copied().unwrap_or(0.0);
+                        log::event("scrollbar.release", &format!("y={y} moves={}", d.moves), &format!("scroll={v:.0}"));
+                        self.pressed = None;
+                        continue;
+                    }
                     let hit = self.hit(x, y).map(|h| h.id);
                     if hit.is_some() && hit == self.pressed {
                         self.clicked = hit;
                     }
                     self.pressed = None;
+                }
+                Event::PointerMove { y, .. } => {
+                    if let Some(d) = self.drag.as_mut() {
+                        d.moves += 1;
+                        let d = *d;
+                        self.drag_scrollbar(d, y);
+                    }
                 }
                 Event::Wheel { x, y, dy } => {
                     if let Some(l) = self.prev.lists.iter().rev().find(|l| l.rect.contains(x, y)) {

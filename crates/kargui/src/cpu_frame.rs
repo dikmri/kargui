@@ -33,12 +33,11 @@ pub(crate) fn draw(
     let plan = damage::plan(prev, &summary);
     let mut canvas = Canvas { px, width, height };
     let mut present = Vec::new();
-    let mode;
-    if full || plan.full {
+    let mode = if full || plan.full {
         let all = IRect::new(0, 0, width, height);
         canvas.draw(list, &atlas.pixels, atlas.size, all, background);
         present.push(all);
-        mode = "full".to_string();
+        "full".to_string()
     } else {
         for (r, dy) in &plan.blits {
             canvas.scroll_up(*r, *dy);
@@ -50,7 +49,7 @@ pub(crate) fn draw(
                 present.push(*r);
             }
         }
-        mode = format!("blits={} damage={}", plan.blits.len(), plan.damage.len());
-    }
+        format!("blits={} damage={}", plan.blits.len(), plan.damage.len())
+    };
     CpuFrame { summary, present, mode }
 }

@@ -538,6 +538,8 @@ impl<'a> Ui<'a> {
 
     /// A list that only creates the rows that are visible, so it stays fast with any number of
     /// rows. All rows have the same height (logical pixels). Finish with [`List::show`].
+    /// Users scroll it with the mouse wheel, by dragging the scroll bar, or by clicking the bar
+    /// above or below the thumb to move one page.
     ///
     /// ```
     /// # let items: Vec<String> = (0..10_000).map(|i| format!("Item {i}")).collect();

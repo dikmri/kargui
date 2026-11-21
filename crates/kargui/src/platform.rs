@@ -47,6 +47,8 @@ const WM_APP_A11Y: u32 = WM_APP + 1;
 /// match の中で読み込まれていない名前を書くと、何にでも当てはまる変数になり、
 /// それより後のメッセージを全部受け止めてしまう（2026-11-21 に窓の枠が消えた原因）
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// WM_MOUSEMOVE の wParam で、左のボタンが押されている印（SystemServices の機能を読み込まずに済ませる）
+const MK_LBUTTON: usize = 0x0001;
 /// これより長くフレームの間が空いたら、内訳を記録する（60 Hz の 1.5 フレーム）
 const SLOW_FRAME_MS: f64 = 25.0;
 /// 変換ごとに記録する IME の問い合わせの数
@@ -576,16 +578,29 @@ impl State {
                         TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
                     self.tracking_leave = unsafe { TrackMouseEvent(&mut t) }.is_ok();
                 }
+                if self.rt.cx.drag.is_some() {
+                    // つまみをつかんでいる間は、移動を部品へ渡す。左のボタンが離れていたら
+                    // （捕まえを失って WM_LBUTTONUP が届かなかった）、つかむのを終える
+                    if wp.0 & MK_LBUTTON != 0 {
+                        self.push(Event::PointerMove { x, y });
+                    } else {
+                        log::event("scrollbar.lost", &format!("x={x} y={y}"), "released");
+                        self.push(Event::PointerUp { x, y });
+                    }
+                    return Some(LRESULT(0));
+                }
                 let hover = self.rt.hover_at(x, y);
-                if hover != self.rt.cx.hover {
+                let bar = self.rt.cx.scrollbar_at(x, y).map(|l| l.id);
+                if hover != self.rt.cx.hover || bar != self.rt.cx.bar_hover {
                     self.rt.cx.hover = hover;
+                    self.rt.cx.bar_hover = bar;
                     self.need_frame = true;
                 }
                 Some(LRESULT(0))
             }
             WM_MOUSELEAVE => {
                 self.tracking_leave = false;
-                if self.rt.cx.hover.take().is_some() {
+                if self.rt.cx.hover.take().is_some() | self.rt.cx.bar_hover.take().is_some() {
                     self.need_frame = true;
                 }
                 Some(LRESULT(0))

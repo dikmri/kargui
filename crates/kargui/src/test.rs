@@ -471,6 +471,100 @@ mod tests {
         step(&mut h, "件数を増やす");
         h.send(vec![Event::Wheel { x, y, dy: 96.0 }]);
         step(&mut h, "増やしたあとのスクロール");
+        // スクロールの棒をつかんで動かす（一度に大きく動く。つまみの濃さも変わる）
+        let l = h.rt.cx.prev.lists[0].clone();
+        let t = l.thumb.unwrap();
+        let tx = t.x + t.w / 2.0;
+        h.rt.cx.bar_hover = Some(l.id);
+        h.frame();
+        step(&mut h, "棒のホバー");
+        h.send(vec![Event::PointerDown { x: tx, y: t.y + 3.0, shift: false }]);
+        step(&mut h, "つまみをつかむ");
+        for k in 1..=6 {
+            h.send(vec![Event::PointerMove { x: tx, y: t.y + 3.0 + k as f32 * 7.0 }]);
+            step(&mut h, &format!("つまみを動かす {k} 回目"));
+        }
+        h.send(vec![Event::PointerMove { x: tx, y: l.rect.bottom() + 50.0 }]);
+        step(&mut h, "つまみを下の端へ");
+        h.send(vec![Event::PointerUp { x: tx, y: l.rect.bottom() + 50.0 }]);
+        step(&mut h, "つまみを離す");
+        h.send(vec![Event::PointerDown { x: tx, y: l.rect.y + 3.0, shift: false }, Event::PointerUp { x: tx, y: l.rect.y + 3.0 }]);
+        step(&mut h, "棒の空いた所を押す");
+        h.rt.cx.bar_hover = None;
+        h.frame();
+        step(&mut h, "棒から離れる");
+    }
+
+    fn press(h: &mut Harness<Book>, x: f32, y: f32) {
+        h.send(vec![Event::PointerDown { x, y, shift: false }]);
+    }
+    fn drag_to(h: &mut Harness<Book>, x: f32, y: f32) {
+        h.send(vec![Event::PointerMove { x, y }]);
+    }
+    fn release(h: &mut Harness<Book>, x: f32, y: f32) {
+        h.send(vec![Event::PointerUp { x, y }]);
+    }
+    fn done_count(h: &Harness<Book>) -> usize {
+        h.app().items.iter().filter(|(_, d)| *d).count()
+    }
+
+    #[test]
+    fn dragging_the_scroll_thumb_moves_the_list() {
+        // 作者の手の確かめ（5 回目）で、1 万件の一覧のつまみを押しても動かなかった（ホイールでしか動かせなかった）
+        let mut h = book(10_000);
+        let done = done_count(&h);
+        let list = h.rt.cx.prev.lists[0].clone();
+        let thumb = list.thumb.expect("1 万件ならつまみがある");
+        let x = thumb.x + thumb.w / 2.0;
+        // つまみの上から 5 画素の所をつかみ、一覧の下の端より下まで動かす（端で止まる）
+        press(&mut h, x, thumb.y + 5.0);
+        drag_to(&mut h, x, list.rect.bottom() + 200.0);
+        assert!(h.find("Item 9999").is_some(), "下の端まで動かすと最後の行が見える: {:?}", h.names());
+        release(&mut h, x, list.rect.bottom() + 200.0);
+        // 真ん中まで戻すと、真ん中あたりの行が見える
+        let thumb = h.rt.cx.prev.lists[0].thumb.unwrap();
+        press(&mut h, x, thumb.y + 5.0);
+        drag_to(&mut h, x, list.rect.y + (list.rect.h - thumb.h) / 2.0 + 5.0);
+        let rows: Vec<usize> = h.names().iter().filter_map(|n| n.strip_prefix("Item ")?.parse().ok()).collect();
+        assert!(rows.iter().any(|&i| (4900..5100).contains(&i)), "真ん中の行が見える: {rows:?}");
+        // 一番上まで戻す
+        drag_to(&mut h, x, list.rect.y - 300.0);
+        release(&mut h, x, list.rect.y - 300.0);
+        assert!(h.find("Item 0").is_some());
+        // つかんで動かしている間に、ほかの部品は押されない
+        assert_eq!(h.app().items.len(), 10_000);
+        assert_eq!(done_count(&h), done);
+    }
+
+    #[test]
+    fn clicking_the_scroll_track_moves_one_page() {
+        // 100 件（中身 3200、一覧 約 500）なら、1 ページ動くとつまみも同じくらい動く
+        let mut h = book(100);
+        let list = h.rt.cx.prev.lists[0].clone();
+        let thumb = list.thumb.unwrap();
+        let x = thumb.x + thumb.w / 2.0;
+        // つまみより下の空いた所を押すと、一覧の高さ 1 つ分だけ下へ動く
+        press(&mut h, x, list.rect.bottom() - 10.0);
+        release(&mut h, x, list.rect.bottom() - 10.0);
+        assert_eq!(h.rt.cx.scrolls.get(&list.id).copied(), Some(list.rect.h));
+        // つまみより上を押すと戻る
+        press(&mut h, x, list.rect.y + 2.0);
+        release(&mut h, x, list.rect.y + 2.0);
+        assert_eq!(h.rt.cx.scrolls.get(&list.id).copied(), Some(0.0));
+        assert_eq!(h.app().items.len(), 100);
+    }
+
+    #[test]
+    fn buttons_next_to_the_scroll_bar_still_work() {
+        // 削除ボタンの右の端は、棒の押せる範囲と重なる。ボタンの本来の範囲はボタンが勝つ
+        let mut h = book(100);
+        let r = h.find("Delete Item 0").unwrap();
+        let bar = h.rt.cx.prev.lists[0].bar.unwrap();
+        assert!(bar.x < r.right(), "この試験は重なりがある時のため: 棒 {bar:?} ボタン {r:?}");
+        let (x, y) = (r.right() - 1.0, r.y + r.h / 2.0);
+        press(&mut h, x, y);
+        release(&mut h, x, y);
+        assert_eq!(h.app().items.len(), 99);
     }
 
     #[test]
