@@ -130,6 +130,8 @@ mod guide {
     struct Ja14GridsSplitsCanvas;
     #[doc = include_str!("../../../docs/guide/ja/15-trees-tables-dates.md")]
     struct Ja15TreesTablesDates;
+    #[doc = include_str!("../../../docs/guide/ja/16-windows.md")]
+    struct Ja16Windows;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -162,6 +164,8 @@ mod guide {
     struct En14GridsSplitsCanvas;
     #[doc = include_str!("../../../docs/guide/en/15-trees-tables-dates.md")]
     struct En15TreesTablesDates;
+    #[doc = include_str!("../../../docs/guide/en/16-windows.md")]
+    struct En16Windows;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]

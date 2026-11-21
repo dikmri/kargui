@@ -67,6 +67,40 @@ pub trait App: 'static {
     /// }
     /// ```
     fn presented(&mut self, _frame: &Frame) {}
+
+    /// Describes the content of another window opened with [`Ui::window`]; `key` tells which.
+    /// All windows share the app, so a change made in one shows in the others.
+    ///
+    /// ```
+    /// use kargui::{App, Options, Ui};
+    ///
+    /// #[derive(Default)]
+    /// struct Editor {
+    ///     about: bool,
+    /// }
+    ///
+    /// impl App for Editor {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("About").clicked() {
+    ///             self.about = true;
+    ///         }
+    ///         ui.window("about", &Options::new("About"), &mut self.about);
+    ///     }
+    ///
+    ///     fn window(&mut self, key: &str, ui: &mut Ui) {
+    ///         if key == "about" {
+    ///             ui.label("Editor 1.0");
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = kargui::test::Harness::new(Editor::default());
+    /// h.click("About").window("about");
+    /// assert!(h.find("Editor 1.0").is_some());
+    /// ```
+    fn window(&mut self, key: &str, ui: &mut Ui) {
+        let _ = (key, ui);
+    }
 }
 
 /// Information about a frame that was shown. See [`App::presented`].

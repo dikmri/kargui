@@ -107,6 +107,13 @@
   ringed, the picked day filled). `Ui::set_date_text(DateText::japanese())` sets the names of days
   and months (English by default). `Ui::today()` (fixed at 2026-11-22 in tests). Screen readers see
   a date input with its value and a grid of days with full names.
+- More windows: `Ui::window(key, &Options, &mut open)` keeps another window open while `open` is
+  true; its content comes from the new provided method `App::window(&mut self, key, ui)`. All
+  windows share the app; after input in one window, the others draw again. The close button sets
+  `open` to false; setting it to false closes the window; closing the main window ends the app. On
+  Windows each window has its own renderer, screen-reader tree, input method state and timers.
+  Tests: `Harness::window(key)`, `Harness::main_window`, `Harness::windows`,
+  `Harness::close_window`.
 - Fix: when a popup, dialog, list or menu opens or closes, the focus that moves into it (or back)
   is drawn at once. Before, the frame was drawn before the focus moved, and the old focus stayed on
   screen until the next input.

@@ -118,9 +118,9 @@ Not there yet:
   context menus), tabs, number inputs, toolbars, grids, split panes, drawing surfaces, trees, tables
   with headings and date pickers were added after 0.1; images are not drawn on the Direct3D 11
   renderer yet).
-- **App mechanisms:** multiple windows, drag and drop, choosing fonts, window icon, minimum window
-  size, confirming before close, and animation helpers (shortcuts, timers and waking from other
-  threads were added after 0.1).
+- **App mechanisms:** drag and drop, choosing fonts, window icon, minimum window
+  size, confirming before close, and animation helpers (shortcuts, timers, waking from other
+  threads and multiple windows were added after 0.1).
 - **Platforms:** windows open on Windows 10/11 only. The Direct3D 11 renderer (not the default)
   occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
   NVDA. Apps cannot start a reconversion themselves.

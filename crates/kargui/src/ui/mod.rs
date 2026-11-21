@@ -2129,6 +2129,31 @@ impl<'a> Ui<'a> {
         self.cx.today.unwrap_or_else(Date::today)
     }
 
+    /// Opens another window while `*open` is true, with `options`' title, size and position; its
+    /// content comes from [`App::window`](crate::App::window) with this `key`. When the user
+    /// closes it, `*open` becomes false. Setting `*open` to false closes it. Only the main
+    /// window's view opens windows.
+    ///
+    /// ```
+    /// use kargui::Options;
+    /// # let mut settings = false;
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Settings").clicked() {
+    ///     settings = true;
+    /// }
+    /// ui.window("settings", &Options { size: (400.0, 300.0), ..Options::new("Settings") }, &mut settings);
+    /// # });
+    /// ```
+    pub fn window(&mut self, key: &str, options: &crate::Options, open: &mut bool) {
+        if self.cx.closed_windows.remove(key) {
+            *open = false;
+            crate::log::event("window.closed_by_user", &format!("key={key}"), "open=false");
+        }
+        if *open {
+            self.cx.windows.push(context::WindowRequest { key: key.to_string(), title: options.title.clone(), size: options.size, position: options.position, activate: options.activate });
+        }
+    }
+
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
     /// screen readers skip it unless you give it a name with `.label(..)`.
     ///

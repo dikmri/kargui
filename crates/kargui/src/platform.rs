@@ -8,6 +8,7 @@
 //! - 閉じる時は、GPU の物と読み上げを片付けてから窓を壊す
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -84,6 +85,13 @@ enum Post {
     DarkTitle(HWND, bool),
     /// マウスを捕まえる（true）か放す（false）か
     Capture(HWND, bool),
+    /// Ui::window で頼まれた窓を開く・閉じる
+    OpenWindow(crate::ui::context::WindowRequest),
+    CloseWindow(String),
+    /// 利用者がほかの窓の閉じるボタンを押した（主の窓に伝え、アプリの open を false にしてもらう）
+    ClosedByUser(String),
+    /// 入力でこの窓を描いた。ほかの窓も描き直す
+    FrameOthers(HWND),
 }
 
 /// 読み上げの操作を、窓の持ち主のスレッドへ渡す係（AccessKit は別のスレッドから呼ぶことがある）
@@ -240,7 +248,15 @@ fn hi(v: isize) -> i32 {
 
 struct State {
     hwnd: HWND,
-    app: Box<dyn App>,
+    /// Ui::window のキー（主の窓は None）
+    key: Option<String>,
+    /// どの窓も同じアプリを使う（同じスレッドで、1 度に 1 つの窓だけが描く）
+    app: Rc<RefCell<Box<dyn App>>>,
+    renderer: Renderer,
+    /// 主の窓だけ: 開いているほかの窓のキー
+    open_windows: Vec<String>,
+    /// ほかの窓の入力のあとの描き直し（ほかの窓へは広げない）
+    synced: bool,
     rt: Runtime,
     surface: Option<Surface>,
     adapter: Option<Adapter>,
@@ -278,21 +294,43 @@ struct State {
 }
 
 thread_local! {
-    static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    /// 窓の状態（0 番が主の窓、後ろは Ui::window で開いた窓）
+    static STATE: RefCell<Vec<State>> = const { RefCell::new(Vec::new()) };
 }
 
-/// 状態を借りて f を呼ぶ。すでに借りている（メッセージの入れ子）ときは None
-fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
+/// 窓の一覧を借りて f を呼ぶ。すでに借りている（メッセージの入れ子）ときは None
+fn with_windows<R>(f: impl FnOnce(&mut Vec<State>) -> R) -> Option<R> {
     STATE.with(|s| {
         let Ok(mut guard) = s.try_borrow_mut() else { return None };
-        guard.as_mut().map(f)
+        Some(f(&mut guard))
     })
 }
 
-/// 借りを返したあとで、Post に入れたことを行う
+/// 主の窓の状態を借りて f を呼ぶ
+fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
+    with_windows(|ws| ws.first_mut().map(f)).flatten()
+}
+
+/// hwnd の窓の状態を借りて f を呼ぶ
+fn with_window<R>(hwnd: HWND, f: impl FnOnce(&mut State) -> R) -> Option<R> {
+    with_windows(|ws| ws.iter_mut().find(|w| w.hwnd == hwnd).map(f)).flatten()
+}
+
+/// 借りを返したあとで、Post に入れたことを行う（行ったことがまた Post を足すので、無くなるまで繰り返す）
 fn drain_post() {
-    let posts = with_state(|st| std::mem::take(&mut st.post)).unwrap_or_default();
-    for p in posts {
+    loop {
+        let posts = with_windows(|ws| ws.iter_mut().flat_map(|w| std::mem::take(&mut w.post)).collect::<Vec<_>>()).unwrap_or_default();
+        if posts.is_empty() {
+            break;
+        }
+        for p in posts {
+            do_post(p);
+        }
+    }
+}
+
+fn do_post(p: Post) {
+    {
         match p {
             Post::SetWindowPos(hwnd, r) => unsafe {
                 let res = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -328,7 +366,53 @@ fn drain_post() {
                 let res = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&v as *const BOOL).cast(), 4);
                 log::event("window.dark_title", &format!("dark={dark}"), &format!("{res:?}"));
             },
+            Post::OpenWindow(r) => open_window(r),
+            Post::CloseWindow(key) => {
+                let hwnd = with_windows(|ws| ws.iter().find(|w| w.key.as_deref() == Some(key.as_str())).map(|w| w.hwnd)).flatten();
+                if let Some(h) = hwnd {
+                    // WM_DESTROY が入れ子で届くので、借りの外で壊してから一覧から外す
+                    let res = unsafe { DestroyWindow(h) };
+                    log::event("window.close_other", &format!("key={key}"), &format!("{res:?}"));
+                    with_windows(|ws| ws.retain(|w| w.hwnd != h));
+                }
+                with_state(|st| st.open_windows.retain(|k| *k != key));
+            }
+            Post::ClosedByUser(key) => {
+                with_state(|st| {
+                    st.rt.cx.closed_windows.insert(key);
+                    st.need_frame = true;
+                });
+            }
+            Post::FrameOthers(hwnd) => {
+                with_windows(|ws| {
+                    for w in ws.iter_mut().filter(|w| w.hwnd != hwnd) {
+                        w.need_frame = true;
+                        w.synced = true;
+                    }
+                });
+            }
         }
+    }
+}
+
+/// Ui::window で頼まれた窓を作って見せ、1 枚目を描く（描き方・明暗は主の窓と同じ）
+fn open_window(r: crate::ui::context::WindowRequest) {
+    let Some((app, renderer, dark, full_rate, started)) = with_state(|st| (st.app.clone(), st.renderer, st.rt.cx.dark, st.full_rate, st.started)) else { return };
+    match create_window(Some(r.key.clone()), &r.title, r.size, r.position, renderer, dark, full_rate, app, started) {
+        Ok(w) => {
+            let hwnd = w.hwnd;
+            with_windows(|ws| ws.push(w));
+            with_state(|st| st.open_windows.push(r.key.clone()));
+            unsafe {
+                let _ = ShowWindow(hwnd, if r.activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
+            }
+            with_window(hwnd, |st| {
+                st.frame("first");
+                st.shown = true;
+            });
+            log::event("window.open_other", &format!("key={}", r.key), "ok");
+        }
+        Err(e) => log::event("window.open_other", &format!("key={}", r.key), &format!("error={e:?}")),
     }
 }
 
@@ -401,7 +485,27 @@ impl State {
         let t = Instant::now();
         let events = std::mem::take(&mut self.events);
         let focus_before = self.rt.cx.focus;
-        let out = self.rt.frame(&mut *self.app, events);
+        let out = {
+            let mut app = self.app.borrow_mut();
+            match &self.key {
+                None => self.rt.frame(&mut **app, events),
+                Some(key) => self.rt.frame_with(&mut |ui: &mut crate::ui::Ui| app.window(key, ui), events),
+            }
+        };
+        // 主の窓: 頼まれた窓と開いている窓をそろえる（作る・壊すのは借りの外）
+        if self.key.is_none() {
+            let requested = self.rt.cx.windows.clone();
+            for r in requested.iter().filter(|r| !self.open_windows.contains(&r.key)) {
+                self.post.push(Post::OpenWindow(r.clone()));
+            }
+            for k in self.open_windows.iter().filter(|k| !requested.iter().any(|r| &r.key == *k)) {
+                self.post.push(Post::CloseWindow(k.clone()));
+            }
+        }
+        // 入力で描いたら、ほかの窓も描き直す（アプリを共有するため。描き直しはそれ以上広げない）
+        if why == "input" {
+            self.post.push(Post::FrameOthers(self.hwnd));
+        }
         self.set_wake(out.wake_after);
         self.animating = out.want_frame;
         self.need_frame = false;
@@ -465,9 +569,9 @@ impl State {
             self.post.push(Post::DarkTitle(self.hwnd, want));
         }
         self.dark_title = Some(want);
-        if self.shown {
+        if self.shown && self.key.is_none() {
             let number = self.rt.frames - 1;
-            self.app.presented(&Frame { number, since_start: self.started.elapsed() });
+            self.app.borrow_mut().presented(&Frame { number, since_start: self.started.elapsed() });
         }
     }
 
@@ -624,16 +728,23 @@ impl State {
     fn handle(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         match msg {
             WM_CLOSE => {
-                log::event("window.close", "", "requested");
-                self.post.push(Post::Destroy(self.hwnd));
+                log::event("window.close", &format!("key={:?}", self.key), "requested");
+                match &self.key {
+                    // ほかの窓はすぐには壊さない。アプリの open を false にしてもらい、次のフレームで閉じる
+                    Some(key) => self.post.push(Post::ClosedByUser(key.clone())),
+                    None => self.post.push(Post::Destroy(self.hwnd)),
+                }
                 Some(LRESULT(0))
             }
             WM_DESTROY => {
                 // 窓が残っているうちに、GPU の物と読み上げを片付ける
                 self.adapter = None;
                 let had = self.surface.take().is_some();
-                log::event("window.destroy", "", &format!("surface_dropped={had}"));
-                unsafe { PostQuitMessage(0) };
+                log::event("window.destroy", &format!("key={:?}", self.key), &format!("surface_dropped={had}"));
+                // 主の窓を閉じたらアプリを終える
+                if self.key.is_none() {
+                    unsafe { PostQuitMessage(0) };
+                }
                 Some(LRESULT(0))
             }
             WM_SIZE => {
@@ -998,7 +1109,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 log::event("a11y.getobject", &format!("objid={} n={n}", lp.0 as i32), "received");
             }
             // 借りの中で木を作って渡し、UIA への受け渡し（入れ子のメッセージが起きうる）は借りの外で行う
-            let reply = with_state(|st| {
+            let reply = with_window(hwnd, |st| {
                 let mut initial = Initial(Some(st.rt.a11y().0));
                 st.adapter.as_mut().and_then(|a| a.handle_wm_getobject(wp, lp, &mut initial))
             })
@@ -1010,7 +1121,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         _ => {}
     }
-    let handled = with_state(|st| st.handle(msg, wp, lp));
+    let handled = with_window(hwnd, |st| st.handle(msg, wp, lp));
     drain_post();
     match handled {
         Some(Some(r)) => r,
@@ -1037,6 +1148,101 @@ fn dispatch_pending(msg: &mut MSG) -> bool {
     true
 }
 
+/// 窓を 1 つ作る（主の窓は key が None、Ui::window の窓はそのキー）。描く物・読み上げ・起こし役を用意した状態を返す。
+/// 見せるのは呼んだ側（ShowWindow）
+#[allow(clippy::too_many_arguments)]
+fn create_window(
+    key: Option<String>,
+    title: &str,
+    size: (f32, f32),
+    position: Option<(f32, f32)>,
+    renderer: Renderer,
+    dark: bool,
+    full_rate: bool,
+    app: Rc<RefCell<Box<dyn App>>>,
+    started: Instant,
+) -> Result<State, crate::Error> {
+    let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
+    // 位置（論理ピクセル）と大きさを、そのモニターの拡大率で物理ピクセルにする
+    let (lx, ly) = position.map_or((CW_USEDEFAULT, CW_USEDEFAULT), |(x, y)| (x as i32, y as i32));
+    let monitor = unsafe { MonitorFromPoint(POINT { x: lx.max(-32000), y: ly.max(-32000) }, MONITOR_DEFAULTTOPRIMARY) };
+    let (mut dx, mut dy) = (96u32, 96u32);
+    unsafe {
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+    }
+    let scale = dx as f32 / 96.0;
+    let style = WS_OVERLAPPEDWINDOW;
+    let mut r = RECT { left: 0, top: 0, right: (size.0 * scale) as i32, bottom: (size.1 * scale) as i32 };
+    unsafe {
+        let _ = AdjustWindowRectExForDpi(&mut r, style, false, WINDOW_EX_STYLE(0), dx);
+    }
+    let wide = HSTRING::from(title);
+    let hwnd = unsafe {
+        CreateWindowExW(WINDOW_EX_STYLE(0), w!("kargui-window"), &wide, style, lx, ly, r.right - r.left, r.bottom - r.top, None, None, Some(instance), None)?
+    };
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+    let mut client = RECT::default();
+    unsafe { GetClientRect(hwnd, &mut client)? };
+    let (cw, ch) = (client.right - client.left, client.bottom - client.top);
+    log::event(
+        "window.create",
+        &format!("key={key:?} pos={position:?} dpi={dpi} client={cw}x{ch} renderer={renderer:?}"),
+        &format!("ms={:.1}", started.elapsed().as_secs_f64() * 1000.0),
+    );
+    let text = Text::new()?;
+    let t_surface = Instant::now();
+    let surface = match renderer {
+        Renderer::Gpu => Surface::Gpu(Gpu::new(hwnd, cw as u32, ch as u32, ATLAS_SIZE)?),
+        Renderer::Cpu => Surface::Cpu(Gdi::new(hwnd, cw, ch)?),
+    };
+    log::event("surface.init", &format!("renderer={renderer:?}"), &format!("ms={:.1}", t_surface.elapsed().as_secs_f64() * 1000.0));
+    let mut rt = Runtime::new(text, dark, Box::new(SystemClipboard { hwnd: hwnd.0 as isize }), title.to_string());
+    // ほかのスレッドから起こされたら、窓へメッセージを送る（窓の番号は数として渡す）
+    let target = hwnd.0 as isize;
+    rt.cx.waker = crate::wake::Waker::new(move || unsafe {
+        let _ = PostMessageW(Some(HWND(target as *mut _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
+    });
+    rt.resize(cw as f32, ch as f32, dpi as f32 / 96.0);
+    let actions = Arc::new(Mutex::new(VecDeque::new()));
+    let focused = unsafe { GetForegroundWindow() } == hwnd;
+    let adapter = Adapter::new(hwnd, focused, ActionSink { hwnd: hwnd.0 as isize, queue: actions.clone() });
+    Ok(State {
+        hwnd,
+        key,
+        app,
+        renderer,
+        open_windows: Vec::new(),
+        synced: false,
+        rt,
+        surface: Some(surface),
+        adapter: Some(adapter),
+        actions,
+        post: Vec::new(),
+        events: Vec::new(),
+        need_frame: true,
+        wake_timer: false,
+        animating: false,
+        started,
+        shown: false,
+        full_rate,
+        window_focused: focused,
+        composing: false,
+        high_surrogate: None,
+        last_caret: None,
+        ime_requests: [0; 5],
+        summary: Summary::default(),
+        background: [0.0; 4],
+        dark_title: None,
+        tracking_leave: false,
+        last_tick: None,
+        t_build: 0.0,
+        t_draw: 0.0,
+        t_wait: 0.0,
+        slow_frames: 0,
+        anim: AnimStats::default(),
+    })
+}
+
 pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Error> {
     let started = Instant::now();
     if std::env::var_os("KARGUI_TRACE").is_some() {
@@ -1060,87 +1266,11 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     if unsafe { RegisterClassExW(&wc) } == 0 {
         log::event("window.class", "", "error=RegisterClassExW");
     }
-
-    // 位置（論理ピクセル）と大きさを、そのモニターの拡大率で物理ピクセルにする
-    let (lx, ly) = options.position.map_or((CW_USEDEFAULT, CW_USEDEFAULT), |(x, y)| (x as i32, y as i32));
-    let monitor = unsafe { MonitorFromPoint(POINT { x: lx.max(-32000), y: ly.max(-32000) }, MONITOR_DEFAULTTOPRIMARY) };
-    let (mut dx, mut dy) = (96u32, 96u32);
-    unsafe {
-        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-    }
-    let scale = dx as f32 / 96.0;
-    let style = WS_OVERLAPPEDWINDOW;
-    let mut r = RECT { left: 0, top: 0, right: (options.size.0 * scale) as i32, bottom: (options.size.1 * scale) as i32 };
-    unsafe {
-        let _ = AdjustWindowRectExForDpi(&mut r, style, false, WINDOW_EX_STYLE(0), dx);
-    }
-    let title = HSTRING::from(options.title.as_str());
-    let hwnd = unsafe {
-        CreateWindowExW(WINDOW_EX_STYLE(0), class, &title, style, lx, ly, r.right - r.left, r.bottom - r.top, None, None, Some(instance), None)?
-    };
-    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
-    let mut client = RECT::default();
-    unsafe { GetClientRect(hwnd, &mut client)? };
-    let (cw, ch) = (client.right - client.left, client.bottom - client.top);
-    log::event(
-        "window.create",
-        &format!("pos={:?} dpi={dpi} client={cw}x{ch} renderer={:?}", options.position, options.renderer),
-        &format!("ms={:.1}", started.elapsed().as_secs_f64() * 1000.0),
-    );
-
-    let text = Text::new()?;
-    let t_surface = Instant::now();
-    let surface = match options.renderer {
-        Renderer::Gpu => Surface::Gpu(Gpu::new(hwnd, cw as u32, ch as u32, ATLAS_SIZE)?),
-        Renderer::Cpu => Surface::Cpu(Gdi::new(hwnd, cw, ch)?),
-    };
-    log::event("surface.init", &format!("renderer={:?}", options.renderer), &format!("ms={:.1}", t_surface.elapsed().as_secs_f64() * 1000.0));
+    let app = Rc::new(RefCell::new(app));
     let dark = options.dark.unwrap_or_else(system_dark);
-    let mut rt = Runtime::new(text, dark, Box::new(SystemClipboard { hwnd: hwnd.0 as isize }), options.title.clone());
-    // ほかのスレッドから起こされたら、窓へメッセージを送る（窓の番号は数として渡す）
-    let target = hwnd.0 as isize;
-    rt.cx.waker = crate::wake::Waker::new(move || unsafe {
-        let _ = PostMessageW(Some(HWND(target as *mut _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
-    });
-    rt.resize(cw as f32, ch as f32, dpi as f32 / 96.0);
-
-    let actions = Arc::new(Mutex::new(VecDeque::new()));
-    let focused = unsafe { GetForegroundWindow() } == hwnd;
-    let adapter = Adapter::new(hwnd, focused, ActionSink { hwnd: hwnd.0 as isize, queue: actions.clone() });
-
-    STATE.with(|s| {
-        *s.borrow_mut() = Some(State {
-            hwnd,
-            app,
-            rt,
-            surface: Some(surface),
-            adapter: Some(adapter),
-            actions,
-            post: Vec::new(),
-            events: Vec::new(),
-            need_frame: true,
-            wake_timer: false,
-            animating: false,
-            started,
-            shown: false,
-            full_rate: options.full_rate,
-            window_focused: focused,
-            composing: false,
-            high_surrogate: None,
-            last_caret: None,
-            ime_requests: [0; 5],
-            summary: Summary::default(),
-            background: [0.0; 4],
-            dark_title: None,
-            tracking_leave: false,
-            last_tick: None,
-            t_build: 0.0,
-            t_draw: 0.0,
-            t_wait: 0.0,
-            slow_frames: 0,
-            anim: AnimStats::default(),
-        })
-    });
+    let main = create_window(None, &options.title, options.size, options.position, options.renderer, dark, options.full_rate, app, started)?;
+    let hwnd = main.hwnd;
+    STATE.with(|s| s.borrow_mut().push(main));
 
     unsafe {
         let _ = ShowWindow(hwnd, if options.activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
@@ -1154,26 +1284,32 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     }
     with_state(|st| {
         st.shown = true;
-        st.app.presented(&Frame { number: 0, since_start: st.started.elapsed() });
+        st.app.borrow_mut().presented(&Frame { number: 0, since_start: st.started.elapsed() });
     });
 
     let mut msg = MSG::default();
     // 測定で比べるため、環境変数 KARGUI_MMCSS=0 で登録しないようにできる
     let mut boost = Boost(None, std::env::var("KARGUI_MMCSS").as_deref() != Ok("0"));
     loop {
-        let animating = with_state(|st| st.animating).unwrap_or(false);
+        let animating = with_windows(|ws| ws.iter().any(|w| w.animating)).unwrap_or(false);
         boost.set(animating);
         if animating {
             if !dispatch_pending(&mut msg) {
                 break;
             }
-            with_state(|st| st.tick());
+            with_windows(|ws| {
+                for w in ws.iter_mut().filter(|w| w.animating) {
+                    w.tick();
+                }
+            });
             drain_post();
             with_state(|st| st.wait_vblank());
         } else {
-            with_state(|st| {
-                st.last_tick = None;
-                st.end_animation();
+            with_windows(|ws| {
+                for w in ws.iter_mut() {
+                    w.last_tick = None;
+                    w.end_animation();
+                }
             });
             let r = unsafe { GetMessageW(&mut msg, None, 0, 0) };
             if r.0 == 0 || r.0 == -1 {
@@ -1186,18 +1322,29 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             if !dispatch_pending(&mut msg) {
                 break;
             }
-            with_state(|st| {
-                if st.need_frame {
-                    st.frame("input");
-                }
-            });
-            drain_post();
+            frame_pending();
         }
     }
     boost.set(false);
-    STATE.with(|s| s.borrow_mut().take());
+    STATE.with(|s| s.borrow_mut().clear());
     log::event("loop.end", "", "ok");
     Ok(())
+}
+
+/// 描き直しを頼まれた窓を描く。入力で描いた窓があれば、ほかの窓も 1 回描き直す（アプリを共有するため）
+fn frame_pending() {
+    loop {
+        with_windows(|ws| {
+            for w in ws.iter_mut().filter(|w| w.need_frame) {
+                let why = if std::mem::take(&mut w.synced) { "sync" } else { "input" };
+                w.frame(why);
+            }
+        });
+        drain_post();
+        if !with_windows(|ws| ws.iter().any(|w| w.need_frame)).unwrap_or(false) {
+            break;
+        }
+    }
 }
 
 /// アニメーションの間だけ、このスレッドを MMCSS（動画・ゲーム向けに優先度を上げる Windows の仕組み）に登録する。

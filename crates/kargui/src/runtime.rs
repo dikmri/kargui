@@ -63,6 +63,17 @@ impl Runtime {
     }
 
     pub fn frame(&mut self, app: &mut dyn App, events: Vec<Event>) -> FrameOut {
+        self.frame_with(&mut |ui: &mut Ui| app.view(ui), events)
+    }
+
+    /// ビューを 1 回回す。開くように頼まれた窓（Ui::window）の一覧は、回すたびに作り直す
+    fn view_pass(&mut self, view: &mut dyn FnMut(&mut Ui), tree: &mut Tree) {
+        self.cx.windows.clear();
+        view(&mut Ui::new(&mut self.cx, tree));
+    }
+
+    /// frame と同じだが、画面を作る関数を渡す（ほかの窓は App::window で作る）
+    pub fn frame_with(&mut self, view: &mut dyn FnMut(&mut Ui), events: Vec<Event>) -> FrameOut {
         self.cx.now = self.cx.clock();
         self.cx.wake_at = None;
         let mut want = false;
@@ -70,19 +81,19 @@ impl Runtime {
         if had_input {
             self.cx.handle(events);
             let mut tree = Tree::new(ROOT, self.cx.scale);
-            app.view(&mut Ui::new(&mut self.cx, &mut tree));
+            self.view_pass(view, &mut tree);
             self.cx.end_input();
             want |= std::mem::take(&mut self.cx.want_frame);
         }
         self.cx.again = false;
         let mut tree = Tree::new(ROOT, self.cx.scale);
-        app.view(&mut Ui::new(&mut self.cx, &mut tree));
+        self.view_pass(view, &mut tree);
         want |= std::mem::take(&mut self.cx.want_frame);
         // 入力が無くても、ビューの途中でメニューを開いた・閉じた時（ポインターが止まった時）は回し直す
         if had_input || std::mem::take(&mut self.cx.again) {
             for _ in 0..SETTLE {
                 let mut again = Tree::new(ROOT, self.cx.scale);
-                app.view(&mut Ui::new(&mut self.cx, &mut again));
+                self.view_pass(view, &mut again);
                 self.cx.again = false;
                 want |= std::mem::take(&mut self.cx.want_frame);
                 let settled = again.same_as(&tree);
@@ -100,7 +111,7 @@ impl Runtime {
         // 決まった高さでこのフレームの中でもう一度回す。余分なフレームを画面に出さない
         if draw::list_needs_refresh(&tree) {
             tree = Tree::new(ROOT, self.cx.scale);
-            app.view(&mut Ui::new(&mut self.cx, &mut tree));
+            self.view_pass(view, &mut tree);
             want |= std::mem::take(&mut self.cx.want_frame);
             draw::layout(&mut tree, &mut self.cx);
             draw::paint(&tree, &mut self.cx, &mut self.draw);

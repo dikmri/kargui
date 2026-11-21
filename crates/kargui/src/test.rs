@@ -77,7 +77,12 @@ use crate::ui::{Ui, a11y};
 /// ```
 pub struct Harness<A: App> {
     app: A,
+    /// 元の窓
     rt: Runtime,
+    /// ほかの窓（Ui::window のキーと、その窓）
+    windows: Vec<(String, Runtime)>,
+    /// 操作している窓（None なら元の窓）
+    current: Option<String>,
 }
 
 impl<A: App> Harness<A> {
@@ -148,7 +153,7 @@ impl<A: App> Harness<A> {
         rt.cx.frozen = Some(std::time::Duration::ZERO);
         // 今日も止める（暦の「今日」の印が日によって変わらないように）
         rt.cx.today = crate::date::Date::new(2026, 11, 22);
-        let mut h = Self { app, rt };
+        let mut h = Self { app, rt, windows: Vec::new(), current: None };
         h.frame();
         h
     }
@@ -252,11 +257,27 @@ impl<A: App> Harness<A> {
     }
 
     fn send(&mut self, events: Vec<Event>) -> &mut Self {
-        let out = self.rt.frame(&mut self.app, events);
-        // 一覧の高さが決まった直後など、もう 1 フレーム要るときは続けて描く（アニメーションは除く）
-        if out.want_frame && self.rt.frames < 1_000_000 {
-            self.rt.frame(&mut self.app, Vec::new());
+        match self.current.clone() {
+            None => {
+                let out = self.rt.frame(&mut self.app, events);
+                // 一覧の高さが決まった直後など、もう 1 フレーム要るときは続けて描く（アニメーションは除く）
+                if out.want_frame && self.rt.frames < 1_000_000 {
+                    self.rt.frame(&mut self.app, Vec::new());
+                }
+            }
+            Some(key) => {
+                // ほかの窓の入力。アプリは共有なので、元の窓も描き直す
+                let app = &mut self.app;
+                if let Some((_, rt)) = self.windows.iter_mut().find(|(k, _)| *k == key) {
+                    let out = rt.frame_with(&mut |ui: &mut Ui| app.window(&key, ui), events);
+                    if out.want_frame {
+                        rt.frame_with(&mut |ui: &mut Ui| app.window(&key, ui), Vec::new());
+                    }
+                }
+                self.rt.frame(&mut self.app, Vec::new());
+            }
         }
+        self.sync_windows();
         self
     }
 
@@ -288,7 +309,8 @@ impl<A: App> Harness<A> {
     /// assert!(h.names().contains(&"Add".to_string()));
     /// ```
     pub fn names(&self) -> Vec<String> {
-        (0..self.rt.tree.info.len()).filter_map(|i| a11y::name_of(&self.rt.tree, i)).collect()
+        let rt = self.cur();
+        (0..rt.tree.info.len()).filter_map(|i| a11y::name_of(&rt.tree, i)).collect()
     }
 
     /// Where the widget with this name is (physical pixels), if it is on screen.
@@ -321,7 +343,8 @@ impl<A: App> Harness<A> {
     /// assert!(h.find("Remove").is_none());
     /// ```
     pub fn find(&self, name: &str) -> Option<Rect> {
-        (0..self.rt.tree.info.len()).find(|&i| a11y::name_of(&self.rt.tree, i).as_deref() == Some(name)).map(|i| self.rt.tree.layout[i].rect)
+        let rt = self.cur();
+        (0..rt.tree.info.len()).find(|&i| a11y::name_of(&rt.tree, i).as_deref() == Some(name)).map(|i| rt.tree.layout[i].rect)
     }
 
     /// Where every widget with this name is (physical pixels), in screen-reader order. Use it when
@@ -342,9 +365,8 @@ impl<A: App> Harness<A> {
     /// assert!(both[0].y < both[1].y);
     /// ```
     pub fn find_all(&self, name: &str) -> Vec<Rect> {
-        (0..self.rt.tree.info.len())
-            .filter(|&i| a11y::name_of(&self.rt.tree, i).as_deref() == Some(name))
-            .map(|i| self.rt.tree.layout[i].rect)
+        let rt = self.cur();
+        (0..rt.tree.info.len()).filter(|&i| a11y::name_of(&rt.tree, i).as_deref() == Some(name)).map(|i| rt.tree.layout[i].rect)
             .collect()
     }
 
@@ -371,7 +393,8 @@ impl<A: App> Harness<A> {
     /// assert_eq!(h.enabled("Send"), Some(true));
     /// ```
     pub fn enabled(&self, name: &str) -> Option<bool> {
-        (0..self.rt.tree.info.len()).find(|&i| a11y::name_of(&self.rt.tree, i).as_deref() == Some(name)).map(|i| !self.rt.tree.info[i].disabled)
+        let rt = self.cur();
+        (0..rt.tree.info.len()).find(|&i| a11y::name_of(&rt.tree, i).as_deref() == Some(name)).map(|i| !rt.tree.info[i].disabled)
     }
 
     /// Moves the pointer over the widget with this name and draws a frame (its hover look and, after
@@ -395,8 +418,9 @@ impl<A: App> Harness<A> {
     /// ```
     pub fn hover(&mut self, name: &str) -> &mut Self {
         let (x, y) = self.center(name);
-        let id = self.rt.hover_at(x, y);
-        self.rt.cx.set_hover(id);
+        let rt = self.cur_mut();
+        let id = rt.hover_at(x, y);
+        rt.cx.set_hover(id);
         self.frame()
     }
 
@@ -428,9 +452,12 @@ impl<A: App> Harness<A> {
     /// assert!(h.find("1 s").is_some());
     /// ```
     pub fn wait(&mut self, time: std::time::Duration) -> &mut Self {
-        match &mut self.rt.cx.frozen {
-            Some(t) => *t += time,
-            None => self.rt.cx.skew += time,
+        // どの窓の時計も同じだけ進める
+        for rt in std::iter::once(&mut self.rt).chain(self.windows.iter_mut().map(|(_, rt)| rt)) {
+            match &mut rt.cx.frozen {
+                Some(t) => *t += time,
+                None => rt.cx.skew += time,
+            }
         }
         self.frame()
     }
@@ -499,6 +526,158 @@ impl<A: App> Harness<A> {
         let (x, y) = self.center(name);
         let (x2, y2) = (x + dx, y + dy);
         self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerMove { x: x2, y: y2 }, Event::PointerUp { x: x2, y: y2 }])
+    }
+
+    /// Moves the test to the window opened with [`Ui::window`](crate::Ui::window) under `key`:
+    /// the following finds, clicks and key presses go to it, until [`Harness::main_window`] (or
+    /// until it closes). Panics if no such window is open.
+    ///
+    /// ```
+    /// # use kargui::{App, Options, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Mail {
+    ///     compose: bool,
+    ///     sent: u32,
+    /// }
+    ///
+    /// impl App for Mail {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("New message").clicked() {
+    ///             self.compose = true;
+    ///         }
+    ///         ui.window("compose", &Options::new("New message"), &mut self.compose);
+    ///     }
+    ///
+    ///     fn window(&mut self, _key: &str, ui: &mut Ui) {
+    ///         if ui.button("Send").clicked() {
+    ///             self.sent += 1;
+    ///             self.compose = false;
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Mail::default());
+    /// h.click("New message").window("compose").click("Send");
+    /// assert_eq!(h.app().sent, 1);
+    /// assert!(h.windows().is_empty());
+    /// ```
+    pub fn window(&mut self, key: &str) -> &mut Self {
+        assert!(self.windows.iter().any(|(k, _)| k == key), "no window {key:?} is open; open windows: {:?}", self.windows());
+        self.current = Some(key.to_string());
+        self
+    }
+
+    /// Moves the test back to the main window. See [`Harness::window`].
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// # struct Hello;
+    /// # impl App for Hello {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.label("Hello");
+    /// #     }
+    /// # }
+    /// let mut h = Harness::new(Hello);
+    /// assert!(h.main_window().find("Hello").is_some());
+    /// ```
+    pub fn main_window(&mut self) -> &mut Self {
+        self.current = None;
+        self
+    }
+
+    /// The keys of the other windows that are open, in the order they were opened.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// # struct Hello;
+    /// # impl App for Hello {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.label("Hello");
+    /// #     }
+    /// # }
+    /// let h = Harness::new(Hello);
+    /// assert!(h.windows().is_empty());
+    /// ```
+    pub fn windows(&self) -> Vec<String> {
+        self.windows.iter().map(|(k, _)| k.clone()).collect()
+    }
+
+    /// Closes the window `key` as if the user clicked its close button.
+    ///
+    /// ```
+    /// # use kargui::{App, Options, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Viewer {
+    ///     help: bool,
+    /// }
+    ///
+    /// impl App for Viewer {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("Help").clicked() {
+    ///             self.help = true;
+    ///         }
+    ///         ui.window("help", &Options::new("Help"), &mut self.help);
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Viewer::default());
+    /// h.click("Help").close_window("help");
+    /// assert!(!h.app().help);
+    /// ```
+    pub fn close_window(&mut self, key: &str) -> &mut Self {
+        self.rt.cx.closed_windows.insert(key.to_string());
+        self.current = None;
+        self.send(Vec::new())
+    }
+
+    /// 試験で操作している窓（ほかの窓に移っていればその窓）
+    fn cur(&self) -> &Runtime {
+        match &self.current {
+            Some(key) => self.windows.iter().find(|(k, _)| k == key).map_or(&self.rt, |(_, rt)| rt),
+            None => &self.rt,
+        }
+    }
+
+    fn cur_mut(&mut self) -> &mut Runtime {
+        match self.current.clone() {
+            Some(key) => match self.windows.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, rt)) => rt,
+                None => &mut self.rt,
+            },
+            None => &mut self.rt,
+        }
+    }
+
+    /// 元の窓が頼んだ窓に合わせて、ほかの窓を開け閉めし、どれも描き直す（窓はアプリを共有する）
+    fn sync_windows(&mut self) {
+        let requested = self.rt.cx.windows.clone();
+        self.windows.retain(|(k, _)| requested.iter().any(|r| &r.key == k));
+        if self.current.as_ref().is_some_and(|c| !self.windows.iter().any(|(k, _)| k == c)) {
+            self.current = None;
+        }
+        for r in &requested {
+            if self.windows.iter().any(|(k, _)| *k == r.key) {
+                continue;
+            }
+            let text = Text::new().expect("the text engine starts");
+            let mut rt = Runtime::new(text, self.rt.cx.dark, Box::new(MemoryClipboard::default()), r.title.clone());
+            let scale = self.rt.cx.scale;
+            rt.resize((r.size.0 * scale).round(), (r.size.1 * scale).round(), scale);
+            rt.cx.frozen = self.rt.cx.frozen;
+            rt.cx.today = self.rt.cx.today;
+            self.windows.push((r.key.clone(), rt));
+        }
+        let app = &mut self.app;
+        for (key, rt) in &mut self.windows {
+            let out = rt.frame_with(&mut |ui: &mut Ui| app.window(key, ui), Vec::new());
+            if out.want_frame {
+                rt.frame_with(&mut |ui: &mut Ui| app.window(key, ui), Vec::new());
+            }
+        }
     }
 
     /// Right-clicks the widget with this name (opens its
@@ -750,11 +929,12 @@ impl<A: App> Harness<A> {
     /// assert_eq!(image.rgb(0, 0), 0xffffff); // the light background
     /// ```
     pub fn render(&mut self) -> Image {
-        let (w, h) = (self.rt.cx.width as i32, self.rt.cx.height as i32);
+        let rt = self.cur();
+        let (w, h) = (rt.cx.width as i32, rt.cx.height as i32);
         let mut pixels = vec![0u32; (w * h) as usize];
-        let bg = self.rt.cx.theme.background;
-        let atlas = &self.rt.cx.text.atlas;
-        Canvas { px: &mut pixels, width: w, height: h }.draw(&self.rt.draw, &atlas.pixels, atlas.size, IRect::new(0, 0, w, h), bg);
+        let bg = rt.cx.theme.background;
+        let atlas = &rt.cx.text.atlas;
+        Canvas { px: &mut pixels, width: w, height: h }.draw(&rt.draw, &atlas.pixels, atlas.size, IRect::new(0, 0, w, h), bg);
         Image { width: w as u32, height: h as u32, pixels }
     }
 }
@@ -3644,5 +3824,57 @@ mod tests {
         assert!(h.find("日").is_some() && h.find("土").is_some());
         assert_eq!(focused_name(&h).as_deref(), Some("2026年11月22日"));
         assert!(h.find("次の月").is_some());
+    }
+
+    /// 複数の窓の見本: 設定の窓で変えた値を、元の窓にも出す
+    #[derive(Default)]
+    struct TwoWindows {
+        open: bool,
+        volume: i32,
+    }
+
+    impl App for TwoWindows {
+        fn view(&mut self, ui: &mut Ui) {
+            if ui.button("Settings").clicked() {
+                self.open = true;
+            }
+            ui.label(format!("Volume {}", self.volume));
+            let options = crate::Options { size: (320.0, 200.0), ..crate::Options::new("Settings") };
+            ui.window("settings", &options, &mut self.open);
+        }
+
+        fn window(&mut self, key: &str, ui: &mut Ui) {
+            if key == "settings" {
+                ui.slider(&mut self.volume, 0..=10).label("Volume");
+                if ui.button("Close").clicked() {
+                    self.open = false;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn apps_open_more_windows_that_share_the_app() {
+        let mut h = Harness::new(TwoWindows::default());
+        assert!(h.windows().is_empty());
+        h.click("Settings");
+        assert_eq!(h.windows(), vec!["settings".to_string()]);
+        assert!(h.find("Volume 0").is_some(), "操作するのは、まだ元の窓");
+        h.window("settings");
+        assert!(h.find("Settings").is_none() && h.find("Volume").is_some(), "設定の窓の中");
+        assert!(h.find("Close").unwrap().right() <= 320.0, "設定の窓の大きさ");
+        h.press(Key::Tab).press(Key::Right).press(Key::Right);
+        assert_eq!(h.app().volume, 2);
+        h.main_window();
+        assert!(h.find("Volume 2").is_some(), "元の窓も描き直す");
+        h.window("settings").click("Close");
+        assert!(h.windows().is_empty(), "アプリが閉じた");
+        assert!(!h.app().open);
+        assert!(h.find("Settings").is_some(), "閉じた窓を操作していたら、元の窓へ戻る");
+        // 利用者が窓の閉じるボタンで閉じた
+        h.click("Settings");
+        assert_eq!(h.windows().len(), 1);
+        h.close_window("settings");
+        assert!(!h.app().open && h.windows().is_empty());
     }
 }

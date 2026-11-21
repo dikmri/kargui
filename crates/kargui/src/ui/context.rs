@@ -65,6 +65,18 @@ pub(crate) struct OverlayInfo {
     pub focus: Vec<Id>,
 }
 
+/// 開くように頼まれた窓（Ui::window）
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct WindowRequest {
+    pub key: String,
+    pub title: String,
+    /// 中の大きさ（論理ピクセル）と、置く場所（無ければ OS に任せる）
+    pub size: (f32, f32),
+    pub position: Option<(f32, f32)>,
+    /// 開いた時に前面に出すか（Options::activate）
+    pub activate: bool,
+}
+
 /// ツールチップを出すか
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TipState {
@@ -203,6 +215,10 @@ pub(crate) struct Context {
     pub today: Option<crate::date::Date>,
     /// 開いている暦の、焦点のある日（日付の欄 → 日付）
     pub calendar_cursor: HashMap<Id, crate::date::Date>,
+    /// この回のビューで開くように頼まれた窓（Ui::window。窓の処理と試験台がそろえる）
+    pub windows: Vec<WindowRequest>,
+    /// 利用者が閉じた窓のキー（次のビューの Ui::window が open を false にする）
+    pub closed_windows: HashSet<String>,
     /// この回の clicked はキー（Enter・Space）か読み上げソフトから来た（ポインターの位置を見ない）
     pub clicked_by_key: bool,
     /// ビューの途中で、前に作った部品が見た状態を変えた（メニューを開いた・閉じた）。もう一度回す
@@ -299,6 +315,8 @@ impl Context {
             date_text: crate::date::DateText::english(),
             today: None,
             calendar_cursor: HashMap::new(),
+            windows: Vec::new(),
+            closed_windows: HashSet::new(),
             clicked_by_key: false,
             again: false,
             rested: None,
