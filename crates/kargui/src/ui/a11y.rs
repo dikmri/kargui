@@ -46,7 +46,7 @@ fn row_name(tree: &Tree, i: usize) -> String {
 
 /// 読み上げの木に出さない物（空き・数の入力欄の小さいボタン。欄が増やす・減らす操作を持つ）
 fn hidden(kind: &Kind) -> bool {
-    matches!(kind, Kind::Space | Kind::SpinButton { .. })
+    matches!(kind, Kind::Space | Kind::SpinButton { .. } | Kind::ColumnGrip)
 }
 
 pub(crate) struct A11yBuild {
@@ -62,10 +62,19 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
     let mut in_tree = HashSet::new();
     // 親の番号: 一覧の行の「何件目」を決めるため
     let mut list_count = vec![None; tree.info.len()];
+    // 表の行（見出しの行は 0、ほかは 1 から）と、行の中の升の列
+    let mut table_row = vec![None; tree.info.len()];
+    let mut table_cell = vec![None; tree.info.len()];
     for i in 0..tree.info.len() {
-        if let Kind::List { count, .. } = tree.info[i].kind {
+        if let Kind::List { count, table, .. } = tree.info[i].kind {
             for &c in &tree.layout[i].children {
                 list_count[c] = Some(count);
+                if table {
+                    table_row[c] = Some(tree.layout[c].row_index + 1);
+                    for (k, &cell) in tree.layout[c].children.iter().enumerate() {
+                        table_cell[cell] = Some(k);
+                    }
+                }
             }
         }
     }
@@ -77,6 +86,22 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
         }
         let name = name_of(tree, i);
         let mut node = match &info.kind {
+            // 表の行と升（一覧の行と、その中の入れ物）
+            Kind::Row | Kind::Item { .. } if table_row[i].is_some() => {
+                let mut n = Node::new(Role::Row);
+                n.set_row_index(table_row[i].unwrap_or(0));
+                if let Kind::Item { selected, .. } = &info.kind {
+                    n.set_selected(*selected);
+                    n.add_action(Action::Click);
+                    n.add_action(Action::Focus);
+                }
+                n
+            }
+            _ if table_cell[i].is_some() => {
+                let mut n = Node::new(Role::Cell);
+                n.set_column_index(table_cell[i].unwrap_or(0));
+                n
+            }
             Kind::Root => {
                 let mut n = Node::new(Role::Window);
                 n.set_label(title);
@@ -161,9 +186,61 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Focus);
                 n
             }
+            Kind::List { table: true, .. } => Node::new(Role::RowGroup),
             Kind::List { count, .. } => {
                 let mut n = Node::new(Role::List);
                 n.set_size_of_set(*count);
+                n
+            }
+            Kind::Table { columns, rows } => {
+                let mut n = Node::new(Role::Table);
+                n.set_row_count(rows + 1);
+                n.set_column_count(*columns);
+                if let Some(l) = &info.label {
+                    n.set_label(l.clone());
+                }
+                n
+            }
+            Kind::TableHeader => {
+                let mut n = Node::new(Role::Row);
+                n.set_row_index(0);
+                n
+            }
+            Kind::ColumnHeader { sort, sortable, column, .. } => {
+                let mut n = Node::new(Role::ColumnHeader);
+                n.set_column_index(*column);
+                n.set_row_index(0);
+                if let Some(asc) = sort {
+                    n.set_sort_direction(if *asc { accesskit::SortDirection::Ascending } else { accesskit::SortDirection::Descending });
+                }
+                if *sortable {
+                    n.add_action(Action::Click);
+                    n.add_action(Action::Focus);
+                }
+                n
+            }
+            Kind::ColumnGrip => unreachable!(),
+            Kind::DateField { text, open, .. } => {
+                let mut n = Node::new(Role::DateInput);
+                n.set_value(text.clone());
+                n.set_has_popup(accesskit::HasPopup::Dialog);
+                n.set_expanded(*open);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::DayGrid => {
+                let mut n = Node::new(Role::Grid);
+                if let Some(l) = &info.label {
+                    n.set_label(l.clone());
+                }
+                n
+            }
+            Kind::CalendarDay { selected, .. } => {
+                let mut n = Node::new(Role::GridCell);
+                n.set_selected(*selected);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
                 n
             }
             Kind::Scroll => Node::new(Role::ScrollView),
@@ -354,6 +431,24 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Focus);
                 n.add_action(Action::Increment);
                 n.add_action(Action::Decrement);
+                n
+            }
+            Kind::Tree => {
+                let mut n = Node::new(Role::Tree);
+                if let Some(l) = &info.label {
+                    n.set_label(l.clone());
+                }
+                n
+            }
+            Kind::TreeItem { depth, open, selected, .. } => {
+                let mut n = Node::new(Role::TreeItem);
+                n.set_level(depth + 1);
+                n.set_selected(*selected);
+                if let Some(o) = open {
+                    n.set_expanded(*o);
+                }
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
                 n
             }
             Kind::Canvas { .. } => {

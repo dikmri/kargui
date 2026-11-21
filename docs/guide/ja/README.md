@@ -20,5 +20,6 @@ API が変わったのにガイドを直していないと、検査（`cargo run
 12. [メニュー](12-menus.md)
 13. [タブ・数の入力・ツールバー](13-tabs-numbers-toolbars.md)
 14. [格子・仕切り・自由に描く面](14-grids-splits-canvas.md)
+15. [木の表示・表・日付](15-trees-tables-dates.md)
 
 API の一つ一つの説明は、`cargo doc -p kargui --open` で読めます。AI に書かせる時は `docs/llms.txt` を渡してください。

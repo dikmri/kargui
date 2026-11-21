@@ -193,6 +193,18 @@ pub(crate) struct Context {
     pub number_text: HashMap<Id, String>,
     /// ツールバー → 最後に焦点があったボタン（Tab はそこにだけ止まる）
     pub toolbar_last: HashMap<Id, Id>,
+    /// 木の表示の枝 → 開いているか（kargui が持つ。最初は閉じている）
+    pub expanded: HashMap<Id, bool>,
+    /// 表の列の幅（表, 何列目 → 論理ピクセル）。つまみで変えた幅を覚える
+    pub column_widths: HashMap<(Id, usize), f32>,
+    /// 日付の部品の言葉（Ui::set_date_text）
+    pub date_text: crate::date::DateText,
+    /// 今日の日付を決めておく（試験台は 2026-11-22。None なら OS に聞く）
+    pub today: Option<crate::date::Date>,
+    /// 開いている暦の、焦点のある日（日付の欄 → 日付）
+    pub calendar_cursor: HashMap<Id, crate::date::Date>,
+    /// この回の clicked はキー（Enter・Space）か読み上げソフトから来た（ポインターの位置を見ない）
+    pub clicked_by_key: bool,
     /// ビューの途中で、前に作った部品が見た状態を変えた（メニューを開いた・閉じた）。もう一度回す
     pub again: bool,
     /// ポインターが止まった時の動き（入れ子のメニューの開閉）を済ませた項目と、乗った時刻
@@ -282,6 +294,12 @@ impl Context {
             menus: Vec::new(),
             number_text: HashMap::new(),
             toolbar_last: HashMap::new(),
+            expanded: HashMap::new(),
+            column_widths: HashMap::new(),
+            date_text: crate::date::DateText::english(),
+            today: None,
+            calendar_cursor: HashMap::new(),
+            clicked_by_key: false,
             again: false,
             rested: None,
             overlay_after: HashMap::new(),
@@ -601,6 +619,7 @@ impl Context {
                     let hit = self.hit(x, y).filter(|h| h.enabled).map(|h| h.id);
                     if hit.is_some() && hit == self.pressed {
                         self.clicked = hit;
+                        self.clicked_by_key = false;
                     }
                     if self.pressed.is_some() {
                         self.pointer = Some((x, y));
@@ -719,6 +738,7 @@ impl Context {
                     if self.focus.is_some_and(|f| !self.is_text_input(f)) =>
                 {
                     self.clicked = self.focus;
+                    self.clicked_by_key = true;
                 }
                 // 古い木を見た読み上げソフトから、押せない部品への操作が届くことがある
                 Event::A11y { target, .. } if self.prev.disabled.contains(&target) => {
@@ -727,6 +747,7 @@ impl Context {
                 Event::A11y { target, action: A11yAction::Click } => {
                     self.commit_preedit("a11y");
                     self.clicked = Some(target);
+                    self.clicked_by_key = true;
                 }
                 Event::A11y { target, action: A11yAction::Focus } => {
                     self.commit_preedit("a11y");

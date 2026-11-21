@@ -520,6 +520,79 @@ if let Some(at) = canvas.label("Dots").clicked_at() {
 }
 ```
 
+### `pub fn tree<K: Copy + PartialEq + Hash>(&mut self, selected: &mut Option<K>, f: impl FnOnce(&mut TreeBuilder<K>)) -> TreeView<'_>`
+
+A tree of items that open and close, such as folders or an outline. Build it in `f` with
+[`TreeBuilder::branch`] (an item with children; closed at first) and [`TreeBuilder::leaf`].
+Items are told apart by their keys. `*selected` is the selected item's key. Clicking an
+item selects it, and clicking the arrow at its left opens or closes it. Keyboard: Tab stops
+once (on the selected item); Up, Down, Home, End and a letter move and select; Right opens
+an item or moves to its first child; Left closes it or moves to its parent; Enter and Space
+open and close. Children of closed items are not created, so large trees stay light.
+
+```
+ui.tree(&mut selected, |t| {
+    t.branch("docs", "Documents", |t| {
+        t.leaf("report", "report.pdf");
+    });
+    t.leaf("notes", "notes.txt");
+})
+.label("Files");
+```
+
+### `pub fn table<'u>(&'u mut self, columns: &'u [TableColumn], count: usize, row_height: f32) -> Table<'u, 'a>`
+
+A table: column headings over a virtual list of `count` rows, `row_height` logical pixels
+tall, whose cells line up with the headings. Set it up with [`Table::sort`],
+[`Table::selection`], [`Table::label`] and [`Table::grow`], then build the rows with
+[`Table::show`]. Drag the small grip at the right of a heading to change a column's width
+(kargui remembers it). Without `.grow()` the table shows up to 8 rows and scrolls.
+
+```
+use kargui::ui::TableColumn;
+let columns = [TableColumn::new("Name").width(220.0), TableColumn::new("Size").width(90.0).right()];
+ui.table(&columns, files.len(), 30.0).sort(&mut sort).label("Files").grow().show(|row, i| {
+    row.text(&files[i].name);
+    row.text(format!("{} KB", files[i].size));
+});
+```
+
+### `pub fn date_picker(&mut self, value: &mut Option<Date>) -> DatePicker<'_>`
+
+A field for a date that opens a month calendar below it when clicked (or with Enter, Space,
+Alt+Down or F4). `*value` is `None` until a date is picked. In the calendar, the arrow keys
+move by a day or a week, Home and End to the start or end of the week, Page Up and Page
+Down by a month (with Shift, by a year), Enter or Space picks, and Escape or a click outside
+closes without picking. The field shows the date as `2026-11-22`; the names of days and
+months come from [`Ui::set_date_text`]. Screen readers hear a date input with its value,
+and a grid of days, each with its full name.
+
+```
+if ui.date_picker(&mut due).label("Due date").changed() {
+    // save the new date
+}
+```
+
+### `pub fn set_date_text(&mut self, text: DateText)`
+
+Sets the words date pickers show (names of days and months, the text of an empty field)
+for this frame and the following ones. English by default.
+
+```
+ui.set_date_text(kargui::DateText::japanese());
+ui.date_picker(&mut due).label("期限");
+```
+
+### `pub fn today(&self) -> Date`
+
+Today's date (in tests, always 2026-11-22, so pictures and results do not change from day
+to day).
+
+```
+let today = ui.today();
+ui.label(format!("Today is {today}"));
+```
+
 ### `pub fn icon(&mut self, icon: Icon) -> IconView<'_>`
 
 A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:

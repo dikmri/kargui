@@ -59,6 +59,7 @@ use context::{Context, TipState};
 pub use layout::{Align, Size};
 use layout::{Dir, LayoutNode};
 
+use crate::date::{Date, DateText};
 use crate::geom::{Color, Rect};
 use crate::input::{Event, Key, Mods};
 use crate::wake::Waker;
@@ -176,6 +177,24 @@ pub(crate) enum Kind {
     Splitter { stacked: bool, value: f32, min: f32, max: f32 },
     /// 自由に描く面
     Canvas { ops: Vec<DrawOp> },
+    /// 木の表示の入れ物
+    Tree,
+    /// 表の入れ物（見出しの行と、行の一覧）
+    Table { columns: usize, rows: usize },
+    /// 表の見出しの行
+    TableHeader,
+    /// 表の列の見出し（sort は並べ替えている列なら昇順か、sortable は押して並べ替えられるか）
+    ColumnHeader { text: String, sort: Option<bool>, right: bool, sortable: bool, column: usize },
+    /// 列の幅を変えるつまみ（読み上げの木には出さない）
+    ColumnGrip,
+    /// 日付の欄（text は出す文字、empty は日付が無い）
+    DateField { text: String, empty: bool, open: bool },
+    /// 月の暦の日のます目の入れ物（格子。読み上げは grid）
+    DayGrid,
+    /// 暦の 1 日（in_month はその月の日、today は今日、selected は選んでいる日）
+    CalendarDay { day: u32, in_month: bool, today: bool, selected: bool },
+    /// 木の表示の 1 行（depth は深さ、open は枝なら開いているか、葉は None）
+    TreeItem { text: String, depth: usize, open: Option<bool>, selected: bool },
     /// メニューバー（見出しを横に並べる入れ物）
     MenuBar,
     /// メニューバーの見出し（tab_stop は Tab で止まる 1 つ。最初の見出し）
@@ -189,7 +208,8 @@ pub(crate) enum Kind {
     /// 複数行の入力欄（rows は見える行の数）
     TextArea { value: String, hint: String, rows: u32 },
     Space,
-    List { count: usize, separators: bool, view_h: f32 },
+    /// 一覧（table は表の行の一覧。読み上げで行と升にする）
+    List { count: usize, separators: bool, view_h: f32, table: bool },
     Scroll,
     /// 選べる一覧の行（tab_stop: Tab で移る行。選んだ行、無ければ見えている最初の行）
     Item { selected: bool, tab_stop: bool },
@@ -274,6 +294,10 @@ impl Kind {
                 | Kind::Tab { .. }
                 | Kind::NumberInput { .. }
                 | Kind::Splitter { .. }
+                | Kind::TreeItem { .. }
+                | Kind::ColumnHeader { .. }
+                | Kind::DateField { .. }
+                | Kind::CalendarDay { .. }
         )
     }
 }
@@ -1813,6 +1837,298 @@ impl<'a> Ui<'a> {
         CanvasView { h: self.handle(idx, id), pointer, clicked_at }
     }
 
+    /// A tree of items that open and close, such as folders or an outline. Build it in `f` with
+    /// [`TreeBuilder::branch`] (an item with children; closed at first) and [`TreeBuilder::leaf`].
+    /// Items are told apart by their keys. `*selected` is the selected item's key. Clicking an
+    /// item selects it, and clicking the arrow at its left opens or closes it. Keyboard: Tab stops
+    /// once (on the selected item); Up, Down, Home, End and a letter move and select; Right opens
+    /// an item or moves to its first child; Left closes it or moves to its parent; Enter and Space
+    /// open and close. Children of closed items are not created, so large trees stay light.
+    ///
+    /// ```
+    /// # let mut selected = None;
+    /// # kargui::test::example(|ui| {
+    /// ui.tree(&mut selected, |t| {
+    ///     t.branch("docs", "Documents", |t| {
+    ///         t.leaf("report", "report.pdf");
+    ///     });
+    ///     t.leaf("notes", "notes.txt");
+    /// })
+    /// .label("Files");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn tree<K: Copy + PartialEq + Hash>(&mut self, selected: &mut Option<K>, f: impl FnOnce(&mut TreeBuilder<K>)) -> TreeView<'_> {
+        let (idx, id) = self.add(Kind::Tree, Dir::Column);
+        self.tree.layout[idx].align = Align::Stretch;
+        let mut b = TreeBuilder { ui: self.child(idx), tree: id, depth: 0, parent: None, rows: Vec::new(), selected: *selected, picked: None };
+        f(&mut b);
+        let TreeBuilder { rows, picked, .. } = b;
+        let mut sel = picked.or(*selected);
+        let n = rows.len();
+        let cx = &mut *self.cx;
+        let at = cx.focus.filter(|_| !self.disabled).and_then(|f| rows.iter().position(|r| r.id == f));
+        if let (Some(at), true) = (at, n > 0) {
+            let mut next = at;
+            for e in std::mem::take(&mut cx.keys) {
+                let Event::Key { key, mods } = e else { continue };
+                if mods.ctrl || mods.alt {
+                    continue;
+                }
+                match key {
+                    Key::Down => next = (next + 1).min(n - 1),
+                    Key::Up => next = next.saturating_sub(1),
+                    Key::Home => next = 0,
+                    Key::End => next = n - 1,
+                    // 右: 閉じた枝は開く。開いた枝は最初の子へ
+                    Key::Right => match rows[next].open {
+                        Some(false) => {
+                            cx.expanded.insert(rows[next].id, true);
+                        }
+                        Some(true) if next + 1 < n && rows[next + 1].parent == Some(next) => next += 1,
+                        _ => {}
+                    },
+                    // 左: 開いた枝は閉じる。ほかは親へ
+                    Key::Left => match (rows[next].open, rows[next].parent) {
+                        (Some(true), _) => {
+                            cx.expanded.insert(rows[next].id, false);
+                        }
+                        (_, Some(p)) => next = p,
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            let items: Vec<(Id, String)> = rows.iter().map(|r| (r.id, r.text.clone())).collect();
+            if next != at {
+                cx.focus = Some(rows[next].id);
+                cx.focus_visible = true;
+            }
+            type_ahead(cx, &items);
+            if let Some(k) = cx.focus.and_then(|f| rows.iter().position(|r| r.id == f)).filter(|&k| k != at) {
+                sel = Some(rows[k].key);
+            }
+        }
+        // Tab は選んでいる行（無ければ最初の行）にだけ止まる
+        let stop = rows.iter().position(|r| Some(r.key) == sel).unwrap_or(0);
+        for (k, r) in rows.iter().enumerate() {
+            self.tree.info[r.idx].skip_tab = k != stop;
+            if let Kind::TreeItem { selected, .. } = &mut self.tree.info[r.idx].kind {
+                *selected = Some(r.key) == sel;
+            }
+        }
+        let changed = sel != *selected;
+        *selected = sel;
+        TreeView { h: self.handle(idx, id), changed }
+    }
+
+    /// A table: column headings over a virtual list of `count` rows, `row_height` logical pixels
+    /// tall, whose cells line up with the headings. Set it up with [`Table::sort`],
+    /// [`Table::selection`], [`Table::label`] and [`Table::grow`], then build the rows with
+    /// [`Table::show`]. Drag the small grip at the right of a heading to change a column's width
+    /// (kargui remembers it). Without `.grow()` the table shows up to 8 rows and scrolls.
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # struct File { name: String, size: u64 }
+    /// # let files = vec![File { name: "a.txt".into(), size: 3 }];
+    /// # let mut sort = None;
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Name").width(220.0), TableColumn::new("Size").width(90.0).right()];
+    /// ui.table(&columns, files.len(), 30.0).sort(&mut sort).label("Files").grow().show(|row, i| {
+    ///     row.text(&files[i].name);
+    ///     row.text(format!("{} KB", files[i].size));
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn table<'u>(&'u mut self, columns: &'u [TableColumn], count: usize, row_height: f32) -> Table<'u, 'a> {
+        let loc = std::panic::Location::caller();
+        Table { ui: self, loc, columns, count, row_h: row_height, sort: None, selection: None, label: None, grow: false }
+    }
+
+    /// A field for a date that opens a month calendar below it when clicked (or with Enter, Space,
+    /// Alt+Down or F4). `*value` is `None` until a date is picked. In the calendar, the arrow keys
+    /// move by a day or a week, Home and End to the start or end of the week, Page Up and Page
+    /// Down by a month (with Shift, by a year), Enter or Space picks, and Escape or a click outside
+    /// closes without picking. The field shows the date as `2026-11-22`; the names of days and
+    /// months come from [`Ui::set_date_text`]. Screen readers hear a date input with its value,
+    /// and a grid of days, each with its full name.
+    ///
+    /// ```
+    /// # let mut due: Option<kargui::Date> = None;
+    /// # kargui::test::example(|ui| {
+    /// if ui.date_picker(&mut due).label("Due date").changed() {
+    ///     // save the new date
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn date_picker(&mut self, value: &mut Option<Date>) -> DatePicker<'_> {
+        let words = self.cx.date_text.clone();
+        let text = value.map_or_else(|| words.empty.to_string(), |d| d.to_string());
+        let (idx, id) = self.add(Kind::DateField { text, empty: value.is_none(), open: false }, Dir::Leaf);
+        let pop = Id(hash_of((id.0, "calendar")));
+        let today = self.today();
+        let cell = |d: Date| Id(hash_of((pop.0, d.days())));
+        let mut open = self.cx.open.contains(&id) && !self.cx.closing.contains(&pop);
+        let mut picked = None;
+        if self.disabled {
+            open = false;
+        } else {
+            if self.cx.clicked == Some(id) {
+                open = !open;
+            }
+            if self.cx.focus == Some(id) && (self.cx.app_keys.contains(&(Key::Down, Mods::ALT)) || self.cx.app_keys.contains(&(Key::F4, Mods::NONE))) {
+                open = true;
+            }
+        }
+        if open {
+            let mut cursor = *self.cx.calendar_cursor.entry(id).or_insert(value.unwrap_or(today));
+            // 日に焦点がある時のキー（作る前に動かし、動かした先の月を作る）
+            if self.cx.focus == Some(cell(cursor)) {
+                let cx = &mut *self.cx;
+                let mut moved = false;
+                for e in std::mem::take(&mut cx.keys) {
+                    let Event::Key { key, mods } = e else { continue };
+                    if mods.ctrl || mods.alt {
+                        continue;
+                    }
+                    let wd = cursor.weekday() as i64;
+                    cursor = match key {
+                        Key::Left => cursor.add_days(-1),
+                        Key::Right => cursor.add_days(1),
+                        Key::Up => cursor.add_days(-7),
+                        Key::Down => cursor.add_days(7),
+                        Key::Home => cursor.add_days(-wd),
+                        Key::End => cursor.add_days(6 - wd),
+                        _ => continue,
+                    };
+                    moved = true;
+                }
+                // PageUp と PageDown は、部品が受けないキーとしてアプリへ届く
+                cx.app_keys.retain(|&(k, m)| {
+                    let months = match (k, m) {
+                        (Key::PageUp, Mods { shift: false, ctrl: false, alt: false }) => -1,
+                        (Key::PageDown, Mods { shift: false, ctrl: false, alt: false }) => 1,
+                        (Key::PageUp, Mods { shift: true, ctrl: false, alt: false }) => -12,
+                        (Key::PageDown, Mods { shift: true, ctrl: false, alt: false }) => 12,
+                        _ => return true,
+                    };
+                    cursor = cursor.add_months(months);
+                    moved = true;
+                    false
+                });
+                if moved {
+                    cx.focus = Some(cell(cursor));
+                    cx.focus_visible = true;
+                }
+            }
+            let o = self.push_overlay(pop, OverlayKind::Popup, String::new(), Some(id));
+            let (pad, gap) = (self.px(8.0), self.px(6.0));
+            self.tree.layout[o].pad = (pad, pad);
+            self.tree.layout[o].gap = gap;
+            let cw = self.px(36.0);
+            {
+                let mut ui = self.child(o);
+                // 月の題と、前・次の月のボタン
+                let mut step = 0;
+                ui.row(|ui| {
+                    if ui.icon_button(Icon::ChevronLeft, words.previous).clicked() {
+                        step = -1;
+                    }
+                    ui.fill();
+                    ui.label(words.title(cursor.year(), cursor.month())).bold();
+                    ui.fill();
+                    if ui.icon_button(Icon::ChevronRight, words.next).clicked() {
+                        step = 1;
+                    }
+                });
+                if step != 0 {
+                    cursor = cursor.add_months(step);
+                }
+                let columns = [Size::Fixed(36.0); 7];
+                // 曜日の名前（日のます目と同じ列の幅）
+                ui.grid(&columns, |ui| {
+                    for name in words.weekdays {
+                        ui.label(name).weak().small();
+                    }
+                })
+                .gap(0.0)
+                .align(Align::Center);
+                // 日のます目: 月の 1 日を含む週の日曜日から 6 週
+                let first = Date::new(cursor.year(), cursor.month(), 1).unwrap_or(cursor);
+                let start = first.add_days(-(first.weekday() as i64));
+                let (g, _) = ui.add(Kind::DayGrid, Dir::Grid);
+                ui.tree.info[g].label = Some(words.title(cursor.year(), cursor.month()));
+                let l = &mut ui.tree.layout[g];
+                l.columns = vec![Size::Fixed(cw); 7];
+                l.align = Align::Center;
+                let mut days = ui.child(g);
+                for k in 0..42 {
+                    let d = start.add_days(k);
+                    let kind = Kind::CalendarDay { day: d.day(), in_month: d.month() == cursor.month(), today: d == today, selected: Some(d) == *value };
+                    let (c, cid) = days.push(cell(d), kind, Dir::Leaf);
+                    days.tree.info[c].label = Some(words.full(d));
+                    days.tree.info[c].skip_tab = d != cursor;
+                    if !days.disabled && days.cx.clicked == Some(cid) {
+                        picked = Some(d);
+                    }
+                }
+            }
+            self.cx.calendar_cursor.insert(id, cursor);
+            // 開いた時は、焦点を今の日に置く
+            self.cx.overlay_focus_hint.insert(pop, cell(cursor));
+        }
+        if let Some(d) = picked {
+            open = false;
+            crate::log::event("date.pick", &format!("date={d}"), "ok");
+        }
+        let changed = picked.is_some_and(|d| Some(d) != *value);
+        if let Some(d) = picked {
+            *value = Some(d);
+        }
+        if open {
+            self.cx.open.insert(id);
+        } else {
+            self.cx.open.remove(&id);
+            self.cx.calendar_cursor.remove(&id);
+        }
+        if let Kind::DateField { text, empty, open: o } = &mut self.tree.info[idx].kind {
+            *o = open;
+            *empty = value.is_none();
+            *text = value.map_or_else(|| words.empty.to_string(), |d| d.to_string());
+        }
+        DatePicker { h: self.handle(idx, id), changed }
+    }
+
+    /// Sets the words date pickers show (names of days and months, the text of an empty field)
+    /// for this frame and the following ones. English by default.
+    ///
+    /// ```
+    /// # let mut due = None;
+    /// # kargui::test::example(|ui| {
+    /// ui.set_date_text(kargui::DateText::japanese());
+    /// ui.date_picker(&mut due).label("期限");
+    /// # });
+    /// ```
+    pub fn set_date_text(&mut self, text: DateText) {
+        self.cx.date_text = text;
+    }
+
+    /// Today's date (in tests, always 2026-11-22, so pictures and results do not change from day
+    /// to day).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let today = ui.today();
+    /// ui.label(format!("Today is {today}"));
+    /// # });
+    /// ```
+    pub fn today(&self) -> Date {
+        self.cx.today.unwrap_or_else(Date::today)
+    }
+
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
     /// screen readers skip it unless you give it a name with `.label(..)`.
     ///
@@ -2309,7 +2625,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn list(&mut self, count: usize, row_height: f32) -> List<'_, 'a> {
-        let (idx, id) = self.add(Kind::List { count, separators: true, view_h: 0.0 }, Dir::List);
+        let (idx, id) = self.add(Kind::List { count, separators: true, view_h: 0.0, table: false }, Dir::List);
         let row_h = self.px(row_height).max(1.0);
         self.tree.layout[idx].row_h = row_h;
         List { ui: self, idx, id, count, row_h, scroll_to: None, selection: None }
@@ -4548,6 +4864,542 @@ impl CanvasView<'_> {
     }
 }
 
+/// 木の表示の 1 行（キーボードで移るために、作った順に覚える）
+struct TreeRow<K> {
+    idx: usize,
+    id: Id,
+    key: K,
+    text: String,
+    /// 親の行（rows の中の番号）
+    parent: Option<usize>,
+    /// 枝なら開いているか。葉は None
+    open: Option<bool>,
+}
+
+/// Builds the items of a [`Ui::tree`].
+///
+/// ```
+/// # let mut selected: Option<u32> = None;
+/// # kargui::test::example(|ui| {
+/// ui.tree(&mut selected, |t| {
+///     t.branch(1, "Fruit", |t| {
+///         t.leaf(2, "Apple");
+///         t.leaf(3, "Pear");
+///     });
+/// });
+/// # });
+/// ```
+pub struct TreeBuilder<'m, K> {
+    ui: Ui<'m>,
+    tree: Id,
+    depth: usize,
+    parent: Option<usize>,
+    rows: Vec<TreeRow<K>>,
+    selected: Option<K>,
+    picked: Option<K>,
+}
+
+impl<'m, K: Copy + PartialEq + Hash> TreeBuilder<'m, K> {
+    /// An item without children.
+    ///
+    /// ```
+    /// # let mut selected = None;
+    /// # kargui::test::example(|ui| {
+    /// ui.tree(&mut selected, |t| t.leaf(1, "Inbox"));
+    /// # });
+    /// ```
+    pub fn leaf(&mut self, key: K, text: impl Into<String>) {
+        self.row(key, text.into(), None);
+    }
+
+    /// An item with children, built in `f` only while it is open (closed at first).
+    ///
+    /// ```
+    /// # let mut selected = None;
+    /// # kargui::test::example(|ui| {
+    /// ui.tree(&mut selected, |t| {
+    ///     t.branch("mail", "Mail", |t| {
+    ///         t.leaf("inbox", "Inbox");
+    ///         t.leaf("sent", "Sent");
+    ///     });
+    /// });
+    /// # });
+    /// ```
+    pub fn branch(&mut self, key: K, text: impl Into<String>, f: impl FnOnce(&mut TreeBuilder<'m, K>)) {
+        let rid = Id(hash_of((self.tree.0, key)));
+        let open = *self.ui.cx.expanded.entry(rid).or_insert(false);
+        let k = self.row(key, text.into(), Some(open));
+        if self.ui.cx.expanded.get(&rid).copied().unwrap_or(false) {
+            let (depth, parent) = (self.depth, self.parent);
+            self.depth += 1;
+            self.parent = Some(k);
+            f(self);
+            self.depth = depth;
+            self.parent = parent;
+        }
+    }
+
+    fn row(&mut self, key: K, text: String, open: Option<bool>) -> usize {
+        let rid = Id(hash_of((self.tree.0, key)));
+        let selected = self.selected == Some(key);
+        let depth = self.depth;
+        let (idx, _) = self.ui.push(rid, Kind::TreeItem { text: text.clone(), depth, open, selected }, Dir::Leaf);
+        let cx = &mut *self.ui.cx;
+        if !self.ui.disabled && cx.clicked == Some(rid) {
+            self.picked = Some(key);
+            // 枝は、Enter・Space か、左の印（シェブロン）を押した時に開閉する
+            if let Some(o) = open {
+                let scale = cx.scale;
+                let on_arrow = match (cx.pointer, cx.prev.hits.iter().find(|h| h.id == rid)) {
+                    (Some((x, _)), Some(h)) => x < h.rect.x + ((8.0 + 20.0 * depth as f32 + 20.0) * scale).round(),
+                    _ => false,
+                };
+                if cx.clicked_by_key || on_arrow {
+                    cx.expanded.insert(rid, !o);
+                }
+            }
+        }
+        self.rows.push(TreeRow { idx, id: rid, key, text, parent: self.parent, open });
+        self.rows.len() - 1
+    }
+}
+
+/// A tree. See [`Ui::tree`].
+///
+/// ```
+/// # let mut selected = None;
+/// # kargui::test::example(|ui| {
+/// if ui.tree(&mut selected, |t| t.leaf(1, "Inbox")).changed() {
+///     // show the selected folder
+/// }
+/// # });
+/// ```
+pub struct TreeView<'t> {
+    h: Handle<'t>,
+    changed: bool,
+}
+
+common!(TreeView, " # let mut sel = None;", "tree(&mut sel, |t| t.leaf(1, \"Inbox\"))");
+
+impl TreeView<'_> {
+    /// Whether another item was selected in this frame.
+    ///
+    /// ```
+    /// # let mut selected = None;
+    /// # kargui::test::example(|ui| {
+    /// if ui.tree(&mut selected, |t| t.leaf(1, "Inbox")).changed() {
+    ///     // react to the selection
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+}
+
+/// A column of a [`Ui::table`]: its heading, width and alignment.
+///
+/// ```
+/// use kargui::ui::TableColumn;
+/// let name = TableColumn::new("Name").width(200.0);
+/// let size = TableColumn::new("Size").width(80.0).right();
+/// let notes = TableColumn::new("Notes").fill();
+/// # let _ = (name, size, notes);
+/// ```
+#[derive(Clone, Debug)]
+pub struct TableColumn {
+    title: String,
+    /// 幅（論理ピクセル）。None なら残りの幅
+    width: Option<f32>,
+    right: bool,
+}
+
+impl TableColumn {
+    /// A column with this heading, 120 logical pixels wide.
+    ///
+    /// ```
+    /// let column = kargui::ui::TableColumn::new("Name");
+    /// # let _ = column;
+    /// ```
+    pub fn new(title: impl Into<String>) -> Self {
+        Self { title: title.into(), width: Some(120.0), right: false }
+    }
+
+    /// The starting width in logical pixels (the user can drag it wider or narrower).
+    ///
+    /// ```
+    /// let column = kargui::ui::TableColumn::new("Name").width(240.0);
+    /// # let _ = column;
+    /// ```
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width.max(1.0));
+        self
+    }
+
+    /// Takes the width that is left (usually the last column). It cannot be dragged.
+    ///
+    /// ```
+    /// let column = kargui::ui::TableColumn::new("Notes").fill();
+    /// # let _ = column;
+    /// ```
+    pub fn fill(mut self) -> Self {
+        self.width = None;
+        self
+    }
+
+    /// Puts the heading and the cells at the right of the column (for numbers).
+    ///
+    /// ```
+    /// let column = kargui::ui::TableColumn::new("Price").right();
+    /// # let _ = column;
+    /// ```
+    pub fn right(mut self) -> Self {
+        self.right = true;
+        self
+    }
+}
+
+/// 表の升と見出しの、内側の左右の余白（論理ピクセル）
+pub(crate) const CELL_PAD: f32 = 8.0;
+
+/// 列の幅を変えるつまみの幅と、列の狭さの下限（論理ピクセル）
+const GRIP_W: f32 = 8.0;
+const MIN_COLUMN_W: f32 = 40.0;
+
+/// A table being set up. See [`Ui::table`].
+///
+/// ```
+/// use kargui::ui::TableColumn;
+/// # kargui::test::example(|ui| {
+/// let columns = [TableColumn::new("Item").fill()];
+/// ui.table(&columns, 3, 28.0).show(|row, i| {
+///     row.text(format!("Item {i}"));
+/// });
+/// # });
+/// ```
+pub struct Table<'u, 'a> {
+    ui: &'u mut Ui<'a>,
+    loc: &'static std::panic::Location<'static>,
+    columns: &'u [TableColumn],
+    count: usize,
+    row_h: f32,
+    sort: Option<&'u mut Option<(usize, bool)>>,
+    selection: Option<&'u mut Option<usize>>,
+    label: Option<String>,
+    grow: bool,
+}
+
+impl<'u> Table<'u, '_> {
+    /// Makes the headings sortable: clicking a heading (or Enter or Space on it) sets `*sort` to
+    /// `Some((column, true))` (ascending), and again to `Some((column, false))`. Sorting the rows is
+    /// up to you; the heading shows an arrow and screen readers hear the order.
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # let mut names = vec!["b", "a"];
+    /// let mut sort: Option<(usize, bool)> = None;
+    /// # kargui::test::example(|ui| {
+    /// if let Some((0, ascending)) = sort {
+    ///     names.sort();
+    ///     if !ascending {
+    ///         names.reverse();
+    ///     }
+    /// }
+    /// let columns = [TableColumn::new("Name").fill()];
+    /// ui.table(&columns, names.len(), 28.0).sort(&mut sort).show(|row, i| row.text(names[i]));
+    /// # });
+    /// ```
+    pub fn sort(mut self, sort: &'u mut Option<(usize, bool)>) -> Self {
+        self.sort = Some(sort);
+        self
+    }
+
+    /// Makes rows selectable, as in [`List::selection`].
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # let mut selected = None;
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Name").fill()];
+    /// ui.table(&columns, 3, 28.0).selection(&mut selected).show(|row, i| row.text(format!("Row {i}")));
+    /// # });
+    /// ```
+    pub fn selection(mut self, selected: &'u mut Option<usize>) -> Self {
+        self.selection = Some(selected);
+        self
+    }
+
+    /// The table's name for screen readers.
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Name").fill()];
+    /// ui.table(&columns, 1, 28.0).label("Contacts").show(|row, _| row.text("Aiko"));
+    /// # });
+    /// ```
+    pub fn label(mut self, name: impl Into<String>) -> Self {
+        self.label = Some(name.into());
+        self
+    }
+
+    /// Takes the remaining space. See [`Handle::grow`].
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Name").fill()];
+    /// ui.table(&columns, 100, 28.0).grow().show(|row, i| row.text(format!("Row {i}")));
+    /// # });
+    /// ```
+    pub fn grow(mut self) -> Self {
+        self.grow = true;
+        self
+    }
+
+    /// Builds the visible rows: `row` is called with a [`TableRow`] and the row's index, and adds
+    /// one cell per column in order. Returns the list's id.
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Name"), TableColumn::new("Done").fill()];
+    /// ui.table(&columns, 2, 28.0).show(|row, i| {
+    ///     row.text(format!("Task {i}"));
+    ///     row.cell(|ui| {
+    ///         ui.label(if i == 0 { "Yes" } else { "No" });
+    ///     });
+    /// });
+    /// # });
+    /// ```
+    pub fn show(self, row: impl FnMut(&mut TableRow, usize)) -> Id {
+        self.show_keyed(|i| i, row)
+    }
+
+    /// Like [`Table::show`], with rows told apart by `key(index)`, as in [`List::show_keyed`].
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # let ids = [7u32, 3];
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Id").fill()];
+    /// ui.table(&columns, ids.len(), 28.0).show_keyed(|i| ids[i], |row, i| row.text(ids[i].to_string()));
+    /// # });
+    /// ```
+    pub fn show_keyed<K: Hash>(self, key: impl Fn(usize) -> K, mut row: impl FnMut(&mut TableRow, usize)) -> Id {
+        let Table { ui, loc, columns, count, row_h, mut sort, selection, label, grow } = self;
+        let id = ui.id_here(loc);
+        let parent_dir = ui.parent_dir();
+        let (idx, _) = ui.push(id, Kind::Table { columns: columns.len(), rows: count }, Dir::Column);
+        ui.tree.info[idx].label = label;
+        ui.tree.layout[idx].align = Align::Stretch;
+        if grow {
+            match parent_dir {
+                Dir::Column => ui.tree.layout[idx].height = Size::Fill(1.0),
+                _ => ui.tree.layout[idx].width = Size::Fill(1.0),
+            }
+        }
+        let scale = ui.cx.scale;
+        let grip_w = (GRIP_W * scale).round();
+        // 列の幅（論理ピクセル）。つまみをつかんで動かすと変わり、kargui が覚える
+        let mut widths: Vec<Option<f32>> = Vec::with_capacity(columns.len());
+        for (k, c) in columns.iter().enumerate() {
+            let Some(start) = c.width else {
+                widths.push(None);
+                continue;
+            };
+            let grip = Id(hash_of((id.0, k, "grip")));
+            let cx = &mut *ui.cx;
+            let mut w = *cx.column_widths.entry((id, k)).or_insert(start);
+            if !ui.disabled && (cx.pressed == Some(grip) || cx.released == Some(grip)) {
+                if let (Some((px, _)), Some(h)) = (cx.pointer, cx.prev.hits.iter().find(|h| h.id == grip)) {
+                    w = (w + (px - (h.rect.x + h.rect.w / 2.0)) / scale).round().max(MIN_COLUMN_W);
+                    cx.column_widths.insert((id, k), w);
+                }
+            }
+            widths.push(Some(w));
+        }
+        let px_widths: Vec<Option<f32>> = widths.iter().map(|w| w.map(|w| (w * scale).round())).collect();
+        let rights: Vec<bool> = columns.iter().map(|c| c.right).collect();
+        // 見出しの行: 見出しと、その右の幅を変えるつまみ（行の升の間の 8 の所に置く）
+        let sortable = sort.is_some();
+        let current = sort.as_deref().copied().flatten();
+        let mut heads = Vec::with_capacity(columns.len());
+        {
+            let mut tui = ui.child(idx);
+            let head_id = Id(hash_of((id.0, "head")));
+            let (hr, _) = tui.push(head_id, Kind::TableHeader, Dir::Row);
+            let l = &mut tui.tree.layout[hr];
+            l.pad = ((ROW_PAD * scale).round(), 0.0);
+            l.height = Size::Fixed((32.0 * scale).round());
+            l.align = Align::Stretch;
+            let mut hui = tui.child(hr);
+            for (k, c) in columns.iter().enumerate() {
+                let hid = Id(hash_of((id.0, k, "heading")));
+                let dir = current.filter(|&(col, _)| col == k).map(|(_, asc)| asc);
+                let (h, _) = hui.push(hid, Kind::ColumnHeader { text: c.title.clone(), sort: dir, right: c.right, sortable, column: k }, Dir::Leaf);
+                hui.tree.layout[h].width = px_widths[k].map_or(Size::Fill(1.0), Size::Fixed);
+                hui.tree.info[h].skip_tab = k != 0;
+                heads.push(hid);
+                if sortable && !hui.disabled && hui.cx.clicked == Some(hid) {
+                    if let Some(s) = sort.as_deref_mut() {
+                        *s = Some((k, !matches!(*s, Some((col, true)) if col == k)));
+                    }
+                }
+                if px_widths[k].is_some() {
+                    let gid = Id(hash_of((id.0, k, "grip")));
+                    let (g, _) = hui.push(gid, Kind::ColumnGrip, Dir::Leaf);
+                    hui.tree.layout[g].width = Size::Fixed(grip_w);
+                    hui.tree.info[g].label = Some("Resize column".to_string());
+                }
+            }
+            // 見出しに焦点がある時: 左右・Home・End で見出しを移る
+            let cx = &mut *hui.cx;
+            if let Some(at) = cx.focus.and_then(|f| heads.iter().position(|&h| h == f)) {
+                let n = heads.len();
+                let mut next = at;
+                for e in std::mem::take(&mut cx.keys) {
+                    if let Event::Key { key, mods } = e {
+                        if mods.ctrl || mods.alt {
+                            continue;
+                        }
+                        next = match key {
+                            Key::Right => (next + 1).min(n - 1),
+                            Key::Left => next.saturating_sub(1),
+                            Key::Home => 0,
+                            Key::End => n - 1,
+                            _ => next,
+                        };
+                    }
+                }
+                if next != at {
+                    cx.focus = Some(heads[next]);
+                    cx.focus_visible = true;
+                }
+            }
+        }
+        // 行: 一覧（見えている行だけ作る）
+        let mut tui = ui.child(idx);
+        let mut list = tui.list(count, row_h);
+        if let Kind::List { table, .. } = &mut list.ui.tree.info[list.idx].kind {
+            *table = true;
+        }
+        if grow {
+            list = list.grow();
+        } else {
+            let shown = (count.min(8) as f32 * list.row_h).max(list.row_h);
+            list.ui.tree.layout[list.idx].height = Size::Fixed(shown);
+        }
+        if let Some(s) = selection {
+            list = list.selection(s);
+        }
+        list.show_keyed(key, |rui, i| {
+            let mut tr = TableRow { ui: rui, widths: &px_widths, rights: &rights, col: 0 };
+            row(&mut tr, i);
+        })
+    }
+}
+
+/// One row of a [`Ui::table`], to add its cells to in column order.
+///
+/// ```
+/// use kargui::ui::TableColumn;
+/// # kargui::test::example(|ui| {
+/// let columns = [TableColumn::new("City"), TableColumn::new("Population").fill().right()];
+/// ui.table(&columns, 1, 28.0).show(|row, _| {
+///     row.text("Osaka");
+///     row.text("2,750,000");
+/// });
+/// # });
+/// ```
+pub struct TableRow<'r, 'a> {
+    ui: &'r mut Ui<'a>,
+    widths: &'r [Option<f32>],
+    rights: &'r [bool],
+    col: usize,
+}
+
+impl TableRow<'_, '_> {
+    /// The next cell, built in `f` (any widgets: a check box, a button, a progress bar).
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # let mut done = [false, true];
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Done").width(60.0), TableColumn::new("Task").fill()];
+    /// ui.table(&columns, 2, 30.0).show(|row, i| {
+    ///     row.cell(|ui| {
+    ///         ui.checkbox(&mut done[i], "").label(format!("Task {i} done"));
+    ///     });
+    ///     row.text(format!("Task {i}"));
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn cell(&mut self, f: impl FnOnce(&mut Ui)) {
+        let k = self.col;
+        self.col += 1;
+        let (c, _) = self.ui.add(Kind::Column, Dir::Column);
+        let pad = (CELL_PAD * self.ui.cx.scale).round();
+        let l = &mut self.ui.tree.layout[c];
+        l.width = self.widths.get(k).copied().flatten().map_or(Size::Fill(1.0), Size::Fixed);
+        // 升の内側の左右の余白（右寄せの列と左寄せの列が詰まらないように。見出しも同じだけ内側に描く）
+        l.pad = (pad, 0.0);
+        l.align = if self.rights.get(k).copied().unwrap_or(false) { Align::End } else { Align::Start };
+        f(&mut self.ui.child(c));
+    }
+
+    /// The next cell, with text.
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Name").fill()];
+    /// ui.table(&columns, 1, 28.0).show(|row, _| row.text("Aiko"));
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.cell(|ui| {
+            ui.label(text);
+        });
+    }
+}
+
+/// A date field. See [`Ui::date_picker`].
+///
+/// ```
+/// # let mut day = None;
+/// # kargui::test::example(|ui| {
+/// if ui.date_picker(&mut day).label("Start").changed() {
+///     // react to the new date
+/// }
+/// # });
+/// ```
+pub struct DatePicker<'t> {
+    h: Handle<'t>,
+    changed: bool,
+}
+
+common!(DatePicker, " # let mut day = None;", "date_picker(&mut day)");
+
+impl DatePicker<'_> {
+    /// Whether a date was picked in this frame.
+    ///
+    /// ```
+    /// # let mut day = None;
+    /// # kargui::test::example(|ui| {
+    /// if ui.date_picker(&mut day).changed() {
+    ///     // react to the new date
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+}
+
 /// 入力欄の種類（edit の振る舞いを変える）
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -4819,6 +5671,7 @@ pub(crate) fn visible_text(kind: &Kind) -> Option<&str> {
         Kind::Segment { text, .. } | Kind::Radio { text, .. } | Kind::Expander { text, .. } | Kind::Link { text } | Kind::ToggleButton { text, .. } => Some(text),
         Kind::Dropdown { text, .. } | Kind::ListOption { text, .. } => Some(text),
         Kind::MenuButton { text, .. } | Kind::MenuBarItem { text, .. } | Kind::MenuItem { text, .. } | Kind::Tab { text, .. } => Some(text),
+        Kind::TreeItem { text, .. } | Kind::ColumnHeader { text, .. } => Some(text),
         _ => None,
     }
 }

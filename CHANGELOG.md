@@ -87,6 +87,26 @@
   them (images: CPU renderer only for now). `CanvasView::pointer` (while pressed) and
   `CanvasView::clicked_at`. Screen readers see a canvas with its name.
 - Tests: `Harness::drag(name, dx, dy)`.
+- Trees: `Ui::tree(&mut selected, |t| ..)` with `TreeBuilder::branch(key, text, |t| ..)` and
+  `TreeBuilder::leaf`; kargui keeps which branches are open (closed at first; children of closed
+  branches are not created). Click selects, the arrow opens and closes; Tab stops once, Up/Down/
+  Home/End/letters move and select, Right opens or goes to the first child, Left closes or goes to
+  the parent, Enter and Space open and close. Screen readers see a tree and items with level,
+  expanded and selected.
+- Tables: `Ui::table(&[TableColumn], count, row_height)` with `.sort(&mut Option<(column, ascending)>)`,
+  `.selection`, `.label`, `.grow` and `.show(|row, i| ..)` / `.show_keyed`; `TableRow::text` and
+  `TableRow::cell`; `TableColumn::new(..).width(..).fill().right()`. Rows are the virtual list's
+  rows; cells line up with the headings; grips between headings resize columns (remembered by
+  kargui, at least 40); headings are one Tab stop with Left/Right and sort with Enter/Space. Screen
+  readers see a table with row and column counts, a heading row with sort directions, rows and
+  cells with their indices.
+- Dates: `Date` (a calendar date with `new`, `today`, `year`, `month`, `day`, `weekday`,
+  `add_days`, `add_months`, `days_in_month`, shown as `2026-11-22`; no new dependencies) and
+  `Ui::date_picker(&mut Option<Date>)`: a field that opens a month calendar (arrows by day and week,
+  Home/End, Page Up/Down by month, with Shift by year, Enter/Space pick, Escape closes; today is
+  ringed, the picked day filled). `Ui::set_date_text(DateText::japanese())` sets the names of days
+  and months (English by default). `Ui::today()` (fixed at 2026-11-22 in tests). Screen readers see
+  a date input with its value and a grid of days with full names.
 - Fix: when a popup, dialog, list or menu opens or closes, the focus that moves into it (or back)
   is drawn at once. Before, the frame was drawn before the focus moved, and the old focus stayed on
   screen until the next input.

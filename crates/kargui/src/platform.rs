@@ -185,6 +185,12 @@ fn system_dark() -> bool {
     r.is_ok() && value == 0
 }
 
+/// 今日の日付（地元の時刻の年・月・日）。Date::today が使う
+pub(crate) fn local_date() -> Option<(i32, u32, u32)> {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    Some((t.wYear as i32, t.wMonth as u32, t.wDay as u32))
+}
+
 fn key_of(vk: VIRTUAL_KEY) -> Option<Key> {
     const LETTERS: [Key; 26] = [Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I, Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R, Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z];
     const DIGITS: [Key; 10] = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];

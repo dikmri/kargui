@@ -146,6 +146,8 @@ impl<A: App> Harness<A> {
         rt.resize((width * scale).round(), (height * scale).round(), scale);
         // 試験台の時計は止めておき、wait で進める（動く部品の写真と試験を毎回同じにする）
         rt.cx.frozen = Some(std::time::Duration::ZERO);
+        // 今日も止める（暦の「今日」の印が日によって変わらないように）
+        rt.cx.today = crate::date::Date::new(2026, 11, 22);
         let mut h = Self { app, rt };
         h.frame();
         h
@@ -3386,5 +3388,261 @@ mod tests {
         let on_line = img.rgb((area.x + 50.0) as u32, (area.y + 30.0) as u32);
         let bg = img.rgb((area.x + 150.0) as u32, (area.y + 20.0) as u32);
         assert_ne!(on_line, bg, "線が描かれている");
+    }
+
+    /// 木の表示の見本
+    #[derive(Default)]
+    struct Folders {
+        sel: Option<u32>,
+    }
+
+    impl App for Folders {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.tree(&mut self.sel, |t| {
+                t.branch(1, "Documents", |t| {
+                    t.leaf(2, "report.pdf");
+                    t.branch(3, "Photos", |t| {
+                        t.leaf(4, "cat.jpg");
+                    });
+                });
+                t.leaf(5, "notes.txt");
+            })
+            .label("Files");
+            ui.button("After");
+        }
+    }
+
+    #[test]
+    fn trees_start_collapsed_and_open_with_the_pointer() {
+        let mut h = Harness::new(Folders::default());
+        assert!(h.find("report.pdf").is_none(), "最初は閉じている");
+        h.click("Documents");
+        assert_eq!(h.app().sel, Some(1), "行を押すと選ぶ");
+        assert!(h.find("report.pdf").is_none(), "行の真ん中を押しても開かない");
+        // 左の印（シェブロン）を押すと開く
+        let row = h.find("Documents").unwrap();
+        let (x, y) = (row.x + 12.0, row.y + row.h / 2.0);
+        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        let child = h.find("report.pdf").expect("開く");
+        assert!(child.y > row.y);
+        let n = a11y_node(&h, "Documents");
+        assert_eq!((n.role(), n.level(), n.is_expanded(), n.is_selected()), (accesskit::Role::TreeItem, Some(1), Some(true), Some(true)));
+        let n = a11y_node(&h, "report.pdf");
+        assert_eq!((n.level(), n.is_expanded()), (Some(2), None), "葉は開閉を持たない");
+        assert!(a11y_nodes(&h).iter().any(|n| n.role() == accesskit::Role::Tree && n.label() == Some("Files")));
+        // 子は字下げされる（行の中の文字の位置を、描いた絵で比べる代わりに、行の左の余白の印の位置で見る）
+        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        assert!(h.find("report.pdf").is_none(), "もう一度押すと閉じる");
+    }
+
+    #[test]
+    fn trees_work_with_the_keyboard() {
+        let mut h = Harness::new(Folders::default());
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("Documents"), "選んでいなければ最初の行");
+        h.press(Key::Down);
+        assert_eq!((focused_name(&h).as_deref(), h.app().sel), (Some("notes.txt"), Some(5)), "矢印で移って選ぶ");
+        h.press(Key::Up);
+        assert_eq!(h.app().sel, Some(1));
+        h.press(Key::Right);
+        assert!(h.find("report.pdf").is_some(), "右で開く");
+        assert_eq!(focused_name(&h).as_deref(), Some("Documents"));
+        h.press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("report.pdf"), "開いていれば最初の子へ");
+        h.press(Key::Down).press(Key::Right).press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("cat.jpg"));
+        h.press(Key::Left);
+        assert_eq!(focused_name(&h).as_deref(), Some("Photos"), "左で親へ");
+        h.press(Key::Left);
+        assert!(h.find("cat.jpg").is_none(), "開いている枝は左で閉じる");
+        h.press(Key::Left);
+        assert_eq!(focused_name(&h).as_deref(), Some("Documents"));
+        h.press(Key::Enter);
+        assert!(h.find("report.pdf").is_none(), "Enter で開閉");
+        h.press(Key::End);
+        assert_eq!(h.app().sel, Some(5));
+        h.press(Key::Home).press(Key::N);
+        assert_eq!(focused_name(&h).as_deref(), Some("notes.txt"), "文字で移る");
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("After"), "木は Tab で 1 回だけ止まる");
+        h.press_with(Key::Tab, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("notes.txt"), "戻ると選んでいる行");
+    }
+
+    /// 表の見本: アプリが並べ替える
+    #[derive(Default)]
+    struct FileTable {
+        sort: Option<(usize, bool)>,
+        sel: Option<usize>,
+    }
+
+    impl App for FileTable {
+        fn view(&mut self, ui: &mut Ui) {
+            let mut rows = vec![("b.txt", 20, "Text"), ("a.png", 300, "Image"), ("c.md", 5, "Text")];
+            match self.sort {
+                Some((0, asc)) => rows.sort_by(|x, y| if asc { x.0.cmp(y.0) } else { y.0.cmp(x.0) }),
+                Some((1, asc)) => rows.sort_by(|x, y| if asc { x.1.cmp(&y.1) } else { y.1.cmp(&x.1) }),
+                _ => {}
+            }
+            let cols = [crate::ui::TableColumn::new("Name").width(200.0), crate::ui::TableColumn::new("Size").width(90.0).right(), crate::ui::TableColumn::new("Kind").fill()];
+            ui.table(&cols, rows.len(), 30.0).sort(&mut self.sort).selection(&mut self.sel).label("Files").grow().show(|row, i| {
+                row.text(rows[i].0);
+                row.text(format!("{} KB", rows[i].1));
+                row.text(rows[i].2);
+            });
+        }
+    }
+
+    #[test]
+    fn tables_line_up_headers_and_cells() {
+        let h = Harness::new(FileTable::default());
+        let (name, size, kind) = (h.find("Name").unwrap(), h.find("Size").unwrap(), h.find("Kind").unwrap());
+        let (b, b_size, b_kind) = (h.find("b.txt").unwrap(), h.find("20 KB").unwrap(), h.find_all("Text")[0]);
+        // 升の文字は、見出しの文字と同じく升の 8 内側
+        assert!((b.x - name.x - 8.0).abs() <= 1.0, "1 列目の見出しと升の左がそろう: {name:?} {b:?}");
+        assert!(size.x > name.x + 200.0 - 1.0, "2 列目は 1 列目の幅の後");
+        assert!((size.right() - 8.0 - b_size.right()).abs() <= 1.0, "右寄せの列: 見出しと升の右がそろう {size:?} {b_size:?}");
+        assert!(b_size.x > size.x, "右寄せの升の文字は右へ");
+        assert!((b_kind.x - kind.x - 8.0).abs() <= 1.0);
+        assert!(b.y > name.bottom() - 1.0, "升は見出しの下");
+    }
+
+    #[test]
+    fn tables_sort_by_clicking_headers_and_resize_columns() {
+        let mut h = Harness::new(FileTable::default());
+        h.click("Size");
+        assert_eq!(h.app().sort, Some((1, true)));
+        let first = |h: &Harness<FileTable>| ["a.png", "b.txt", "c.md"].into_iter().min_by(|x, y| h.find(x).unwrap().y.total_cmp(&h.find(y).unwrap().y)).unwrap();
+        assert_eq!(first(&h), "c.md", "小さい順");
+        assert_eq!(a11y_node(&h, "Size").sort_direction(), Some(accesskit::SortDirection::Ascending));
+        h.click("Size");
+        assert_eq!(h.app().sort, Some((1, false)));
+        assert_eq!(first(&h), "a.png", "大きい順");
+        h.click("Name");
+        assert_eq!(h.app().sort, Some((0, true)));
+        assert_eq!(a11y_node(&h, "Size").sort_direction(), None);
+        // 見出しの右のつまみで列の幅を変える
+        let size_x = h.find("Size").unwrap().x;
+        h.drag("Resize column", 40.0, 0.0);
+        assert!((h.find("Size").unwrap().x - (size_x + 40.0)).abs() <= 1.0, "1 列目が 40 広がる");
+        h.drag("Resize column", -1000.0, 0.0);
+        assert!(h.find("Size").unwrap().x >= h.find("Name").unwrap().x + 40.0, "狭くても 40");
+    }
+
+    #[test]
+    fn tables_tell_screen_readers_rows_cells_and_headers() {
+        let mut h = Harness::new(FileTable::default());
+        let nodes = a11y_nodes(&h);
+        let table = nodes.iter().find(|n| n.role() == accesskit::Role::Table).expect("表");
+        assert_eq!((table.label(), table.row_count(), table.column_count()), (Some("Files"), Some(4), Some(3)));
+        assert_eq!(nodes.iter().filter(|n| n.role() == accesskit::Role::ColumnHeader).count(), 3);
+        let rows: Vec<_> = nodes.iter().filter(|n| n.role() == accesskit::Role::Row).collect();
+        assert_eq!(rows.len(), 4, "見出しの行と 3 行");
+        assert_eq!(rows.iter().filter_map(|r| r.row_index()).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        let cells: Vec<_> = nodes.iter().filter(|n| n.role() == accesskit::Role::Cell).collect();
+        assert_eq!(cells.len(), 9);
+        assert_eq!(cells.iter().take(3).filter_map(|c| c.column_index()).collect::<Vec<_>>(), vec![0, 1, 2]);
+        // 行を選ぶ
+        h.click("a.png");
+        assert_eq!(h.app().sel, Some(1));
+        h.press(Key::Down);
+        assert_eq!(h.app().sel, Some(2));
+        // 見出しは Tab で 1 回、左右で移り、Enter で並べ替える
+        h.press_with(Key::Tab, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("Name"));
+        h.press(Key::Right).press(Key::Enter);
+        assert_eq!(h.app().sort, Some((1, true)));
+    }
+
+    /// 日付の選択の見本
+    #[derive(Default)]
+    struct Due {
+        date: Option<crate::Date>,
+        japanese: bool,
+    }
+
+    impl App for Due {
+        fn view(&mut self, ui: &mut Ui) {
+            if self.japanese {
+                ui.set_date_text(crate::DateText::japanese());
+            }
+            ui.date_picker(&mut self.date).label("Due date");
+            ui.button("Other");
+        }
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> crate::Date {
+        crate::Date::new(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn date_pickers_open_a_month_and_pick_with_the_pointer() {
+        let mut h = Harness::new(Due::default());
+        assert_eq!(h.find("Pick a date"), None, "名前は label");
+        assert_eq!(a11y_node(&h, "Due date").value(), Some("Pick a date"));
+        h.click("Due date");
+        let (field, title) = (h.find("Due date").unwrap(), h.find("November 2026").expect("今日の月が開く"));
+        assert!(title.y > field.bottom());
+        assert_eq!(focused_name(&h).as_deref(), Some("November 22, 2026"), "焦点は今日");
+        let today = a11y_node(&h, "November 22, 2026");
+        assert_eq!(today.role(), accesskit::Role::GridCell);
+        h.click("November 25, 2026");
+        assert_eq!(h.app().date, Some(date(2026, 11, 25)));
+        assert!(h.find("November 2026").is_none(), "選ぶと閉じる");
+        assert_eq!(focused_name(&h).as_deref(), Some("Due date"));
+        let n = a11y_node(&h, "Due date");
+        assert_eq!((n.role(), n.value()), (accesskit::Role::DateInput, Some("2026-11-25")));
+        // 開き直すと選んだ日に焦点。次の月へ
+        h.click("Due date");
+        assert_eq!(focused_name(&h).as_deref(), Some("November 25, 2026"));
+        assert_eq!(a11y_node(&h, "November 25, 2026").is_selected(), Some(true));
+        h.click("Next month");
+        assert!(h.find("December 2026").is_some());
+        h.click("December 1, 2026");
+        assert_eq!(h.app().date, Some(date(2026, 12, 1)));
+        // 外を押すと選ばずに閉じる
+        h.click("Due date").click("Other");
+        assert!(h.find("December 2026").is_none());
+        assert_eq!(h.app().date, Some(date(2026, 12, 1)));
+    }
+
+    #[test]
+    fn date_pickers_work_with_the_keyboard() {
+        let mut h = Harness::new(Due::default());
+        h.press(Key::Tab).press(Key::Enter);
+        assert_eq!(focused_name(&h).as_deref(), Some("November 22, 2026"));
+        h.press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("November 23, 2026"));
+        h.press(Key::Down);
+        assert_eq!(focused_name(&h).as_deref(), Some("November 30, 2026"));
+        h.press(Key::Down);
+        assert_eq!(focused_name(&h).as_deref(), Some("December 7, 2026"), "月をまたぐと次の月を出す");
+        assert!(h.find("December 2026").is_some());
+        h.press(Key::PageUp);
+        assert_eq!(focused_name(&h).as_deref(), Some("November 7, 2026"));
+        h.press_with(Key::PageDown, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("November 7, 2027"), "Shift で 1 年");
+        h.press(Key::Home);
+        assert_eq!(focused_name(&h).as_deref(), Some("November 7, 2027"), "2027-11-07 は日曜日（週の初め）");
+        h.press(Key::End);
+        assert_eq!(focused_name(&h).as_deref(), Some("November 13, 2027"));
+        h.press(Key::Enter);
+        assert_eq!(h.app().date, Some(date(2027, 11, 13)));
+        assert_eq!(focused_name(&h).as_deref(), Some("Due date"));
+        // Esc は選ばずに閉じる
+        h.press_with(Key::Down, Mods::ALT).press(Key::Left).press(Key::Escape);
+        assert_eq!(h.app().date, Some(date(2027, 11, 13)));
+        assert!(h.find("November 2027").is_none());
+    }
+
+    #[test]
+    fn date_pickers_speak_japanese_when_asked() {
+        let mut h = Harness::new(Due { date: None, japanese: true });
+        assert_eq!(a11y_node(&h, "Due date").value(), Some("日付を選ぶ"));
+        h.click("Due date");
+        assert!(h.find("2026年11月").is_some());
+        assert!(h.find("日").is_some() && h.find("土").is_some());
+        assert_eq!(focused_name(&h).as_deref(), Some("2026年11月22日"));
+        assert!(h.find("次の月").is_some());
     }
 }

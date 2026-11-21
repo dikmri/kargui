@@ -472,6 +472,60 @@ fn shots() -> Vec<Shot> {
             setup: no_setup,
         },
         Shot {
+            name: "tree",
+            size: (320.0, 240.0),
+            view: |ui| {
+                let mut sel = Some(4);
+                ui.tree(&mut sel, |t| {
+                    t.branch(1, "Documents", |t| {
+                        t.leaf(2, "report-2026.pdf");
+                        t.branch(3, "Photos", |t| {
+                            t.leaf(4, "cat.jpg");
+                            t.leaf(5, "sea.jpg");
+                        });
+                    });
+                    t.branch(6, "Music", |t| {
+                        t.leaf(7, "song.mp3");
+                    });
+                    t.leaf(8, "notes.txt");
+                })
+                .label("Files");
+            },
+            // Documents と Photos を開く（開閉の状態は kargui が持つ）
+            setup: |h| {
+                use kargui::Key;
+                h.press(Key::Tab).press(Key::Up).press(Key::Up).press(Key::Up).press(Key::Up).press(Key::Right).press(Key::Down).press(Key::Down).press(Key::Right).press(Key::Down);
+            },
+        },
+        Shot {
+            name: "table",
+            size: (520.0, 210.0),
+            view: |ui| {
+                use kargui::ui::TableColumn;
+                let mut sort = Some((1, false));
+                let mut sel = Some(1);
+                let rows = [("photos-2026.zip", "1.2 GB", "Archive"), ("report-2026.pdf", "3.4 MB", "PDF"), ("notes.txt", "12 KB", "Text"), ("plan.md", "4 KB", "Markdown")];
+                let cols = [TableColumn::new("Name").width(200.0), TableColumn::new("Size").width(90.0).right(), TableColumn::new("Kind").fill()];
+                ui.table(&cols, rows.len(), 30.0).sort(&mut sort).selection(&mut sel).label("Files").grow().show(|row, i| {
+                    row.text(rows[i].0);
+                    row.text(rows[i].1);
+                    row.text(rows[i].2);
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "date_picker",
+            size: (340.0, 360.0),
+            view: |ui| {
+                let mut due = kargui::Date::new(2026, 11, 25);
+                ui.date_picker(&mut due).label("Due date");
+            },
+            setup: |h| {
+                h.click("Due date");
+            },
+        },
+        Shot {
             name: "more_widgets",
             size: (560.0, 330.0),
             view: |ui| {

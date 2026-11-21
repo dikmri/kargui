@@ -137,7 +137,17 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
         }
         Kind::SpinButton { .. } => (p(28.0), p(24.0)),
         // 大きさは作る時に決める
-        Kind::Splitter { .. } | Kind::Canvas { .. } => (0.0, 0.0),
+        Kind::Splitter { .. } | Kind::Canvas { .. } | Kind::ColumnGrip => (0.0, 0.0),
+        Kind::DateField { .. } => (p(160.0), p(sz::INPUT_H)),
+        Kind::CalendarDay { .. } => (p(36.0), p(32.0)),
+        Kind::ColumnHeader { text, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Small, true), None);
+            (laid.width.ceil() + p(28.0), p(32.0))
+        }
+        Kind::TreeItem { text, depth, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
+            (laid.width.ceil() + p(8.0) + *depth as f32 * p(20.0) + p(20.0) + p(12.0), p(30.0))
+        }
         Kind::Image { w, h, .. } => (p(*w as f32), p(*h as f32)),
         Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => {
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
@@ -383,6 +393,9 @@ impl Painter<'_> {
                     | Kind::MenuItem { .. }
                     | Kind::Tab { .. }
                     | Kind::Splitter { .. }
+                    | Kind::TreeItem { .. }
+                    | Kind::ColumnHeader { .. }
+                    | Kind::CalendarDay { .. }
             )
             || (enabled && focusable && self.toolbar);
         let vertical = matches!(tree.info[i].kind, Kind::TextArea { .. } | Kind::NumberInput { .. });
@@ -497,7 +510,7 @@ impl Painter<'_> {
         match &tree.info[i].kind {
             // 重ねる物は親に付かないので、ここには来ない（Painter::overlay で描く）
             Kind::Overlay { .. } => {}
-            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar | Kind::Tabs | Kind::TabPanel | Kind::Grid => {
+            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar | Kind::Tabs | Kind::TabPanel | Kind::Grid | Kind::Tree | Kind::Table { .. } | Kind::DayGrid => {
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
                 }
@@ -791,6 +804,116 @@ impl Painter<'_> {
                     Rect::new((r.x + (r.w - w) / 2.0).round(), r.y, w, r.h)
                 };
                 self.d.fill(bar, if hot { t.accent } else { t.border }, 0.0);
+                self.hit(tree, i, true, false);
+            }
+            Kind::DateField { text, empty, open } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(sz::RADIUS);
+                self.focus_ring(tree, i, radius);
+                let bg = if off {
+                    t.button
+                } else if self.cx.hover == Some(id) {
+                    t.button_hover
+                } else {
+                    t.field
+                };
+                self.d.boxed(r, bg, if *open { t.accent } else { t.border }, line, radius);
+                let color = if off { t.done_text } else if *empty { t.weak_text } else { t.text };
+                let pad = self.px(sz::INPUT_PAD);
+                text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + pad, r, color);
+                let s = self.px(16.0);
+                self.icon(Icon::Calendar, r.right() - pad - s, (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                self.hit(tree, i, true, false);
+            }
+            Kind::CalendarDay { day, in_month, today, selected } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = (r.h.min(r.w) / 2.0).round();
+                let hot = !off && (self.cx.pressed == Some(id) || self.cx.hover == Some(id));
+                let focused = self.cx.focus_visible && self.cx.focus == Some(id);
+                let base = if *selected {
+                    Some(t.accent)
+                } else if hot {
+                    Some(t.button_hover)
+                } else {
+                    None
+                };
+                self.item_bg(r, base, focused, radius);
+                if *today && !*selected {
+                    let ring = r.inset(if focused { 3.0 * line } else { line });
+                    self.d.boxed(ring, if hot { t.button_hover } else { t.background }, t.accent, line, radius);
+                }
+                let color = if *selected {
+                    t.on_accent
+                } else if off || !*in_month {
+                    t.done_text
+                } else if *today {
+                    t.accent
+                } else {
+                    t.text
+                };
+                let laid = self.cx.text.layout(&day.to_string(), style(self.cx, TextKind::Body, *today || *selected), None);
+                put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
+                self.hit(tree, i, true, false);
+            }
+            Kind::TableHeader => {
+                // 見出しの行の下に、横いっぱいの線
+                let border = self.cx.theme.border;
+                self.d.fill(Rect::new(r.x, r.bottom() - line, r.w, line), border, 0.0);
+                for &c in &tree.layout[i].children {
+                    self.node(tree, c);
+                }
+            }
+            Kind::ColumnHeader { text, sort, right, sortable, .. } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(4.0);
+                let bg = if *sortable && !off && (self.cx.pressed == Some(id) || self.cx.hover == Some(id)) { Some(t.button_hover) } else { None };
+                self.item_bg(r, bg, self.cx.focus_visible && self.cx.focus == Some(id), radius);
+                let st = style(self.cx, TextKind::Small, true);
+                let laid = self.cx.text.layout(text, st, None);
+                let s = self.px(12.0);
+                let arrow = if sort.is_some() { s + self.px(4.0) } else { 0.0 };
+                let pad = self.px(crate::ui::CELL_PAD);
+                let x = if *right { (r.right() - pad - laid.width - arrow).round() } else { r.x + pad };
+                let color = if off { t.done_text } else { t.weak_text };
+                put(self.d, &laid, x, (r.y + (r.h - laid.height) / 2.0).round(), color);
+                if let Some(asc) = sort {
+                    let icon = if *asc { Icon::ArrowUp } else { Icon::ArrowDown };
+                    self.icon(icon, (x + laid.width + self.px(4.0)).round(), (r.y + (r.h - s) / 2.0).round(), s, color);
+                }
+                self.hit(tree, i, *sortable, false);
+            }
+            Kind::ColumnGrip => {
+                self.prev.split_bars.insert(id, false);
+                let t = self.cx.theme.clone();
+                let hot = self.cx.pressed == Some(id) || self.cx.hover == Some(id);
+                let w = if hot { self.px(3.0) } else { line };
+                let h = if hot { r.h } else { (r.h * 0.5).round() };
+                let bar = Rect::new((r.x + (r.w - w) / 2.0).round(), (r.y + (r.h - h) / 2.0).round(), w, h);
+                self.d.fill(bar, if hot { t.accent } else { t.border }, 0.0);
+                self.hit(tree, i, false, false);
+            }
+            Kind::TreeItem { text, depth, open, selected } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let bg = if *selected {
+                    Some(t.selected)
+                } else if !off && self.cx.hover == Some(id) {
+                    Some(t.button_hover)
+                } else {
+                    None
+                };
+                self.item_bg(r, bg, self.cx.focus_visible && self.cx.focus == Some(id), self.px(4.0));
+                let x0 = r.x + self.px(8.0) + *depth as f32 * self.px(20.0);
+                let color = if off { t.done_text } else { t.text };
+                if let Some(o) = open {
+                    let s = self.px(16.0);
+                    let icon = if *o { Icon::ChevronDown } else { Icon::ChevronRight };
+                    self.icon(icon, x0, (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                }
+                text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), x0 + self.px(20.0), r, color);
                 self.hit(tree, i, true, false);
             }
             Kind::Canvas { ops } => {
