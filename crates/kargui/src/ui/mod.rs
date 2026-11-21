@@ -932,7 +932,28 @@ impl List<'_, '_> {
     }
 
     /// Creates the visible rows. `row` is called with each visible row's index.
-    pub fn show(self, mut row: impl FnMut(&mut Ui, usize)) -> Id {
+    ///
+    /// Rows are told apart by their position, so when items are inserted or removed above,
+    /// the rows below get new identities. If the items have ids of their own, use
+    /// [`List::show_keyed`] instead.
+    pub fn show(self, row: impl FnMut(&mut Ui, usize)) -> Id {
+        self.show_keyed(|i| i, row)
+    }
+
+    /// Like [`List::show`], but rows are told apart by `key(index)` (for example a database id).
+    /// Focus and other widget state then stay with the item when items are inserted or removed
+    /// above it, and screen readers do not see every row change.
+    ///
+    /// ```
+    /// # struct Task { id: u32, text: String }
+    /// # let tasks = vec![Task { id: 7, text: "Milk".into() }, Task { id: 3, text: "Bread".into() }];
+    /// # kargui::test::example(|ui| {
+    /// ui.list(tasks.len(), 32.0).grow().show_keyed(|i| tasks[i].id, |ui, i| {
+    ///     ui.label(&tasks[i].text);
+    /// });
+    /// # });
+    /// ```
+    pub fn show_keyed<K: Hash>(self, key: impl Fn(usize) -> K, mut row: impl FnMut(&mut Ui, usize)) -> Id {
         let cx = &mut *self.ui.cx;
         // 見えている範囲は前のフレームの一覧の高さで決める（初めてなら窓の高さ）
         let view_h = cx.prev.lists.iter().find(|l| l.id == self.id).map_or(cx.height, |l| l.rect.h);
@@ -950,7 +971,7 @@ impl List<'_, '_> {
         let first = ((off_px / self.row_h).floor() as usize).min(self.count).saturating_sub(1);
         let last = ((((off_px + view_h) / self.row_h).ceil() as usize) + 1).min(self.count);
         for i in first..last {
-            let rid = Id(hash_of((self.id.0, i)));
+            let rid = Id(hash_of((self.id.0, key(i))));
             let mut list_ui = self.ui.child(self.idx);
             let (ridx, _) = list_ui.push(rid, Kind::Row, Dir::Row);
             list_ui.tree.layout[ridx].row_index = i;

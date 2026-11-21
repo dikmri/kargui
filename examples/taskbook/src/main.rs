@@ -86,7 +86,8 @@ impl App for TaskBook {
         if let Some(y) = self.scroll_to {
             list = list.scroll_to(y);
         }
-        list.show(|ui, row| {
+        // 行はタスクの id で区別する（先頭に足しても、ほかの行の焦点や読み上げが変わらない）
+        list.show_keyed(|row| store.tasks()[visible[row]].id, |ui, row| {
             let task = &store.tasks()[visible[row]];
             let mut done = task.done;
             // 文字もチェックの一部にする（箱と文字のどちらを押しても切り替わる）

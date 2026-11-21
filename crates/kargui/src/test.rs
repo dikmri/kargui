@@ -628,6 +628,59 @@ mod tests {
         assert!(h.rt.cx.preedit_clauses.is_none());
     }
 
+    /// 一覧の行をアプリの id で区別する版と、上から何行目かで区別する版
+    struct Shelf {
+        items: Vec<(u32, String, bool)>,
+        keyed: bool,
+    }
+
+    impl App for Shelf {
+        fn view(&mut self, ui: &mut Ui) {
+            let items = &mut self.items;
+            let row = |ui: &mut Ui, i: usize, items: &mut Vec<(u32, String, bool)>| {
+                let (_, name, done) = &mut items[i];
+                ui.checkbox(done, name.clone());
+            };
+            let n = items.len();
+            if self.keyed {
+                let ids: Vec<u32> = items.iter().map(|t| t.0).collect();
+                ui.list(n, 32.0).grow().show_keyed(|i| ids[i], |ui, i| row(ui, i, items));
+            } else {
+                ui.list(n, 32.0).grow().show(|ui, i| row(ui, i, items));
+            }
+        }
+    }
+
+    fn id_of(h: &Harness<Shelf>, name: &str) -> crate::ui::Id {
+        let i = (0..h.rt.tree.info.len()).find(|&i| a11y::name_of(&h.rt.tree, i).as_deref() == Some(name)).unwrap();
+        h.rt.tree.info[i].id
+    }
+
+    #[test]
+    fn keyed_rows_keep_their_ids_when_an_item_is_added_above() {
+        // 段階 2 の手の確かめで、先頭にタスクを足すと見えている全部の行で「名前が変わった」出来事が出た
+        for keyed in [true, false] {
+            let items = vec![(7, "Milk".to_string(), false), (3, "Bread".to_string(), false)];
+            let mut h = Harness::new(Shelf { items, keyed });
+            h.frame();
+            let (milk, bread) = (id_of(&h, "Milk"), id_of(&h, "Bread"));
+            h.app_mut().items.insert(0, (9, "Eggs".to_string(), false));
+            h.frame();
+            let same = id_of(&h, "Milk") == milk && id_of(&h, "Bread") == bread;
+            assert_eq!(same, keyed, "keyed={keyed}: 行の id が{}", if same { "変わらなかった" } else { "変わった" });
+        }
+        // 焦点も、行が下にずれても同じ品物についていく
+        let items = vec![(7, "Milk".to_string(), false)];
+        let mut h = Harness::new(Shelf { items, keyed: true });
+        h.click("Milk");
+        h.app_mut().items.insert(0, (9, "Eggs".to_string(), false));
+        // 押した時に Milk は入になっている。Space は焦点のある Milk を切り替え、切に戻す（Eggs は変わらない）
+        assert!(h.app().items[1].2);
+        h.frame().press(Key::Space);
+        assert!(!h.app().items[1].2, "Space で Milk（2 行目に移った）が切り替わる");
+        assert!(!h.app().items[0].2, "Eggs は変わらない");
+    }
+
     #[test]
     fn the_candidate_window_does_not_cover_the_thick_underline() {
         // 段階 2 の 2 回目の写真で、候補の窓の上の縁が太い下線の下の 1 画素を隠し、細い下線と見分けられなかった。
