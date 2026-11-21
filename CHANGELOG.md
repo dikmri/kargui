@@ -59,6 +59,20 @@
   a menu bar menu is open, pointing at another heading switches. Screen readers see menu buttons,
   a menu bar, menus, and menu items (checkable and radio items with their state, and shortcuts).
   New: `Key::ContextMenu`, `Harness::right_click`. Drop-downs now also pick by typing a letter.
+- Tabs: `Ui::tabs(&mut value, &[(value, label), ..], |ui, value| ..)` returns `Tabs` with
+  `.changed()`. Tab stops once on the selected heading; Left/Right (wrapping), Home and End select;
+  Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+PageDown and Ctrl+PageUp switch tabs while the focus is inside
+  (Ctrl+Tab no longer moves the focus). Screen readers see a tab list, tabs and a tab panel named
+  after the selected tab.
+- Number inputs: `Ui::number(&mut value, range)` with `.step(..)` and `.changed()`, for every
+  integer and float type. Typed text becomes the value on Enter or when the focus leaves (not a
+  number: undone; out of range: moved to the nearest end; full-width digits work). Up/Down step,
+  Page Up/Page Down step 10 times; small up and down buttons keep the focus in the field. Screen
+  readers see a spin button with value, range and step, and can increase and decrease it.
+- Toolbars: `Ui::toolbar(|tb| ..)` with `Toolbar::button(icon, name)`, `Toolbar::toggle`,
+  `Toolbar::separator`, `Toolbar::more(|m| ..)` (a "More options" menu) and `Toolbar::ui()`.
+  Buttons are drawn without borders and show their names as tooltips. Tab stops once (on the button
+  used last); Left/Right/Home/End move between buttons, skipping unavailable ones.
 - Fix: when a popup, dialog, list or menu opens or closes, the focus that moves into it (or back)
   is drawn at once. Before, the frame was drawn before the focus moved, and the old focus stayed on
   screen until the next input.

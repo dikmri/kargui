@@ -2996,4 +2996,233 @@ mod tests {
         h.press(Key::F2);
         assert_eq!(h.app().customized, 1);
     }
+
+    /// タブの見本
+    #[derive(Clone, Copy, PartialEq, Debug, Default)]
+    enum Page {
+        #[default]
+        General,
+        Advanced,
+        About,
+    }
+
+    #[derive(Default)]
+    struct TabbedSettings {
+        page: Page,
+        sound: bool,
+        proxy: bool,
+    }
+
+    impl App for TabbedSettings {
+        fn view(&mut self, ui: &mut Ui) {
+            let pages = [(Page::General, "General"), (Page::Advanced, "Advanced"), (Page::About, "About")];
+            ui.tabs(&mut self.page, &pages, |ui, page| match page {
+                Page::General => {
+                    ui.checkbox(&mut self.sound, "Sound");
+                }
+                Page::Advanced => {
+                    ui.checkbox(&mut self.proxy, "Use a proxy");
+                }
+                Page::About => {
+                    ui.label("Version 1");
+                }
+            });
+            ui.button("Done");
+        }
+    }
+
+    #[test]
+    fn tabs_show_the_selected_panel_and_switch_on_click() {
+        let mut h = Harness::new(TabbedSettings::default());
+        assert!(h.find("Sound").is_some());
+        assert!(h.find("Use a proxy").is_none());
+        h.click("Advanced");
+        assert_eq!(h.app().page, Page::Advanced);
+        assert!(h.find("Sound").is_none());
+        assert!(h.find("Use a proxy").is_some());
+        let (tab, panel) = (h.find("Advanced").unwrap(), h.find("Use a proxy").unwrap());
+        assert!(panel.y > tab.bottom(), "中身はタブの下");
+        let n = a11y_node(&h, "Advanced");
+        assert_eq!((n.role(), n.is_selected()), (accesskit::Role::Tab, Some(true)));
+        assert_eq!(a11y_node(&h, "General").is_selected(), Some(false));
+        let nodes = a11y_nodes(&h);
+        assert!(nodes.iter().any(|n| n.role() == accesskit::Role::TabList));
+        let panel = nodes.iter().find(|n| n.role() == accesskit::Role::TabPanel).expect("中身の入れ物");
+        assert_eq!(panel.label(), Some("Advanced"), "中身は選んでいるタブの名前で読む");
+    }
+
+    #[test]
+    fn tabs_work_with_the_keyboard() {
+        let mut h = Harness::new(TabbedSettings::default());
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("General"), "Tab は選んでいるタブに 1 回だけ止まる");
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("Sound"), "次は中身");
+        h.press_with(Key::Tab, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("General"));
+        h.press(Key::Right);
+        assert_eq!((h.app().page, focused_name(&h).as_deref()), (Page::Advanced, Some("Advanced")), "矢印で移って選ぶ");
+        h.press(Key::End);
+        assert_eq!(h.app().page, Page::About);
+        h.press(Key::Right);
+        assert_eq!(h.app().page, Page::General, "端で回る");
+        h.press(Key::Left);
+        assert_eq!(h.app().page, Page::About);
+        h.press(Key::Home);
+        assert_eq!(h.app().page, Page::General);
+        // 中身に焦点がある時の Ctrl+Tab・Ctrl+Shift+Tab・Ctrl+PageDown・Ctrl+PageUp
+        h.click("Sound");
+        h.press_with(Key::Tab, Mods::CTRL);
+        assert_eq!(h.app().page, Page::Advanced);
+        assert_eq!(focused_name(&h).as_deref(), Some("Advanced"), "中身が消えたので、焦点はタブへ");
+        h.press_with(Key::Tab, Mods::CTRL | Mods::SHIFT);
+        assert_eq!(h.app().page, Page::General);
+        h.press_with(Key::PageDown, Mods::CTRL);
+        assert_eq!(h.app().page, Page::Advanced);
+        h.press_with(Key::PageUp, Mods::CTRL);
+        assert_eq!(h.app().page, Page::General);
+        // タブの外に焦点がある時は動かない
+        h.click("Done");
+        h.press_with(Key::Tab, Mods::CTRL);
+        assert_eq!(h.app().page, Page::General);
+    }
+
+    /// 数の入力の見本
+    struct Order {
+        copies: i32,
+        scale: f64,
+    }
+
+    impl App for Order {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.number(&mut self.copies, 1..=10).label("Copies");
+            ui.number(&mut self.scale, 0.5..=2.0).step(0.25).label("Scale");
+            ui.button("Next");
+        }
+    }
+
+    fn order() -> Harness<Order> {
+        Harness::new(Order { copies: 1, scale: 1.0 })
+    }
+
+    #[test]
+    fn number_inputs_take_typed_numbers_on_enter_or_when_leaving() {
+        let mut h = order();
+        h.click("Copies").press_with(Key::A, Mods::CTRL).type_text("7").press(Key::Enter);
+        assert_eq!(h.app().copies, 7);
+        // 数でなければ元に戻す
+        h.press_with(Key::A, Mods::CTRL).type_text("abc").press(Key::Enter);
+        assert_eq!(h.app().copies, 7);
+        assert_eq!(a11y_node(&h, "Copies").numeric_value(), Some(7.0));
+        // 外へ出る時にも決める。範囲の外は端に寄せる
+        h.press_with(Key::A, Mods::CTRL).type_text("50").press(Key::Tab);
+        assert_eq!(h.app().copies, 10);
+        // 打っている途中はまだ変えない
+        h.click("Copies").press_with(Key::A, Mods::CTRL).type_text("3");
+        assert_eq!(h.app().copies, 10);
+        h.click("Next");
+        assert_eq!(h.app().copies, 3);
+        // 小数
+        h.click("Scale").press_with(Key::A, Mods::CTRL).type_text("1.5").press(Key::Enter);
+        assert_eq!(h.app().scale, 1.5);
+    }
+
+    #[test]
+    fn number_inputs_step_with_keys_buttons_and_screen_readers() {
+        let mut h = order();
+        h.click("Copies");
+        h.press(Key::Up);
+        assert_eq!(h.app().copies, 2);
+        h.press(Key::Down).press(Key::Down);
+        assert_eq!(h.app().copies, 1, "最小より下には行かない");
+        h.press(Key::PageUp);
+        assert_eq!(h.app().copies, 10, "PageUp は 10 段（最大で止まる）");
+        h.press(Key::PageDown);
+        assert_eq!(h.app().copies, 1);
+        // 小さいボタン（読み上げの木には出さない）
+        h.click("Increase");
+        assert_eq!(h.app().copies, 2);
+        h.click("Decrease");
+        assert_eq!(h.app().copies, 1);
+        h.click("Scale").press(Key::Up);
+        assert_eq!(h.app().scale, 1.25, "step(0.25)");
+        let n = a11y_node(&h, "Scale");
+        assert_eq!(n.role(), accesskit::Role::SpinButton);
+        assert_eq!((n.min_numeric_value(), n.max_numeric_value(), n.numeric_value_step()), (Some(0.5), Some(2.0), Some(0.25)));
+        assert!(!a11y_nodes(&h).iter().any(|n| n.label() == Some("Increase")), "小さいボタンは読み上げに出さない");
+        let id = id_named(&h, "Copies");
+        h.send(vec![Event::A11y { target: id, action: crate::input::A11yAction::Increment }]);
+        assert_eq!(h.app().copies, 2, "読み上げソフトの増やす操作");
+    }
+
+    /// ツールバーの見本
+    #[derive(Default)]
+    struct Editor {
+        added: u32,
+        bold: bool,
+        settings: u32,
+    }
+
+    impl App for Editor {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.toolbar(|tb| {
+                if tb.button(crate::Icon::Plus, "New").clicked() {
+                    self.added += 1;
+                }
+                tb.toggle(&mut self.bold, crate::Icon::Check, "Bold");
+                tb.separator();
+                tb.button(crate::Icon::Search, "Find").enabled(false);
+                tb.more(|m| {
+                    if m.item("Settings").clicked() {
+                        self.settings += 1;
+                    }
+                });
+            })
+            .label("Editing");
+            ui.button("After");
+        }
+    }
+
+    #[test]
+    fn toolbars_are_one_tab_stop_and_move_with_arrows() {
+        let mut h = Harness::new(Editor::default());
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("New"));
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("After"), "ツールバーは Tab で 1 回だけ止まる");
+        h.press_with(Key::Tab, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("New"));
+        h.press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("Bold"));
+        h.press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("More options"), "使えない Find は飛ばす");
+        h.press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("New"), "端で回る");
+        h.press(Key::End);
+        assert_eq!(focused_name(&h).as_deref(), Some("More options"));
+        h.press(Key::Home).press(Key::Right).press(Key::Space);
+        assert!(h.app().bold);
+        // 次に Tab で入る時は、最後にいたボタンに止まる
+        h.press(Key::Tab).press_with(Key::Tab, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("Bold"));
+        h.press(Key::End).press(Key::Down);
+        assert_eq!(focused_name(&h).as_deref(), Some("Settings"), "「ほか」はメニュー");
+        h.press(Key::Enter);
+        assert_eq!(h.app().settings, 1);
+    }
+
+    #[test]
+    fn toolbar_buttons_show_their_names_as_tooltips_and_to_screen_readers() {
+        let mut h = Harness::new(Editor::default());
+        h.click("New");
+        assert_eq!(h.app().added, 1);
+        let nodes = a11y_nodes(&h);
+        let bar = nodes.iter().find(|n| n.role() == accesskit::Role::Toolbar).expect("ツールバー");
+        assert_eq!(bar.label(), Some("Editing"));
+        let bold = a11y_node(&h, "Bold");
+        assert_eq!((bold.role(), bold.toggled()), (accesskit::Role::Button, Some(accesskit::Toggled::False)));
+        assert_eq!(h.enabled("Find"), Some(false));
+        h.hover("New").wait(std::time::Duration::from_millis(600));
+        assert!(h.find_all("New").len() >= 2, "名前をツールチップにも出す");
+    }
 }

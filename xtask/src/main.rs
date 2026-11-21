@@ -378,6 +378,44 @@ fn shots() -> Vec<Shot> {
             },
         },
         Shot {
+            name: "tabs",
+            size: (420.0, 170.0),
+            view: |ui| {
+                let (mut page, mut sound, mut vibrate) = (1, true, false);
+                ui.tabs(&mut page, &[(0, "General"), (1, "Notifications"), (2, "About")], |ui, _| {
+                    ui.checkbox(&mut sound, "Play a sound");
+                    ui.checkbox(&mut vibrate, "Vibrate");
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "toolbar",
+            size: (480.0, 140.0),
+            view: |ui| {
+                use kargui::Icon;
+                let (mut pinned, mut copies, mut zoom) = (true, 3, 1.25);
+                ui.toolbar(|tb| {
+                    tb.button(Icon::Plus, "Add");
+                    tb.toggle(&mut pinned, Icon::Check, "Pin");
+                    tb.button(Icon::Search, "Find");
+                    tb.separator();
+                    tb.button(Icon::Close, "Remove").enabled(false);
+                    tb.more(|m| {
+                        m.item("Settings");
+                    });
+                })
+                .label("Tasks");
+                ui.row(|ui| {
+                    ui.label("Copies");
+                    ui.number(&mut copies, 1..=99).label("Number of copies");
+                    ui.label("Zoom");
+                    ui.number(&mut zoom, 0.5..=4.0).step(0.25).label("Zoom level");
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
             name: "more_widgets",
             size: (560.0, 330.0),
             view: |ui| {

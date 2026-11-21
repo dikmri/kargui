@@ -48,8 +48,8 @@ pub(crate) struct Hit {
     pub text_input: bool,
     /// 焦点がある時に矢印などのキーを受ける（スライダー）
     pub arrows: bool,
-    /// 複数行の入力欄（上下の矢印と PageUp/PageDown も受ける）
-    pub multiline: bool,
+    /// 上下の矢印と PageUp/PageDown も受ける（複数行の入力欄と数の入力欄）
+    pub vertical: bool,
     /// 押せる。押せない部品も当たりには入れ、下の部品へクリックが抜けないようにする
     pub enabled: bool,
 }
@@ -130,6 +130,10 @@ pub(crate) struct Prev {
     pub context_regions: Vec<(Id, Rect)>,
     /// メニューバーの見出し（並んだ順）
     pub menubar: Vec<Id>,
+    /// 数の入力欄の刻み（Up・Down で使う。NumberInput::step は作った後で付くので、前のフレームの値を使う）
+    pub steps: HashMap<Id, f64>,
+    /// 数の入力欄の小さいボタン → 欄（押しても焦点を欄に残す）
+    pub spins: HashMap<Id, Id>,
 }
 
 pub(crate) struct Context {
@@ -176,6 +180,10 @@ pub(crate) struct Context {
     pub open: HashSet<Id>,
     /// 開いているメニューの列（一番外のメニューから入れ子の順）。メニューは同時に 1 列だけ開く
     pub menus: Vec<Id>,
+    /// 数の入力欄で打っている途中の文字（焦点がある間だけ。外れたら決めて消す）
+    pub number_text: HashMap<Id, String>,
+    /// ツールバー → 最後に焦点があったボタン（Tab はそこにだけ止まる）
+    pub toolbar_last: HashMap<Id, Id>,
     /// ビューの途中で、前に作った部品が見た状態を変えた（メニューを開いた・閉じた）。もう一度回す
     pub again: bool,
     /// ポインターが止まった時の動き（入れ子のメニューの開閉）を済ませた項目と、乗った時刻
@@ -261,6 +269,8 @@ impl Context {
             overlay_focus_hint: HashMap::new(),
             open: HashSet::new(),
             menus: Vec::new(),
+            number_text: HashMap::new(),
+            toolbar_last: HashMap::new(),
             again: false,
             rested: None,
             overlay_after: HashMap::new(),
@@ -537,7 +547,9 @@ impl Context {
                     // ダイアログや浮き出しの空いた所を押しても、焦点は中に残す
                     let in_layer = self.top_dialog().is_some() || self.prev.overlays.iter().any(|o| o.kind != OverlayKind::Tooltip && o.rect.contains(x, y));
                     if hit.is_some() || !in_layer {
-                        self.focus = hit.as_ref().filter(|h| h.focusable).map(|h| h.id);
+                        // 数の入力欄の小さいボタンは、焦点を欄に置く
+                        let spin = hit.as_ref().and_then(|h| self.prev.spins.get(&h.id).copied());
+                        self.focus = spin.or(hit.as_ref().filter(|h| h.focusable).map(|h| h.id));
                     }
                     if let Some(h) = hit.filter(|h| h.text_input) {
                         self.pointer_text = Some((h.id, x, y, shift));
@@ -645,7 +657,8 @@ impl Context {
                         self.context_request = Some((t, (x, y)));
                     }
                 }
-                Event::Key { key: Key::Tab, mods } => {
+                // Ctrl+Tab は焦点を動かさない（タブの切り替え。アプリへ）
+                Event::Key { key: Key::Tab, mods } if !mods.ctrl => {
                     self.commit_preedit("tab");
                     // メニューと選択の一覧は Tab で閉じる（焦点は開いた元へ戻る）
                     if let Some(o) = self.top_popup().filter(|o| matches!(o.kind, OverlayKind::Menu | OverlayKind::ListBox)).cloned() {
@@ -687,7 +700,14 @@ impl Context {
                 Event::A11y { target, action: a @ (A11yAction::Increment | A11yAction::Decrement) } => {
                     self.commit_preedit("a11y");
                     self.focus = Some(target);
-                    let key = if a == A11yAction::Increment { Key::Right } else { Key::Left };
+                    // 数の入力欄は上下、スライダーは左右
+                    let vertical = self.prev.hits.iter().any(|h| h.id == target && h.vertical);
+                    let key = match (a == A11yAction::Increment, vertical) {
+                        (true, true) => Key::Up,
+                        (false, true) => Key::Down,
+                        (true, false) => Key::Right,
+                        (false, false) => Key::Left,
+                    };
                     self.keys.push(Event::Key { key, mods: Mods::default() });
                 }
                 Event::ImePreedit(s) => {
@@ -708,8 +728,8 @@ impl Context {
                 Event::Key { key, mods } => {
                     let text = self.focus.is_some_and(|f| self.is_text_input(f));
                     let arrows = self.focus.is_some_and(|f| self.prev.hits.iter().any(|h| h.id == f && h.arrows));
-                    let multiline = self.focus.is_some_and(|f| self.prev.hits.iter().any(|h| h.id == f && h.multiline));
-                    let lines = multiline && !mods.alt && !mods.ctrl && matches!(key, Key::Up | Key::Down | Key::PageUp | Key::PageDown);
+                    let vertical = self.focus.is_some_and(|f| self.prev.hits.iter().any(|h| h.id == f && h.vertical));
+                    let lines = vertical && !mods.alt && !mods.ctrl && matches!(key, Key::Up | Key::Down | Key::PageUp | Key::PageDown);
                     if (text && (text_input_takes(key, mods) || lines)) || (arrows && arrows_take(key, mods)) {
                         self.keys.push(Event::Key { key, mods });
                     } else {

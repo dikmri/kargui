@@ -44,6 +44,11 @@ fn row_name(tree: &Tree, i: usize) -> String {
     parts.join(" ")
 }
 
+/// 読み上げの木に出さない物（空き・数の入力欄の小さいボタン。欄が増やす・減らす操作を持つ）
+fn hidden(kind: &Kind) -> bool {
+    matches!(kind, Kind::Space | Kind::SpinButton { .. })
+}
+
 pub(crate) struct A11yBuild {
     pub update: TreeUpdate,
     /// 名前の無い操作の部品（記録用）
@@ -67,7 +72,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
     for i in 0..tree.info.len() {
         let info = &tree.info[i];
         let l = &tree.layout[i];
-        if matches!(info.kind, Kind::Space) {
+        if hidden(&info.kind) {
             continue;
         }
         let name = name_of(tree, i);
@@ -309,7 +314,42 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 OverlayKind::ListBox => Node::new(Role::ListBox),
                 OverlayKind::Menu => Node::new(Role::Menu),
             },
-            Kind::Space => unreachable!(),
+            Kind::Space | Kind::SpinButton { .. } => unreachable!(),
+            Kind::Tabs => Node::new(Role::GenericContainer),
+            Kind::TabList => Node::new(Role::TabList),
+            Kind::Tab { selected, .. } => {
+                let mut n = Node::new(Role::Tab);
+                n.set_selected(*selected);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::TabPanel => {
+                let mut n = Node::new(Role::TabPanel);
+                if let Some(l) = &info.label {
+                    n.set_label(l.clone());
+                }
+                n
+            }
+            Kind::NumberInput { text, value, min, max, step } => {
+                let mut n = Node::new(Role::SpinButton);
+                n.set_numeric_value(*value);
+                n.set_min_numeric_value(*min);
+                n.set_max_numeric_value(*max);
+                n.set_numeric_value_step(*step);
+                n.set_value(text.clone());
+                n.add_action(Action::Focus);
+                n.add_action(Action::Increment);
+                n.add_action(Action::Decrement);
+                n
+            }
+            Kind::Toolbar => {
+                let mut n = Node::new(Role::Toolbar);
+                if let Some(l) = &info.label {
+                    n.set_label(l.clone());
+                }
+                n
+            }
         };
         if let Some(d) = &info.description {
             node.set_description(d.clone());
@@ -335,7 +375,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
             node.set_bounds(ak(l.rect));
         }
         let mut children: Vec<NodeId> =
-            l.children.iter().filter(|&&c| !matches!(tree.info[c].kind, Kind::Space)).map(|&c| NodeId(tree.info[c].id.0)).collect();
+            l.children.iter().filter(|&&c| !hidden(&tree.info[c].kind)).map(|&c| NodeId(tree.info[c].id.0)).collect();
         // 重ねて出す物は親に付いていないので、根の子として読み上げの木に入れる
         if i == 0 {
             children.extend(tree.overlays.iter().map(|o| NodeId(o.id.0)));

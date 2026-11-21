@@ -122,6 +122,8 @@ mod guide {
     struct Ja11MoreWidgets;
     #[doc = include_str!("../../../docs/guide/ja/12-menus.md")]
     struct Ja12Menus;
+    #[doc = include_str!("../../../docs/guide/ja/13-tabs-numbers-toolbars.md")]
+    struct Ja13TabsNumbersToolbars;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -148,6 +150,8 @@ mod guide {
     struct En11MoreWidgets;
     #[doc = include_str!("../../../docs/guide/en/12-menus.md")]
     struct En12Menus;
+    #[doc = include_str!("../../../docs/guide/en/13-tabs-numbers-toolbars.md")]
+    struct En13TabsNumbersToolbars;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]

@@ -394,6 +394,63 @@ ui.menu_bar(|bar| {
 });
 ```
 
+### `pub fn tabs<T: Copy + PartialEq>(&mut self, value: &mut T, tabs: &[(T, &str)], panel: impl FnOnce(&mut Ui, T)) -> Tabs<'_>`
+
+Tabs: a row of tab headings over a panel that shows the selected tab's content. `panel`
+gets the selected value and builds the content for it. Clicking a heading selects it.
+Keyboard: Tab stops once on the selected heading; Left and Right select the previous or next
+tab (wrapping), Home and End the first or last. While the focus is anywhere inside,
+Ctrl+Tab and Ctrl+PageDown select the next tab, Ctrl+Shift+Tab and Ctrl+PageUp the previous.
+Screen readers hear a tab list, tabs (and which is selected) and a tab panel named after it.
+
+```
+#[derive(Clone, Copy, PartialEq)]
+enum Page { General, Advanced }
+ui.tabs(&mut page, &[(Page::General, "General"), (Page::Advanced, "Advanced")], |ui, page| match page {
+    Page::General => {
+        ui.checkbox(&mut sound, "Play a sound");
+    }
+    Page::Advanced => {
+        ui.checkbox(&mut proxy, "Use a proxy");
+    }
+});
+```
+
+### `pub fn number<T: SliderValue>(&mut self, value: &mut T, range: RangeInclusive<T>) -> NumberInput<'_>`
+
+A field for a number between the ends of `range`, with small buttons to step it up and
+down. Typing changes the number when Enter is pressed or the focus leaves (text that is not
+a number is undone; numbers outside the range are moved to the nearest end; full-width
+digits typed with a Japanese input method also work). Up and Down step by
+[`NumberInput::step`] (1 by default), Page Up and Page Down by 10 steps.
+Screen readers hear a spin button with the value and the range.
+
+```
+ui.number(&mut copies, 1..=99).label("Copies");
+ui.number(&mut zoom, 0.5..=4.0).step(0.25).label("Zoom");
+```
+
+### `pub fn toolbar(&mut self, f: impl FnOnce(&mut Toolbar)) -> Handle<'_>`
+
+A toolbar: a row of icon buttons and other commands. Its buttons show their names as
+tooltips. Tab stops once on the toolbar (on the button used last), and Left, Right, Home
+and End move between its buttons. Give it a name with `.label(..)`.
+
+```
+use kargui::Icon;
+ui.toolbar(|tb| {
+    if tb.button(Icon::Plus, "Add").clicked() {
+        count += 1;
+    }
+    tb.toggle(&mut pinned, Icon::Check, "Pin");
+    tb.separator();
+    tb.more(|m| {
+        m.item("Settings");
+    });
+})
+.label("Tasks");
+```
+
 ### `pub fn icon(&mut self, icon: Icon) -> IconView<'_>`
 
 A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:

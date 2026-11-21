@@ -112,11 +112,11 @@ and add the most common ones first. Each addition is measured with the same tool
 
 Not there yet:
 
-- **Widgets:** open and save file dialogs, tabs, tree view, tables with column headers and a free
+- **Widgets:** open and save file dialogs, tree view, tables with column headers and a free
   drawing surface (disabled widgets, popups, in-window dialogs, tooltips, icons,
   images, multi-line text input, radio buttons, progress, cards and groups, expanders, links,
-  passwords, drop-downs and menus (menu bar, menu buttons, submenus and context menus) were added
-  after 0.1; images are not drawn on the Direct3D 11 renderer yet).
+  passwords, drop-downs, menus (menu bar, menu buttons, submenus and context menus), tabs,
+  number inputs and toolbars were added after 0.1; images are not drawn on the Direct3D 11 renderer yet).
 - **App mechanisms:** multiple windows, drag and drop, choosing fonts, window icon, minimum window
   size, confirming before close, and animation helpers (shortcuts, timers and waking from other
   threads were added after 0.1).

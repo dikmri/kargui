@@ -145,14 +145,28 @@ pub(crate) enum Kind {
     Expander { open: bool, text: String },
     /// リンク
     Link { text: String },
-    /// 押したままにできるボタン
-    ToggleButton { on: bool, text: String },
+    /// 押したままにできるボタン（icon だけならツールバーのボタン）
+    ToggleButton { on: bool, text: String, icon: Option<Icon> },
     /// ドロップダウン（text は選んでいる項目、widest は一番長い項目。幅を決める）
     Dropdown { text: String, widest: String, open: bool },
     /// 選択の一覧の項目（ドロップダウンの中）
     ListOption { text: String, selected: bool },
-    /// メニューを開くボタン（Ui::menu_button）
-    MenuButton { text: String, open: bool },
+    /// メニューを開くボタン（Ui::menu_button。icon だけならツールバーの「ほか」）
+    MenuButton { text: String, open: bool, icon: Option<Icon> },
+    /// タブの入れ物（見出しの列と中身）
+    Tabs,
+    /// タブの見出しの列
+    TabList,
+    /// タブの見出し
+    Tab { text: String, selected: bool },
+    /// タブの中身
+    TabPanel,
+    /// 数の入力欄（text は欄に出す文字。value・min・max・step は読み上げにも渡す）
+    NumberInput { text: String, value: f64, min: f64, max: f64, step: f64 },
+    /// 数の入力欄の右の小さいボタン（読み上げの木には出さない）
+    SpinButton { up: bool },
+    /// ツールバー
+    Toolbar,
     /// メニューバー（見出しを横に並べる入れ物）
     MenuBar,
     /// メニューバーの見出し（tab_stop は Tab で止まる 1 つ。最初の見出し）
@@ -248,6 +262,8 @@ impl Kind {
                 | Kind::MenuButton { .. }
                 | Kind::MenuBarItem { .. }
                 | Kind::MenuItem { .. }
+                | Kind::Tab { .. }
+                | Kind::NumberInput { .. }
         )
     }
 }
@@ -264,6 +280,8 @@ pub(crate) struct NodeInfo {
     pub description: Option<String>,
     /// 右クリックのメニューを持つ（Handle::context_menu）。描く時にその範囲を覚える
     pub context_menu: bool,
+    /// Tab で止まらない（焦点は持てる。タブとツールバーは、まとまりの中の 1 つだけが Tab で止まる）
+    pub skip_tab: bool,
 }
 
 /// ビュー 1 回分の画面の木。info と layout は同じ番号で並ぶ。親は子より前に入る
@@ -288,7 +306,7 @@ impl Tree {
         layout.pad = ((16.0 * scale).round(), (12.0 * scale).round());
         layout.gap = (10.0 * scale).round();
         Self {
-            info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false, description: None, context_menu: false }],
+            info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false, description: None, context_menu: false, skip_tab: false }],
             layout: vec![layout],
             overlays: Vec::new(),
             occurrences: HashMap::new(),
@@ -350,7 +368,7 @@ impl<'a> Ui<'a> {
     /// 重ねて出す物の入れ物を作る（親には付けず、Tree::overlays に入れる）
     fn push_overlay(&mut self, id: Id, kind: OverlayKind, title: String, anchor: Option<Id>) -> usize {
         let idx = self.tree.info.len();
-        self.tree.info.push(NodeInfo { id, kind: Kind::Overlay { kind, title }, label: None, disabled: self.disabled, description: None, context_menu: false });
+        self.tree.info.push(NodeInfo { id, kind: Kind::Overlay { kind, title }, label: None, disabled: self.disabled, description: None, context_menu: false, skip_tab: false });
         self.tree.layout.push(LayoutNode::new(Dir::Column));
         self.tree.overlays.push(Overlay { idx, id, anchor, kind, place: Place::Below });
         idx
@@ -358,7 +376,7 @@ impl<'a> Ui<'a> {
 
     fn push(&mut self, id: Id, kind: Kind, dir: Dir) -> (usize, Id) {
         let idx = self.tree.info.len();
-        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled, description: None, context_menu: false });
+        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled, description: None, context_menu: false, skip_tab: false });
         self.tree.layout.push(LayoutNode::new(dir));
         self.tree.layout[self.parent].children.push(idx);
         (idx, id)
@@ -938,7 +956,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn toggle_button(&mut self, on: &mut bool, text: impl Into<String>) -> Toggled<'_> {
-        let (idx, id) = self.add(Kind::ToggleButton { on: *on, text: text.into() }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::ToggleButton { on: *on, text: text.into(), icon: None }, Dir::Leaf);
         let changed = !self.disabled && self.cx.clicked == Some(id);
         if changed {
             *on = !*on;
@@ -1098,7 +1116,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn menu_button(&mut self, text: impl Into<String>, f: impl FnOnce(&mut Menu)) -> Handle<'_> {
-        let (idx, id) = self.add(Kind::MenuButton { text: text.into(), open: false }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::MenuButton { text: text.into(), open: false, icon: None }, Dir::Leaf);
         let pop = Id(hash_of((id.0, "menu")));
         let (open, last) = self.root_menu(id, pop);
         let out = self.menu_body(pop, Some(id), Place::Below, 0, open, false, f);
@@ -1294,6 +1312,310 @@ impl<'a> Ui<'a> {
             type_ahead(cx, &items);
         }
         (items.into_iter().map(|(i, _)| i).collect(), step)
+    }
+
+    /// Tabs: a row of tab headings over a panel that shows the selected tab's content. `panel`
+    /// gets the selected value and builds the content for it. Clicking a heading selects it.
+    /// Keyboard: Tab stops once on the selected heading; Left and Right select the previous or next
+    /// tab (wrapping), Home and End the first or last. While the focus is anywhere inside,
+    /// Ctrl+Tab and Ctrl+PageDown select the next tab, Ctrl+Shift+Tab and Ctrl+PageUp the previous.
+    /// Screen readers hear a tab list, tabs (and which is selected) and a tab panel named after it.
+    ///
+    /// ```
+    /// #[derive(Clone, Copy, PartialEq)]
+    /// enum Page { General, Advanced }
+    /// # let (mut page, mut sound, mut proxy) = (Page::General, true, false);
+    /// # kargui::test::example(|ui| {
+    /// ui.tabs(&mut page, &[(Page::General, "General"), (Page::Advanced, "Advanced")], |ui, page| match page {
+    ///     Page::General => {
+    ///         ui.checkbox(&mut sound, "Play a sound");
+    ///     }
+    ///     Page::Advanced => {
+    ///         ui.checkbox(&mut proxy, "Use a proxy");
+    ///     }
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn tabs<T: Copy + PartialEq>(&mut self, value: &mut T, tabs: &[(T, &str)], panel: impl FnOnce(&mut Ui, T)) -> Tabs<'_> {
+        let (idx, id) = self.add(Kind::Tabs, Dir::Column);
+        self.tree.layout[idx].align = Align::Stretch;
+        let current = tabs.iter().position(|(v, _)| v == value);
+        let mut picked = None;
+        let mut heads = Vec::with_capacity(tabs.len());
+        {
+            let mut ui = self.child(idx);
+            let (list, _) = ui.add(Kind::TabList, Dir::Row);
+            let gap = ui.px(4.0);
+            ui.tree.layout[list].gap = gap;
+            let mut row = ui.child(list);
+            for (k, (_, label)) in tabs.iter().enumerate() {
+                row.salt = hash_of(k);
+                let (ti, tid) = row.add(Kind::Tab { text: label.to_string(), selected: Some(k) == current }, Dir::Leaf);
+                // Tab は選んでいるタブにだけ止まる（選んでいる物が無ければ最初）
+                row.tree.info[ti].skip_tab = Some(k) != current.or(Some(0));
+                heads.push(tid);
+                if !row.disabled && row.cx.clicked == Some(tid) {
+                    picked = Some(k);
+                }
+            }
+        }
+        // 中身（選んでいるタブの名前で読み上げる）
+        if let Some(k) = current {
+            let mut ui = self.child(idx);
+            let (p, _) = ui.add(Kind::TabPanel, Dir::Column);
+            ui.tree.info[p].label = Some(tabs[k].1.to_string());
+            let (pad, gap) = (ui.px(12.0), ui.px(10.0));
+            ui.tree.layout[p].pad = (0.0, pad);
+            ui.tree.layout[p].gap = gap;
+            ui.tree.layout[p].align = Align::Stretch;
+            panel(&mut ui.child(p), tabs[k].0);
+        }
+        let n = heads.len();
+        let cx = &mut *self.cx;
+        if n > 0 && !self.disabled {
+            // 見出しに焦点がある時: 左右・Home・End で選ぶ（端で回る）
+            if let Some(at) = cx.focus.and_then(|f| heads.iter().position(|&h| h == f)) {
+                let mut next = at;
+                for e in std::mem::take(&mut cx.keys) {
+                    if let Event::Key { key, mods } = e {
+                        if mods.ctrl || mods.alt {
+                            continue;
+                        }
+                        next = match key {
+                            Key::Right => (next + 1) % n,
+                            Key::Left => (next + n - 1) % n,
+                            Key::Home => 0,
+                            Key::End => n - 1,
+                            _ => next,
+                        };
+                    }
+                }
+                if next != at {
+                    picked = Some(next);
+                    cx.focus = Some(heads[next]);
+                    cx.focus_visible = true;
+                }
+            }
+            // 中に焦点がある時: Ctrl+Tab・Ctrl+PageDown で次、Ctrl+Shift+Tab・Ctrl+PageUp で前
+            let within = cx.focus.is_some_and(|f| descends(self.tree, idx, f));
+            if within {
+                let from = picked.or(current).unwrap_or(0);
+                let mut step = 0i32;
+                cx.app_keys.retain(|&(k, m)| {
+                    let s = match (k, m) {
+                        (Key::Tab, Mods { ctrl: true, alt: false, shift: false }) | (Key::PageDown, Mods { ctrl: true, alt: false, shift: false }) => 1,
+                        (Key::Tab, Mods { ctrl: true, alt: false, shift: true }) | (Key::PageUp, Mods { ctrl: true, alt: false, shift: false }) => -1,
+                        _ => return true,
+                    };
+                    step += s;
+                    false
+                });
+                if step != 0 {
+                    let next = (from as i32 + step).rem_euclid(n as i32) as usize;
+                    picked = Some(next);
+                    // 中身の部品は消えるので、焦点は新しいタブの見出しへ
+                    if !heads.contains(&cx.focus.unwrap_or(Id(0))) {
+                        cx.focus = Some(heads[next]);
+                        cx.focus_visible = true;
+                    }
+                }
+            }
+        }
+        let changed = picked.is_some_and(|k| Some(k) != current);
+        if let Some(k) = picked {
+            *value = tabs[k].0;
+        }
+        Tabs { h: self.handle(idx, id), changed }
+    }
+
+    /// A field for a number between the ends of `range`, with small buttons to step it up and
+    /// down. Typing changes the number when Enter is pressed or the focus leaves (text that is not
+    /// a number is undone; numbers outside the range are moved to the nearest end; full-width
+    /// digits typed with a Japanese input method also work). Up and Down step by
+    /// [`NumberInput::step`] (1 by default), Page Up and Page Down by 10 steps.
+    /// Screen readers hear a spin button with the value and the range.
+    ///
+    /// ```
+    /// # let (mut copies, mut zoom) = (1, 1.0);
+    /// # kargui::test::example(|ui| {
+    /// ui.number(&mut copies, 1..=99).label("Copies");
+    /// ui.number(&mut zoom, 0.5..=4.0).step(0.25).label("Zoom");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn number<T: SliderValue>(&mut self, value: &mut T, range: RangeInclusive<T>) -> NumberInput<'_> {
+        let (min, max) = (range.start().to_f64(), range.end().to_f64());
+        let (idx, id) = self.add(Kind::NumberInput { text: String::new(), value: 0.0, min, max, step: 1.0 }, Dir::Row);
+        // 幅 140・高さは 1 行の入力欄と同じ 34（論理ピクセル）
+        let (w, h, pad) = (self.px(140.0), self.px(34.0), self.px(3.0));
+        {
+            let l = &mut self.tree.layout[idx];
+            l.width = Size::Fixed(w);
+            l.height = Size::Fixed(h);
+            l.pad = (pad, pad);
+            l.align = Align::Stretch;
+        }
+        // 右の小さいボタン（読み上げの木には出さない。押しても焦点は欄に残る）
+        let (up, down) = {
+            let bw = self.px(28.0);
+            let mut ui = self.child(idx);
+            ui.fill();
+            let (u, uid) = ui.add(Kind::SpinButton { up: true }, Dir::Leaf);
+            let (d, did) = ui.add(Kind::SpinButton { up: false }, Dir::Leaf);
+            for (k, name) in [(u, "Increase"), (d, "Decrease")] {
+                ui.tree.layout[k].width = Size::Fixed(bw);
+                ui.tree.info[k].label = Some(name.to_string());
+            }
+            (uid, did)
+        };
+        let step = self.cx.prev.steps.get(&id).copied().unwrap_or(1.0);
+        let fmt = |v: f64| format_number(v, T::INTEGER, step);
+        let fit = |v: f64| {
+            let v = v.clamp(min.min(max), max.max(min));
+            if T::INTEGER { v.round() } else { round_to_step_decimals(v, step) }
+        };
+        let mut v = value.to_f64();
+        let start = v;
+        let focused = self.cx.focus == Some(id) && !self.disabled;
+        // 打っている途中の文字は、焦点がある間だけ kargui が持つ。焦点が外れたら決める
+        let editing = self.cx.number_text.remove(&id);
+        let mut text = match (focused, editing) {
+            (false, Some(t)) => {
+                if let Some(n) = parse_number(&t) {
+                    v = fit(n);
+                }
+                fmt(v)
+            }
+            (true, Some(t)) => t,
+            (_, None) => fmt(v),
+        };
+        if !self.disabled {
+            let mut steps = 0.0;
+            if self.cx.clicked == Some(up) {
+                steps += 1.0;
+            }
+            if self.cx.clicked == Some(down) {
+                steps -= 1.0;
+            }
+            if focused {
+                self.cx.keys.retain(|e| match e {
+                    Event::Key { key, mods } if !mods.ctrl && !mods.alt => {
+                        let s = match key {
+                            Key::Up => 1.0,
+                            Key::Down => -1.0,
+                            Key::PageUp => 10.0,
+                            Key::PageDown => -10.0,
+                            _ => return true,
+                        };
+                        steps += s;
+                        false
+                    }
+                    _ => true,
+                });
+            }
+            if steps != 0.0 {
+                // 打っていた数を先に決めてから進める
+                if let Some(n) = parse_number(&text) {
+                    v = fit(n);
+                }
+                v = fit(v + steps * step);
+                text = fmt(v);
+                if let Some(e) = self.cx.edits.get_mut(&id) {
+                    e.cursor = text.len();
+                    e.anchor = text.len();
+                }
+            }
+            if focused {
+                let (_, submitted) = self.edit(id, &mut text, Field::Line);
+                if submitted {
+                    if let Some(n) = parse_number(&text) {
+                        v = fit(n);
+                    }
+                    text = fmt(v);
+                }
+                self.cx.number_text.insert(id, text.clone());
+            }
+        }
+        let changed = v != start;
+        if changed {
+            *value = T::from_f64(v);
+            crate::log::event("number.change", &format!("from={start} to={v}"), "ok");
+        }
+        if let Kind::NumberInput { text: t, value: val, .. } = &mut self.tree.info[idx].kind {
+            *t = text;
+            *val = v;
+        }
+        NumberInput { h: self.handle(idx, id), changed }
+    }
+
+    /// A toolbar: a row of icon buttons and other commands. Its buttons show their names as
+    /// tooltips. Tab stops once on the toolbar (on the button used last), and Left, Right, Home
+    /// and End move between its buttons. Give it a name with `.label(..)`.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # let (mut count, mut pinned) = (0, false);
+    /// # kargui::test::example(|ui| {
+    /// ui.toolbar(|tb| {
+    ///     if tb.button(Icon::Plus, "Add").clicked() {
+    ///         count += 1;
+    ///     }
+    ///     tb.toggle(&mut pinned, Icon::Check, "Pin");
+    ///     tb.separator();
+    ///     tb.more(|m| {
+    ///         m.item("Settings");
+    ///     });
+    /// })
+    /// .label("Tasks");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn toolbar(&mut self, f: impl FnOnce(&mut Toolbar)) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::Toolbar, Dir::Row);
+        let gap = self.px(2.0);
+        self.tree.layout[idx].gap = gap;
+        f(&mut Toolbar { ui: self.child(idx) });
+        // 移れるボタン（使えない物は飛ばす）
+        let items: Vec<(usize, Id)> = self.tree.layout[idx]
+            .children
+            .iter()
+            .copied()
+            .filter(|&c| !self.tree.info[c].disabled && matches!(self.tree.info[c].kind, Kind::Button { .. } | Kind::ToggleButton { .. } | Kind::MenuButton { .. }))
+            .map(|c| (c, self.tree.info[c].id))
+            .collect();
+        let cx = &mut *self.cx;
+        if let Some(at) = cx.focus.and_then(|f| items.iter().position(|&(_, i)| i == f)) {
+            let n = items.len();
+            let mut next = at;
+            for e in std::mem::take(&mut cx.keys) {
+                if let Event::Key { key, mods } = e {
+                    if mods.ctrl || mods.alt {
+                        continue;
+                    }
+                    next = match key {
+                        Key::Right => (next + 1) % n,
+                        Key::Left => (next + n - 1) % n,
+                        Key::Home => 0,
+                        Key::End => n - 1,
+                        _ => next,
+                    };
+                }
+            }
+            if next != at {
+                cx.focus = Some(items[next].1);
+                cx.focus_visible = true;
+            }
+        }
+        // 最後にいたボタンを覚えて、Tab はそこにだけ止まる
+        if let Some(f) = cx.focus.filter(|f| items.iter().any(|&(_, i)| i == *f)) {
+            cx.toolbar_last.insert(id, f);
+        }
+        let stop = cx.toolbar_last.get(&id).copied().filter(|s| items.iter().any(|&(_, i)| i == *s)).or(items.first().map(|&(_, i)| i));
+        for &(c, i) in &items {
+            self.tree.info[c].skip_tab = Some(i) != stop;
+        }
+        self.handle(idx, id)
     }
 
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
@@ -2128,12 +2450,12 @@ impl Handle<'_> {
                 let ov = Id(hash_of((id.0, "tooltip")));
                 let idx = self.tree.info.len();
                 let kind = Kind::Overlay { kind: OverlayKind::Tooltip, title: String::new() };
-                self.tree.info.push(NodeInfo { id: ov, kind, label: None, disabled: false, description: None, context_menu: false });
+                self.tree.info.push(NodeInfo { id: ov, kind, label: None, disabled: false, description: None, context_menu: false, skip_tab: false });
                 let mut l = LayoutNode::new(Dir::Column);
                 l.pad = ((8.0 * scale).round(), (5.0 * scale).round());
                 self.tree.layout.push(l);
                 let label = Kind::Label { text, size: TextKind::Small, bold: false, weak: false, strike: false, wrap: false, right: false };
-                self.tree.info.push(NodeInfo { id: Id(hash_of((id.0, "tooltip-text"))), kind: label, label: None, disabled: false, description: None, context_menu: false });
+                self.tree.info.push(NodeInfo { id: Id(hash_of((id.0, "tooltip-text"))), kind: label, label: None, disabled: false, description: None, context_menu: false, skip_tab: false });
                 self.tree.layout.push(LayoutNode::new(Dir::Leaf));
                 self.tree.layout[idx].children.push(idx + 1);
                 self.tree.overlays.push(Overlay { idx, id: ov, anchor: Some(id), kind: OverlayKind::Tooltip, place: Place::Below });
@@ -3517,6 +3839,261 @@ fn descends(tree: &Tree, a: usize, id: Id) -> bool {
     tree.layout[a].children.iter().any(|&c| tree.info[c].id == id || descends(tree, c, id))
 }
 
+/// Tabs. See [`Ui::tabs`].
+///
+/// ```
+/// # let mut tab = 0;
+/// # kargui::test::example(|ui| {
+/// let tabs = ui.tabs(&mut tab, &[(0, "Inbox"), (1, "Sent")], |ui, tab| {
+///     ui.label(if tab == 0 { "3 new messages" } else { "Nothing sent yet" });
+/// });
+/// if tabs.changed() {
+///     // load the other folder
+/// }
+/// # });
+/// ```
+pub struct Tabs<'t> {
+    h: Handle<'t>,
+    changed: bool,
+}
+
+common!(Tabs, " # let mut tab = 0;", "tabs(&mut tab, &[(0, \"One\"), (1, \"Two\")], |ui, _| { ui.label(\"Text\"); })");
+
+impl Tabs<'_> {
+    /// Whether another tab was selected in this frame.
+    ///
+    /// ```
+    /// # let mut tab = 0;
+    /// # kargui::test::example(|ui| {
+    /// if ui.tabs(&mut tab, &[(0, "Inbox"), (1, "Sent")], |ui, _| { ui.label("Mail"); }).changed() {
+    ///     // react to the new tab
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+}
+
+/// A number field. See [`Ui::number`].
+///
+/// ```
+/// # let mut copies = 1;
+/// # kargui::test::example(|ui| {
+/// if ui.number(&mut copies, 1..=99).label("Copies").changed() {
+///     // update the price
+/// }
+/// # });
+/// ```
+pub struct NumberInput<'t> {
+    h: Handle<'t>,
+    changed: bool,
+}
+
+common!(NumberInput, " # let mut n = 1;", "number(&mut n, 0..=10)");
+
+impl NumberInput<'_> {
+    /// How much Up, Down and the small buttons change the number (Page Up and Page Down change it
+    /// by 10 times this). 1 by default. The new step is used from the next frame.
+    ///
+    /// ```
+    /// # let mut volume = 0.5;
+    /// # kargui::test::example(|ui| {
+    /// ui.number(&mut volume, 0.0..=1.0).step(0.1).label("Volume");
+    /// # });
+    /// ```
+    pub fn step(mut self, step: f64) -> Self {
+        if let Kind::NumberInput { step: s, .. } = self.h.kind() {
+            *s = step.abs().max(f64::MIN_POSITIVE);
+        }
+        self
+    }
+
+    /// Whether the number changed in this frame (typed and confirmed, stepped, or set by a screen
+    /// reader).
+    ///
+    /// ```
+    /// # let mut n = 1;
+    /// # kargui::test::example(|ui| {
+    /// if ui.number(&mut n, 0..=10).changed() {
+    ///     // react to the new number
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+}
+
+/// The commands of a toolbar. See [`Ui::toolbar`].
+///
+/// ```
+/// use kargui::Icon;
+/// # kargui::test::example(|ui| {
+/// ui.toolbar(|tb| {
+///     tb.button(Icon::Search, "Search");
+/// })
+/// .label("Tools");
+/// # });
+/// ```
+pub struct Toolbar<'m> {
+    ui: Ui<'m>,
+}
+
+impl<'m> Toolbar<'m> {
+    /// A button that shows only an icon; `name` is its tooltip and screen-reader name.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # let mut count = 0;
+    /// # kargui::test::example(|ui| {
+    /// ui.toolbar(|tb| {
+    ///     if tb.button(Icon::Plus, "Add").clicked() {
+    ///         count += 1;
+    ///     }
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn button(&mut self, icon: Icon, name: impl Into<String>) -> Button<'_> {
+        let name = name.into();
+        let (idx, id) = self.ui.add(Kind::Button { text: String::new(), primary: false, small: false, icon: Some(icon) }, Dir::Leaf);
+        self.ui.tree.info[idx].label = Some(name.clone());
+        let clicked = !self.ui.disabled && self.ui.cx.clicked == Some(id);
+        Button { h: self.ui.handle(idx, id).tooltip(name), clicked }
+    }
+
+    /// A button with an icon that stays pressed while `*on` is true; clicking it flips `*on`.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # let mut pinned = false;
+    /// # kargui::test::example(|ui| {
+    /// ui.toolbar(|tb| {
+    ///     tb.toggle(&mut pinned, Icon::Check, "Pin");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn toggle(&mut self, on: &mut bool, icon: Icon, name: impl Into<String>) -> Toggled<'_> {
+        let name = name.into();
+        let (idx, id) = self.ui.add(Kind::ToggleButton { on: *on, text: String::new(), icon: Some(icon) }, Dir::Leaf);
+        self.ui.tree.info[idx].label = Some(name.clone());
+        let changed = !self.ui.disabled && self.ui.cx.clicked == Some(id);
+        if changed {
+            *on = !*on;
+            if let Kind::ToggleButton { on: o, .. } = &mut self.ui.tree.info[idx].kind {
+                *o = *on;
+            }
+        }
+        Toggled { h: self.ui.handle(idx, id).tooltip(name), changed }
+    }
+
+    /// A line between groups of buttons.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.toolbar(|tb| {
+    ///     tb.button(Icon::Plus, "Add");
+    ///     tb.separator();
+    ///     tb.button(Icon::Close, "Remove");
+    /// });
+    /// # });
+    /// ```
+    pub fn separator(&mut self) {
+        self.ui.separator();
+    }
+
+    /// A "More options" button (three dots) that opens a menu, for commands used less often.
+    ///
+    /// ```
+    /// use kargui::Icon;
+    /// # kargui::test::example(|ui| {
+    /// ui.toolbar(|tb| {
+    ///     tb.button(Icon::Plus, "Add");
+    ///     tb.more(|m| {
+    ///         m.item("Import");
+    ///         m.item("Export");
+    ///     });
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn more(&mut self, f: impl FnOnce(&mut Menu)) {
+        let name = "More options";
+        let (idx, id) = self.ui.add(Kind::MenuButton { text: String::new(), open: false, icon: Some(Icon::More) }, Dir::Leaf);
+        self.ui.tree.info[idx].label = Some(name.to_string());
+        let pop = Id(hash_of((id.0, "menu")));
+        let (open, last) = self.ui.root_menu(id, pop);
+        let out = self.ui.menu_body(pop, Some(id), Place::Below, 0, open, false, f);
+        let cx = &mut *self.ui.cx;
+        if out.done && cx.menus.first() == Some(&pop) {
+            cx.menus_truncate(0);
+        }
+        if let (true, Some(&l)) = (last, out.items.last()) {
+            cx.overlay_focus_hint.insert(pop, l);
+        }
+        let open = cx.menus.first() == Some(&pop);
+        if let Kind::MenuButton { open: o, .. } = &mut self.ui.tree.info[idx].kind {
+            *o = open;
+        }
+        let _ = self.ui.handle(idx, id).tooltip(name);
+    }
+
+    /// The [`Ui`] of the toolbar, to put any other widget in it (a search field, a drop-down).
+    ///
+    /// ```
+    /// # let mut query = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.toolbar(|tb| {
+    ///     tb.ui().text_input(&mut query).hint("Search");
+    /// });
+    /// # });
+    /// ```
+    pub fn ui(&mut self) -> &mut Ui<'m> {
+        &mut self.ui
+    }
+}
+
+/// 打った文字を数にする（前後の空白を除く。全角の数字・小数点・マイナスも半角にする）
+fn parse_number(text: &str) -> Option<f64> {
+    let t: String = text
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '０'..='９' => char::from_u32(c as u32 - '０' as u32 + '0' as u32).unwrap_or(c),
+            '．' => '.',
+            '－' | '−' | 'ー' => '-',
+            '＋' => '+',
+            c => c,
+        })
+        .collect();
+    t.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// 刻みの小数の桁数（0.25 → 2。最大 6）
+fn step_decimals(step: f64) -> usize {
+    let s = format!("{step}");
+    s.split('.').nth(1).map_or(0, |d| d.len()).min(6)
+}
+
+/// 刻みの小数の桁にそろえる（足し算の誤差を消す）
+fn round_to_step_decimals(v: f64, step: f64) -> f64 {
+    let k = 10f64.powi(step_decimals(step) as i32);
+    (v * k).round() / k
+}
+
+/// 数を欄に出す文字にする（整数は整数で、小数は刻みの桁まで。末尾の 0 は消す）
+fn format_number(v: f64, integer: bool, step: f64) -> String {
+    if integer {
+        return format!("{}", v.round() as i64);
+    }
+    let s = format!("{:.*}", step_decimals(step).max(1), v);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" { "0".to_string() } else { s.to_string() }
+}
+
 /// 入力欄の種類（edit の振る舞いを変える）
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -3787,7 +4364,7 @@ pub(crate) fn visible_text(kind: &Kind) -> Option<&str> {
         Kind::Label { text, .. } | Kind::Button { text, .. } | Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => Some(text),
         Kind::Segment { text, .. } | Kind::Radio { text, .. } | Kind::Expander { text, .. } | Kind::Link { text } | Kind::ToggleButton { text, .. } => Some(text),
         Kind::Dropdown { text, .. } | Kind::ListOption { text, .. } => Some(text),
-        Kind::MenuButton { text, .. } | Kind::MenuBarItem { text, .. } | Kind::MenuItem { text, .. } => Some(text),
+        Kind::MenuButton { text, .. } | Kind::MenuBarItem { text, .. } | Kind::MenuItem { text, .. } | Kind::Tab { text, .. } => Some(text),
         _ => None,
     }
 }

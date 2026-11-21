@@ -18,5 +18,6 @@ API が変わったのにガイドを直していないと、検査（`cargo run
 10. [キー・時間・ほかのスレッド](10-keys-time-threads.md)
 11. [いろいろな部品](11-more-widgets.md)
 12. [メニュー](12-menus.md)
+13. [タブ・数の入力・ツールバー](13-tabs-numbers-toolbars.md)
 
 API の一つ一つの説明は、`cargo doc -p kargui --open` で読めます。AI に書かせる時は `docs/llms.txt` を渡してください。

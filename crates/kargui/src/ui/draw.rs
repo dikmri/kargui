@@ -88,7 +88,10 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
             (laid.width.ceil() + 2.0 * p(12.0), p(30.0))
         }
-        Kind::MenuButton { text, .. } => {
+        Kind::MenuButton { text, icon, .. } => {
+            if text.is_empty() && icon.is_some() {
+                return Some((p(sz::BUTTON_H), p(sz::BUTTON_H)));
+            }
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
             ((laid.width.ceil() + p(sz::BUTTON_PAD) + p(sz::ICON_GAP) + p(16.0) + p(10.0)).max(p(sz::BUTTON_MIN_W)), p(sz::BUTTON_H))
         }
@@ -120,10 +123,19 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
             (laid.width.ceil(), laid.height.ceil())
         }
-        Kind::ToggleButton { text, .. } => {
+        Kind::ToggleButton { text, icon, .. } => {
+            // アイコンだけのボタンは正方形
+            if text.is_empty() && icon.is_some() {
+                return Some((p(sz::BUTTON_H), p(sz::BUTTON_H)));
+            }
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
             ((laid.width.ceil() + 2.0 * p(sz::BUTTON_PAD)).max(p(sz::BUTTON_MIN_W)), p(sz::BUTTON_H))
         }
+        Kind::Tab { text, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, true), None);
+            (laid.width.ceil() + 2.0 * p(12.0), p(38.0))
+        }
+        Kind::SpinButton { .. } => (p(28.0), p(24.0)),
         Kind::Image { w, h, .. } => (p(*w as f32), p(*h as f32)),
         Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => {
             let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
@@ -287,6 +299,8 @@ struct Painter<'a> {
     row: Option<(crate::ui::Id, Rect)>,
     /// 今描いているスクロールの入れ物（焦点が移った時に、見えるようにスクロールするため）
     scroller: Option<crate::ui::Id>,
+    /// 今描いているのがツールバーの中（ボタンが左右の矢印を受ける）
+    toolbar: bool,
 }
 
 /// 画面の木を描く。次のフレームの当たり判定の情報を cx.prev に入れる
@@ -297,7 +311,7 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     cx.preedit_rect = None;
     cx.input_rect = None;
     cx.ime_field = None;
-    let mut p = Painter { cx, d, prev: Prev::default(), clip: window.to_rect(), row: None, scroller: None };
+    let mut p = Painter { cx, d, prev: Prev::default(), clip: window.to_rect(), row: None, scroller: None, toolbar: false };
     p.node(tree, 0);
     for o in &tree.overlays {
         p.overlay(tree, o);
@@ -359,12 +373,13 @@ impl Painter<'_> {
         let arrows = enabled
             && matches!(
                 tree.info[i].kind,
-                Kind::Slider { .. } | Kind::Dropdown { .. } | Kind::ListOption { .. } | Kind::MenuButton { .. } | Kind::MenuBarItem { .. } | Kind::MenuItem { .. }
-            );
-        let multiline = matches!(tree.info[i].kind, Kind::TextArea { .. });
-        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, multiline, enabled });
-        // メニューバーは Tab で最初の見出しにだけ止まる
-        if focusable && !matches!(tree.info[i].kind, Kind::MenuBarItem { tab_stop: false, .. }) {
+                Kind::Slider { .. } | Kind::Dropdown { .. } | Kind::ListOption { .. } | Kind::MenuButton { .. } | Kind::MenuBarItem { .. } | Kind::MenuItem { .. } | Kind::Tab { .. }
+            )
+            || (enabled && focusable && self.toolbar);
+        let vertical = matches!(tree.info[i].kind, Kind::TextArea { .. } | Kind::NumberInput { .. });
+        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, vertical, enabled });
+        // メニューバー・タブ・ツールバーは、まとまりの中の 1 つにだけ Tab で止まる
+        if focusable && !tree.info[i].skip_tab && !matches!(tree.info[i].kind, Kind::MenuBarItem { tab_stop: false, .. }) {
             self.prev.focus_order.push(id);
         }
     }
@@ -412,7 +427,7 @@ impl Painter<'_> {
         match &tree.info[i].kind {
             // 重ねる物は親に付かないので、ここには来ない（Painter::overlay で描く）
             Kind::Overlay { .. } => {}
-            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar => {
+            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar | Kind::Tabs | Kind::TabPanel => {
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
                 }
@@ -453,7 +468,7 @@ impl Painter<'_> {
                     self.prev.rows.insert(id, (list, row));
                 }
                 if let Some(v) = intersect(r, self.clip) {
-                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, multiline: false, enabled });
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled });
                 }
                 if !enabled {
                     self.prev.disabled.insert(id);
@@ -486,6 +501,11 @@ impl Painter<'_> {
                         bg = [bg[0] * 0.88, bg[1] * 0.88, bg[2] * 0.88, 1.0];
                     }
                     self.d.fill(r, bg, radius);
+                } else if self.toolbar {
+                    // ツールバーの中は枠を描かず、乗った時と押した時だけ塗る
+                    if !off && (self.cx.pressed == Some(id) || self.cx.hover == Some(id)) {
+                        self.d.fill(r, state_bg, radius);
+                    }
                 } else {
                     self.d.boxed(r, state_bg, t.border, line, radius);
                 }
@@ -536,7 +556,7 @@ impl Painter<'_> {
                 // Tab が止まるのはグループの中の 1 つだけ（矢印で移る）
                 let enabled = !off;
                 if let Some(v) = intersect(r, self.clip) {
-                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, multiline: false, enabled });
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled });
                 }
                 if !enabled {
                     self.prev.disabled.insert(id);
@@ -590,7 +610,7 @@ impl Painter<'_> {
                 text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + self.px(12.0), r, t.text);
                 self.hit(tree, i, true, false);
             }
-            Kind::MenuButton { text, open } => {
+            Kind::MenuButton { text, open, icon } => {
                 let t = self.cx.theme.clone();
                 let off = tree.info[i].disabled;
                 let radius = self.px(sz::RADIUS);
@@ -604,12 +624,88 @@ impl Painter<'_> {
                 } else {
                     t.button
                 };
-                self.d.boxed(r, bg, t.border, line, radius);
+                if !self.toolbar {
+                    self.d.boxed(r, bg, t.border, line, radius);
+                } else if !off && (*open || self.cx.pressed == Some(id) || self.cx.hover == Some(id)) {
+                    self.d.fill(r, bg, radius);
+                }
                 let color = if off { t.done_text } else { t.text };
-                text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + self.px(sz::BUTTON_PAD), r, color);
-                let s = self.px(16.0);
-                self.icon(Icon::ChevronDown, r.right() - self.px(10.0) - s, (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                if let (true, Some(ic)) = (text.is_empty(), icon) {
+                    // アイコンだけ（ツールバーの「ほか」）: 下向きの印は付けない
+                    let s = self.px(button_icon(false));
+                    self.icon(*ic, (r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round(), s, color);
+                } else {
+                    text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + self.px(sz::BUTTON_PAD), r, color);
+                    let s = self.px(16.0);
+                    self.icon(Icon::ChevronDown, r.right() - self.px(10.0) - s, (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                }
                 self.hit(tree, i, true, false);
+            }
+            Kind::TabList => {
+                // 見出しの列の下に、横いっぱいの線
+                let t = &self.cx.theme;
+                let border = t.border;
+                self.d.fill(Rect::new(r.x, r.bottom() - line, r.w, line), border, 0.0);
+                for &c in &tree.layout[i].children {
+                    self.node(tree, c);
+                }
+            }
+            Kind::Tab { text, selected } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(4.0);
+                let body = Rect::new(r.x, r.y + self.px(2.0), r.w, r.h - self.px(6.0));
+                let bg = if !off && self.cx.hover == Some(id) { Some(t.button_hover) } else { None };
+                self.item_bg(body, bg, self.cx.focus_visible && self.cx.focus == Some(id), radius);
+                let st = style(self.cx, TextKind::Body, *selected);
+                let laid = self.cx.text.layout(text, st, None);
+                let color = if off {
+                    t.done_text
+                } else if *selected {
+                    t.text
+                } else {
+                    t.weak_text
+                };
+                put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (body.y + (body.h - laid.height) / 2.0).round(), color);
+                if *selected {
+                    // 選んでいるタブは、下に丸い端の短い線
+                    let (w, h) = ((laid.width * 0.6).max(self.px(16.0)).round(), self.px(3.0));
+                    self.d.fill(Rect::new((r.x + (r.w - w) / 2.0).round(), r.bottom() - h, w, h), if off { t.border } else { t.accent }, h / 2.0);
+                }
+                self.hit(tree, i, true, false);
+            }
+            Kind::NumberInput { text, step, .. } => {
+                self.prev.steps.insert(id, *step);
+                let reserve = self.px(2.0 * 28.0 + 3.0);
+                self.text_input_with(tree, i, text, "", false, reserve);
+                for &c in &tree.layout[i].children {
+                    if matches!(tree.info[c].kind, Kind::SpinButton { .. }) {
+                        self.prev.spins.insert(tree.info[c].id, id);
+                    }
+                    self.node(tree, c);
+                }
+            }
+            Kind::SpinButton { up } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(4.0);
+                if !off && self.cx.pressed == Some(id) {
+                    self.d.fill(r, t.button_pressed, radius);
+                } else if !off && self.cx.hover == Some(id) {
+                    self.d.fill(r, t.button_hover, radius);
+                }
+                let s = self.px(14.0);
+                let icon = if *up { Icon::ChevronUp } else { Icon::ChevronDown };
+                self.icon(icon, (r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                self.hit(tree, i, false, false);
+            }
+            Kind::Toolbar => {
+                let was = self.toolbar;
+                self.toolbar = true;
+                for &c in &tree.layout[i].children {
+                    self.node(tree, c);
+                }
+                self.toolbar = was;
             }
             Kind::MenuBarItem { text, open, .. } => {
                 self.prev.menubar.push(id);
@@ -742,7 +838,7 @@ impl Painter<'_> {
                 self.d.fill(Rect::new(r.x, y, laid.width.round(), thick), color, 0.0);
                 self.hit(tree, i, true, false);
             }
-            Kind::ToggleButton { on, text } => {
+            Kind::ToggleButton { on, text, icon } => {
                 let t = self.cx.theme.clone();
                 let off = tree.info[i].disabled;
                 let radius = self.px(sz::RADIUS);
@@ -758,9 +854,18 @@ impl Painter<'_> {
                 } else {
                     (t.button, t.border, t.text)
                 };
-                self.d.boxed(r, bg, border, line, radius);
-                let laid = self.cx.text.layout(text, style(self.cx, TextKind::Body, *on), None);
-                put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
+                if !self.toolbar {
+                    self.d.boxed(r, bg, border, line, radius);
+                } else if !off && (*on || self.cx.pressed == Some(id) || self.cx.hover == Some(id)) {
+                    self.d.fill(r, bg, radius);
+                }
+                if let (true, Some(ic)) = (text.is_empty(), icon) {
+                    let s = self.px(button_icon(false));
+                    self.icon(*ic, (r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round(), s, color);
+                } else {
+                    let laid = self.cx.text.layout(text, style(self.cx, TextKind::Body, *on), None);
+                    put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
+                }
                 self.hit(tree, i, true, false);
             }
             Kind::Icon { icon, size, weak } => {
@@ -891,7 +996,7 @@ impl Painter<'_> {
         let window = Rect::new(0.0, 0.0, self.cx.width, self.cx.height);
         let start = self.prev.focus_order.len();
         let block = |p: &mut Self, rect: Rect| {
-            p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, multiline: false, enabled: false })
+            p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, vertical: false, enabled: false })
         };
         let radius = self.px(if o.kind == OverlayKind::Tooltip { 4.0 } else { 8.0 });
         if o.kind == OverlayKind::Dialog {
@@ -918,7 +1023,7 @@ impl Painter<'_> {
         let id = tree.info[i].id;
         if tree.info[i].disabled {
             self.prev.disabled.insert(id);
-        } else if tree.info[i].kind.interactive() && !matches!(tree.info[i].kind, Kind::Radio { tab_stop: false, .. } | Kind::MenuBarItem { tab_stop: false, .. }) {
+        } else if tree.info[i].kind.interactive() && !tree.info[i].skip_tab && !matches!(tree.info[i].kind, Kind::Radio { tab_stop: false, .. } | Kind::MenuBarItem { tab_stop: false, .. }) {
             if let Some(s) = self.scroller {
                 self.prev.rows.insert(id, (s, tree.layout[i].rect));
             }
@@ -983,6 +1088,11 @@ impl Painter<'_> {
     }
 
     fn text_input(&mut self, tree: &Tree, i: usize, value: &str, hint: &str, password: bool) {
+        self.text_input_with(tree, i, value, hint, password, 0.0);
+    }
+
+    /// 1 行の入力欄。reserve は文字を並べない右の幅（数の入力欄の小さいボタンの分）
+    fn text_input_with(&mut self, tree: &Tree, i: usize, value: &str, hint: &str, password: bool, reserve: f32) {
         let r = tree.layout[i].rect;
         let id = tree.info[i].id;
         let t = self.cx.theme.clone();
@@ -992,7 +1102,7 @@ impl Painter<'_> {
         let radius = self.px(sz::RADIUS);
         self.d.boxed(r, if off { t.button } else { t.field }, if focused { t.accent } else { t.border }, if focused { 2.0 * line } else { line }, radius);
         let pad = self.px(sz::INPUT_PAD);
-        let inner = Rect::new(r.x + pad, r.y, (r.w - 2.0 * pad).max(0.0), r.h);
+        let inner = Rect::new(r.x + pad, r.y, (r.w - 2.0 * pad - reserve).max(0.0), r.h);
         let st = style(self.cx, TextKind::Body, false);
         let (cursor, anchor) = self.cx.edits.get(&id).map_or((value.len(), value.len()), |e| (e.cursor.min(value.len()), e.anchor.min(value.len())));
         // パスワードは点にして描く（位置も点の位置に直す）
