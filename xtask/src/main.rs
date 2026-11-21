@@ -6,11 +6,16 @@
 //!   cargo run -p xtask -- shots --check 写真が今の見た目と同じか（違えば落とす）
 //!   cargo run -p xtask -- llms          AI 向けの索引 docs/llms.txt を作り直す
 //!   cargo run -p xtask -- llms --check  索引が今のソースと同じか（違えば落とす）
+//!   cargo run -p xtask -- guide-check   ガイドの扱う API と訳が古くないか（guide.rs）
+//!   cargo run -p xtask -- guide-check --update  見直した後に、ガイドの値を入れ直す
 //!   cargo run -p xtask -- check         上の検査を全部（取り込みの前に走らせる）
 //!
 //! 説明そのものが無い公開項目は、kargui の #![deny(missing_docs)] で組み立ての時点で落ちる。
 //! 説明の中の例は cargo test --doc で動かす（試験台 kargui::test::Harness の上で動く）。
 
+mod guide;
+
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -278,6 +283,111 @@ fn make_llms(check: bool) -> bool {
     ok
 }
 
+/// dir の下の .rs を全部
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            rust_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs") {
+            out.push(p);
+        }
+    }
+}
+
+fn md_files(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir(dir)
+        .map(|r| r.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| n.ends_with(".md")).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// ガイドの検査（guide.rs を参照）。update なら、扱う API の値と訳の元の値を入れ直す
+fn guide_check(update: bool) -> bool {
+    let mut files = Vec::new();
+    rust_files(&root().join("crates/kargui/src"), &mut files);
+    let mut api = BTreeMap::new();
+    for f in &files {
+        guide::api(&fs::read_to_string(f).unwrap(), &mut api);
+    }
+    let dir = root().join("docs/guide");
+    let mut ok = true;
+    let mut pages = 0;
+    // 日本語を先に（英語の訳の元の値は、日本語のページから作る）
+    for lang in ["ja", "en"] {
+        let names = md_files(&dir.join(lang));
+        if lang == "en" {
+            for ja in md_files(&dir.join("ja")) {
+                if !names.contains(&ja) {
+                    ok = false;
+                    println!("guide-check: en/{ja} が無い（ja/{ja} の訳）");
+                }
+            }
+        }
+        for name in names {
+            pages += 1;
+            let rel = format!("{lang}/{name}");
+            let path = dir.join(lang).join(&name);
+            let text = fs::read_to_string(&path).unwrap();
+            let mut new = text.clone();
+            match guide::covers(&text) {
+                Some((covered, sig)) => match guide::signature_hash(&covered, &api) {
+                    Err(missing) => {
+                        ok = false;
+                        println!("guide-check: {rel}: ソースに無い API {missing:?}");
+                    }
+                    Ok(h) if sig.as_deref() != Some(h.as_str()) => {
+                        if update {
+                            new = guide::stamp(&new, "covers:", "sig", &h);
+                        } else {
+                            ok = false;
+                            println!("guide-check: {rel}: 扱う API の宣言が変わった（ページを見直してから guide-check --update）");
+                        }
+                    }
+                    Ok(_) => {}
+                },
+                None if name != "README.md" => {
+                    ok = false;
+                    println!("guide-check: {rel}: 先頭に <!-- covers: ... --> が無い");
+                }
+                None => {}
+            }
+            if lang == "en" {
+                match guide::source(&text) {
+                    Some((src, h)) => match fs::read_to_string(dir.join(&src)) {
+                        Ok(ja) => {
+                            let want = guide::source_hash(&ja);
+                            if h.as_deref() != Some(want.as_str()) {
+                                if update {
+                                    new = guide::stamp(&new, "source:", "fnv", &want);
+                                } else {
+                                    ok = false;
+                                    println!("guide-check: {rel}: 元の {src} が変わった（訳を直してから guide-check --update）");
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            ok = false;
+                            println!("guide-check: {rel}: 元の {src} が無い");
+                        }
+                    },
+                    None => {
+                        ok = false;
+                        println!("guide-check: {rel}: 先頭に <!-- source: ja/... --> が無い");
+                    }
+                }
+            }
+            if update && new != text {
+                fs::write(&path, new).unwrap();
+                println!("guide-check: {rel} の値を入れ直した");
+            }
+        }
+    }
+    println!("guide-check: ページ {pages} 枚、公開の API {} 個: {}", api.len(), if ok { "ok" } else { "不足あり" });
+    ok
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check = args.iter().any(|a| a == "--check");
@@ -285,14 +395,16 @@ fn main() -> ExitCode {
         Some("doc-check") => doc_check(),
         Some("shots") => make_shots(check),
         Some("llms") => make_llms(check),
+        Some("guide-check") => guide_check(args.iter().any(|a| a == "--update")),
         Some("check") => {
             let a = doc_check();
             let b = make_shots(true);
             let c = make_llms(true);
-            a && b && c
+            let d = guide_check(false);
+            a && b && c && d
         }
         _ => {
-            println!("使い方: cargo run -p xtask -- doc-check | shots [--check] | llms [--check] | check");
+            println!("使い方: cargo run -p xtask -- doc-check | shots [--check] | llms [--check] | guide-check [--update] | check");
             false
         }
     };
