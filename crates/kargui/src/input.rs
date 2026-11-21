@@ -61,6 +61,9 @@ pub struct Mods {
 pub(crate) enum A11yAction {
     Click,
     Focus,
+    /// スライダーの値を 1 段上げる・下げる
+    Increment,
+    Decrement,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,7 +71,7 @@ pub(crate) enum Event {
     /// 位置は物理ピクセル
     PointerDown { x: f32, y: f32, shift: bool },
     PointerUp { x: f32, y: f32 },
-    /// 押したまま動かした（スクロールの棒をつかんでいる間だけ届く）
+    /// 押したまま動かした（スクロールの棒をつかんでいる間と、部品を押している間だけ届く）
     PointerMove { x: f32, y: f32 },
     /// dy は論理ピクセル（下へ回すと正）
     Wheel { x: f32, y: f32, dy: f32 },

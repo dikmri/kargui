@@ -143,6 +143,17 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n
             }
             Kind::Scroll => Node::new(Role::ScrollView),
+            Kind::Slider { value, min, max, step } => {
+                let mut n = Node::new(Role::Slider);
+                n.set_numeric_value(*value);
+                n.set_min_numeric_value(*min);
+                n.set_max_numeric_value(*max);
+                n.set_numeric_value_step(*step);
+                n.add_action(Action::Focus);
+                n.add_action(Action::Increment);
+                n.add_action(Action::Decrement);
+                n
+            }
             Kind::Space => unreachable!(),
         };
         if info.kind.interactive() || matches!(info.kind, Kind::List { .. }) {

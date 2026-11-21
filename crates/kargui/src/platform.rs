@@ -565,6 +565,8 @@ impl State {
             let action = match r.action {
                 accesskit::Action::Click => A11yAction::Click,
                 accesskit::Action::Focus => A11yAction::Focus,
+                accesskit::Action::Increment => A11yAction::Increment,
+                accesskit::Action::Decrement => A11yAction::Decrement,
                 other => {
                     log::event("a11y.action", &format!("action={other:?}"), "ignored");
                     continue;
@@ -645,13 +647,14 @@ impl State {
                         TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
                     self.tracking_leave = unsafe { TrackMouseEvent(&mut t) }.is_ok();
                 }
-                if self.rt.cx.drag.is_some() {
-                    // つまみをつかんでいる間は、移動を部品へ渡す。左のボタンが離れていたら
-                    // （捕まえを失って WM_LBUTTONUP が届かなかった）、つかむのを終える
+                if self.rt.cx.drag.is_some() || self.rt.cx.pressed.is_some() {
+                    // つまみをつかんでいる間と部品を押している間は、移動を部品へ渡す。左のボタンが離れていたら
+                    // （捕まえを失って WM_LBUTTONUP が届かなかった）、押すのを終える
                     if wp.0 & MK_LBUTTON != 0 {
                         self.push(Event::PointerMove { x, y });
                     } else {
-                        log::event("scrollbar.lost", &format!("x={x} y={y}"), "released");
+                        let what = if self.rt.cx.drag.is_some() { "scrollbar.lost" } else { "pointer.lost" };
+                        log::event(what, &format!("x={x} y={y}"), "released");
                         self.push(Event::PointerUp { x, y });
                     }
                     return Some(LRESULT(0));

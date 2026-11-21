@@ -723,6 +723,57 @@ mod tests {
         }
     }
 
+    struct Prefs {
+        size: i32,
+        volume: f32,
+    }
+
+    impl App for Prefs {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.row(|ui| {
+                ui.label("Font size");
+                ui.slider(&mut self.size, 10..=24).label("Text size");
+            });
+            ui.row(|ui| {
+                ui.label("Volume");
+                ui.slider(&mut self.volume, 0.0..=1.0).label("Volume level");
+            });
+        }
+    }
+
+    #[test]
+    fn sliders_follow_the_keyboard_the_pointer_and_screen_readers() {
+        let mut h = Harness::new(Prefs { size: 12, volume: 0.5 });
+        h.frame();
+        // キー: Tab で文字の大きさのスライダーへ。→ 3 回で 15、End で 24、Home で 10、端で止まる
+        h.press(Key::Tab).press(Key::Right).press(Key::Right).press(Key::Right);
+        assert_eq!(h.app().size, 15);
+        h.press(Key::End);
+        assert_eq!(h.app().size, 24);
+        h.press(Key::Home).press(Key::Left);
+        assert_eq!(h.app().size, 10);
+        // ポインター: 音量のスライダーの左端を押し、真ん中、右の外まで動かす
+        let r = h.find("Volume level").unwrap();
+        let y = r.y + r.h / 2.0;
+        h.send(vec![Event::PointerDown { x: r.x + 1.0, y, shift: false }]);
+        assert!(h.app().volume < 0.01, "左端で 0: {}", h.app().volume);
+        h.send(vec![Event::PointerMove { x: r.x + r.w / 2.0, y }]);
+        assert!((h.app().volume - 0.5).abs() < 0.01, "真ん中で 0.5: {}", h.app().volume);
+        h.send(vec![Event::PointerMove { x: r.right() + 50.0, y }]);
+        assert_eq!(h.app().volume, 1.0, "外へ出ても端で止まる");
+        h.send(vec![Event::PointerUp { x: r.right() + 50.0, y }]);
+        h.send(vec![Event::PointerMove { x: r.x, y }]);
+        assert_eq!(h.app().volume, 1.0, "離した後の動きは効かない");
+        // 押してすぐ離す（同じフレームに届く）だけでも、その位置の値になる
+        h.send(vec![Event::PointerDown { x: r.x + r.w / 2.0, y, shift: false }, Event::PointerUp { x: r.x + r.w / 2.0, y }]);
+        assert!((h.app().volume - 0.5).abs() < 0.01, "クリックで 0.5: {}", h.app().volume);
+        // 読み上げソフトの「増やす」
+        let i = (0..h.rt.tree.info.len()).find(|&i| a11y::name_of(&h.rt.tree, i).as_deref() == Some("Text size")).unwrap();
+        let target = h.rt.tree.info[i].id;
+        h.send(vec![Event::A11y { target, action: crate::input::A11yAction::Increment }]);
+        assert_eq!(h.app().size, 11);
+    }
+
     fn id_of(h: &Harness<Shelf>, name: &str) -> crate::ui::Id {
         let i = (0..h.rt.tree.info.len()).find(|&i| a11y::name_of(&h.rt.tree, i).as_deref() == Some(name)).unwrap();
         h.rt.tree.info[i].id

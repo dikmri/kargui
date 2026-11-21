@@ -42,6 +42,8 @@ pub(crate) struct Hit {
     pub slop: Rect,
     pub focusable: bool,
     pub text_input: bool,
+    /// 焦点がある時に矢印などのキーを受ける（スライダー）
+    pub arrows: bool,
 }
 
 /// 点 (x, y) から四角までの距離の 2 乗（中なら 0）
@@ -116,6 +118,10 @@ pub(crate) struct Context {
     pub keys: Vec<Event>,
     /// 入力欄の中のクリック（場所と Shift）
     pub pointer_text: Option<(Id, f32, f32, bool)>,
+    /// 押している部品の上のポインターの位置（押した・動かした・離した時に入れる）
+    pub pointer: Option<(f32, f32)>,
+    /// このフレームでポインターを離した部品（押した部品の上で離した時。スライダーが押した位置を読む）
+    pub released: Option<Id>,
     /// 変換中の文字（焦点のある入力欄の中に描く）
     pub preedit: String,
     /// 変換中の文字の文節（IME が知らせた時だけ）
@@ -157,6 +163,8 @@ impl Context {
             clicked: None,
             keys: Vec::new(),
             pointer_text: None,
+            pointer: None,
+            released: None,
             preedit: String::new(),
             preedit_clauses: None,
             pending_commit: None,
@@ -264,6 +272,7 @@ impl Context {
                     }
                     let hit = self.hit(x, y).cloned();
                     self.pressed = hit.as_ref().map(|h| h.id);
+                    self.pointer = Some((x, y));
                     self.focus_visible = false;
                     self.focus = hit.as_ref().filter(|h| h.focusable).map(|h| h.id);
                     if let Some(h) = hit.filter(|h| h.text_input) {
@@ -281,13 +290,18 @@ impl Context {
                     if hit.is_some() && hit == self.pressed {
                         self.clicked = hit;
                     }
-                    self.pressed = None;
+                    if self.pressed.is_some() {
+                        self.pointer = Some((x, y));
+                    }
+                    self.released = self.pressed.take();
                 }
-                Event::PointerMove { y, .. } => {
+                Event::PointerMove { x, y } => {
                     if let Some(d) = self.drag.as_mut() {
                         d.moves += 1;
                         let d = *d;
                         self.drag_scrollbar(d, y);
+                    } else if self.pressed.is_some() {
+                        self.pointer = Some((x, y));
                     }
                 }
                 Event::Wheel { x, y, dy } => {
@@ -317,6 +331,12 @@ impl Context {
                     self.focus = Some(target);
                     self.reveal_focus();
                 }
+                Event::A11y { target, action: a @ (A11yAction::Increment | A11yAction::Decrement) } => {
+                    self.commit_preedit("a11y");
+                    self.focus = Some(target);
+                    let key = if a == A11yAction::Increment { Key::Right } else { Key::Left };
+                    self.keys.push(Event::Key { key, mods: Mods::default() });
+                }
                 Event::ImePreedit(s) => {
                     // 変換が始まった時に入力欄の選択を消すため、入力欄にも届ける
                     if self.preedit.is_empty() && !s.is_empty() && self.focus.is_some_and(|f| self.is_text_input(f)) {
@@ -336,6 +356,8 @@ impl Context {
                         if matches!(e, Event::ImeCommit(_)) {
                             self.preedit.clear();
                         }
+                        self.keys.push(e);
+                    } else if matches!(e, Event::Key { .. }) && self.focus.is_some_and(|f| self.prev.hits.iter().any(|h| h.id == f && h.arrows)) {
                         self.keys.push(e);
                     }
                 }
@@ -379,5 +401,6 @@ impl Context {
         self.clicked = None;
         self.keys.clear();
         self.pointer_text = None;
+        self.released = None;
     }
 }

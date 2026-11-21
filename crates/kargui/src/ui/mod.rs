@@ -38,6 +38,7 @@ pub(crate) mod layout;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::ops::RangeInclusive;
 
 use context::Context;
 pub use layout::{Align, Size};
@@ -105,11 +106,15 @@ pub(crate) enum Kind {
     Space,
     List { count: usize, separators: bool, view_h: f32 },
     Scroll,
+    Slider { value: f64, min: f64, max: f64, step: f64 },
 }
 
 impl Kind {
     pub fn interactive(&self) -> bool {
-        matches!(self, Kind::Button { .. } | Kind::Checkbox { .. } | Kind::Toggle { .. } | Kind::Segment { .. } | Kind::TextInput { .. })
+        matches!(
+            self,
+            Kind::Button { .. } | Kind::Checkbox { .. } | Kind::Toggle { .. } | Kind::Segment { .. } | Kind::TextInput { .. } | Kind::Slider { .. }
+        )
     }
 }
 
@@ -583,6 +588,65 @@ impl<'a> Ui<'a> {
         (*s != before, submitted)
     }
 
+    /// A slider for picking a number in `range` by dragging, clicking, or with the arrow keys
+    /// (Home and End jump to the ends). Integer values move in steps of 1; `f32` and `f64` move
+    /// freely with the pointer and in hundredths of the range with the keyboard. Give it a name for
+    /// screen readers with `.label(..)`.
+    ///
+    /// ```
+    /// # let (mut font_size, mut volume) = (14, 0.8_f32);
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.label("Font size");
+    ///     ui.slider(&mut font_size, 10..=24).label("Font size");
+    ///     ui.label(font_size.to_string());
+    /// });
+    /// if ui.slider(&mut volume, 0.0..=1.0).label("Volume").changed() {
+    ///     // apply the new volume
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn slider<T: SliderValue>(&mut self, value: &mut T, range: RangeInclusive<T>) -> Slider<'_> {
+        let (min, max) = (range.start().to_f64(), range.end().to_f64());
+        let step = if T::INTEGER { 1.0 } else { (max - min) / 100.0 };
+        let old = value.to_f64();
+        let mut v = old;
+        let (idx, id) = self.add(Kind::Slider { value: v, min, max, step }, Dir::Leaf);
+        // ポインター: 押している間と、押して離した時は、その位置の値にする（場所は前のフレームの配置）
+        if self.cx.pressed == Some(id) || self.cx.released == Some(id) {
+            let rect = self.cx.prev.hits.iter().find(|h| h.id == id).map(|h| h.rect);
+            if let (Some((x, _)), Some(r)) = (self.cx.pointer, rect) {
+                let (tx, tw) = draw::slider_track(r, self.cx.scale);
+                let f = if tw > 0.0 { ((x - tx) / tw).clamp(0.0, 1.0) as f64 } else { 0.0 };
+                v = min + f * (max - min);
+            }
+        }
+        // キー: 焦点がある時だけ
+        if self.cx.focus == Some(id) {
+            for e in std::mem::take(&mut self.cx.keys) {
+                if let Event::Key { key, .. } = e {
+                    v = match key {
+                        Key::Left | Key::Down => v - step,
+                        Key::Right | Key::Up => v + step,
+                        Key::Home => min,
+                        Key::End => max,
+                        _ => v,
+                    };
+                }
+            }
+        }
+        let v = if T::INTEGER { v.round() } else { v }.clamp(min.min(max), max.max(min));
+        let changed = v != old;
+        if changed {
+            *value = T::from_f64(v);
+            if let Kind::Slider { value: k, .. } = &mut self.tree.info[idx].kind {
+                *k = value.to_f64();
+            }
+        }
+        Slider { h: self.handle(idx, id), changed }
+    }
+
     // ---- 一覧 ----
 
     /// A list that only creates the rows that are visible, so it stays fast with any number of
@@ -883,6 +947,48 @@ impl Toggled<'_> {
             *strike = on;
         }
         self
+    }
+}
+
+/// A number that a [`Ui::slider`] can change: `f32`, `f64` and the integer types.
+/// Integers move in steps of 1.
+pub trait SliderValue: Copy {
+    #[doc(hidden)]
+    const INTEGER: bool;
+    #[doc(hidden)]
+    fn to_f64(self) -> f64;
+    #[doc(hidden)]
+    fn from_f64(v: f64) -> Self;
+}
+
+macro_rules! slider_value {
+    ($integer:expr; $($t:ty),*) => {
+        $(impl SliderValue for $t {
+            const INTEGER: bool = $integer;
+            fn to_f64(self) -> f64 {
+                self as f64
+            }
+            fn from_f64(v: f64) -> Self {
+                v as $t
+            }
+        })*
+    };
+}
+slider_value!(true; i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
+slider_value!(false; f32, f64);
+
+/// A slider. See [`Ui::slider`].
+pub struct Slider<'t> {
+    h: Handle<'t>,
+    changed: bool,
+}
+
+common!(Slider);
+
+impl Slider<'_> {
+    /// Whether the value changed in this frame (by pointer, keyboard or screen reader).
+    pub fn changed(&self) -> bool {
+        self.changed
     }
 }
 

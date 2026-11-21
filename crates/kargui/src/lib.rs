@@ -38,7 +38,7 @@ pub use geom::{Color, IRect, Rect, rgb};
 pub use input::{Key, Mods};
 pub use log::set_logger;
 pub use theme::Theme;
-pub use ui::{Align, Id, Size, Ui};
+pub use ui::{Align, Id, Size, SliderValue, Ui};
 
 /// An error from the operating system while opening or drawing the window.
 #[derive(Debug)]

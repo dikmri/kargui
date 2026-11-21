@@ -26,6 +26,10 @@ mod sz {
     pub const INPUT_W: f32 = 200.0;
     pub const INPUT_PAD: f32 = 10.0;
     pub const RADIUS: f32 = 6.0;
+    pub const SLIDER_W: f32 = 200.0;
+    pub const SLIDER_H: f32 = 24.0;
+    pub const KNOB: f32 = 18.0;
+    pub const SLIDER_TRACK: f32 = 4.0;
     pub const SCROLLBAR_W: f32 = 6.0;
     /// スクロールの棒の左に足す、押せる幅（棒は細いので）
     pub const SCROLLBAR_SLOP: f32 = 4.0;
@@ -70,8 +74,15 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             (laid.width.ceil() + 2.0 * p(sz::SEGMENT_PAD), p(sz::SEGMENT_H))
         }
         Kind::TextInput { .. } => (p(sz::INPUT_W), p(sz::INPUT_H)),
+        Kind::Slider { .. } => (p(sz::SLIDER_W), p(sz::SLIDER_H)),
         _ => return None,
     })
+}
+
+/// スライダーの溝の左端と長さ（つまみの半分ずつ内側）。押した位置から値を決める時も同じ値を使う
+pub(crate) fn slider_track(r: Rect, scale: f32) -> (f32, f32) {
+    let knob = (sz::KNOB * scale).round();
+    (r.x + knob / 2.0, (r.w - knob).max(0.0))
 }
 
 /// 大きさを測って場所を決める。折り返す文字があれば、決まった幅で測り直してもう 1 回決める
@@ -196,7 +207,8 @@ impl Painter<'_> {
         let small = matches!(tree.info[i].kind, Kind::Checkbox { .. } | Kind::Toggle { .. });
         let (sx, sy) = if small { (self.px(sz::SLOP_X), self.px(sz::SLOP_Y)) } else { (0.0, 0.0) };
         let slop = intersect(Rect::new(r.x - sx, r.y - sy, r.w + 2.0 * sx, r.h + 2.0 * sy), self.clip).unwrap_or(r);
-        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input });
+        let arrows = matches!(tree.info[i].kind, Kind::Slider { .. });
+        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows });
         if focusable {
             self.prev.focus_order.push(id);
         }
@@ -328,6 +340,29 @@ impl Painter<'_> {
             Kind::TextInput { value, hint } => self.text_input(tree, i, value, hint),
             Kind::List { count, separators, .. } => self.list(tree, i, *count, *separators),
             Kind::Scroll => self.scroll_area(tree, i),
+            Kind::Slider { value, min, max, .. } => {
+                let t = self.cx.theme.clone();
+                let knob = self.px(sz::KNOB);
+                let th = self.px(sz::SLIDER_TRACK);
+                let (tx, tw) = slider_track(r, self.cx.scale);
+                let ty = (r.y + (r.h - th) / 2.0).round();
+                let f = if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) as f32 } else { 0.0 };
+                let k = Rect::new((tx + f * tw - knob / 2.0).round(), (r.y + (r.h - knob) / 2.0).round(), knob, knob);
+                self.d.fill(Rect::new(tx, ty, tw, th), t.border, th / 2.0);
+                self.d.fill(Rect::new(tx, ty, (f * tw).round(), th), t.accent, th / 2.0);
+                if self.cx.focus_visible && self.cx.focus == Some(id) {
+                    let w = self.px(2.0);
+                    self.d.fill(k.inset(-2.0 * w), t.accent, knob / 2.0 + 2.0 * w);
+                    self.d.fill(k.inset(-w), t.background, knob / 2.0 + w);
+                }
+                // つまみ: 白い丸の中にアクセントの色の丸。押している・乗っている時は中の丸を大きくする
+                let active = self.cx.pressed == Some(id) || self.cx.hover == Some(id);
+                self.d.boxed(k, t.field, t.border, line, knob / 2.0);
+                let inner = (knob * if active { 0.6 } else { 0.5 }).round();
+                let c = Rect::new(k.x + ((knob - inner) / 2.0).round(), k.y + ((knob - inner) / 2.0).round(), inner, inner);
+                self.d.fill(c, t.accent, inner / 2.0);
+                self.hit(tree, i, true, false);
+            }
         }
     }
 
