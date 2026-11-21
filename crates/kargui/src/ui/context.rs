@@ -75,6 +75,9 @@ pub(crate) struct WindowRequest {
     pub position: Option<(f32, f32)>,
     /// 開いた時に前面に出すか（Options::activate）
     pub activate: bool,
+    /// 窓のアイコン（無ければ主の窓のアイコン）と、中の大きさの下限
+    pub icon: Option<crate::Image>,
+    pub min_size: Option<(f32, f32)>,
 }
 
 /// ツールチップを出すか
@@ -219,6 +222,12 @@ pub(crate) struct Context {
     pub windows: Vec<WindowRequest>,
     /// 利用者が閉じた窓のキー（次のビューの Ui::window が open を false にする）
     pub closed_windows: HashSet<String>,
+    /// 出すように頼まれたファイルのダイアログ（キーと中身。窓の処理がフレームの後で出す）
+    pub file_dialog_request: Option<(String, crate::file_dialog::FileDialog)>,
+    /// ファイルのダイアログで選んだファイル（キー → ファイル。Ui::chosen_files が 1 回だけ取り出す）
+    pub file_results: HashMap<String, Vec<std::path::PathBuf>>,
+    /// アプリを終える（Ui::quit。窓の処理が主の窓を閉じる）
+    pub quit: bool,
     /// この回の clicked はキー（Enter・Space）か読み上げソフトから来た（ポインターの位置を見ない）
     pub clicked_by_key: bool,
     /// ビューの途中で、前に作った部品が見た状態を変えた（メニューを開いた・閉じた）。もう一度回す
@@ -317,6 +326,9 @@ impl Context {
             calendar_cursor: HashMap::new(),
             windows: Vec::new(),
             closed_windows: HashSet::new(),
+            file_dialog_request: None,
+            file_results: HashMap::new(),
+            quit: false,
             clicked_by_key: false,
             again: false,
             rested: None,

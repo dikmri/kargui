@@ -83,6 +83,10 @@ pub struct Harness<A: App> {
     windows: Vec<(String, Runtime)>,
     /// 操作している窓（None なら元の窓）
     current: Option<String>,
+    /// アプリが出すように頼んで、まだ答えていないファイルのダイアログ
+    file_dialog: Option<(String, crate::FileDialog)>,
+    /// アプリが閉じた（閉じるのを認めた、か Ui::quit）
+    closed: bool,
 }
 
 impl<A: App> Harness<A> {
@@ -153,7 +157,7 @@ impl<A: App> Harness<A> {
         rt.cx.frozen = Some(std::time::Duration::ZERO);
         // 今日も止める（暦の「今日」の印が日によって変わらないように）
         rt.cx.today = crate::date::Date::new(2026, 11, 22);
-        let mut h = Self { app, rt, windows: Vec::new(), current: None };
+        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false };
         h.frame();
         h
     }
@@ -278,6 +282,14 @@ impl<A: App> Harness<A> {
             }
         }
         self.sync_windows();
+        if let Some(d) = self.rt.cx.file_dialog_request.take() {
+            self.file_dialog = Some(d);
+        }
+        for rt in std::iter::once(&mut self.rt).chain(self.windows.iter_mut().map(|(_, rt)| rt)) {
+            if std::mem::take(&mut rt.cx.quit) {
+                self.closed = true;
+            }
+        }
         self
     }
 
@@ -678,6 +690,155 @@ impl<A: App> Harness<A> {
                 rt.frame_with(&mut |ui: &mut Ui| app.window(key, ui), Vec::new());
             }
         }
+    }
+
+    /// The key of the file dialog the app asked for and that has not been answered yet.
+    ///
+    /// ```
+    /// # use kargui::{App, FileDialog, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Importer;
+    ///
+    /// impl App for Importer {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("Import").clicked() {
+    ///             ui.file_dialog("import", FileDialog::open());
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Importer);
+    /// h.click("Import");
+    /// assert_eq!(h.file_dialog_key().as_deref(), Some("import"));
+    /// ```
+    pub fn file_dialog_key(&self) -> Option<String> {
+        self.file_dialog.as_ref().map(|(k, _)| k.clone())
+    }
+
+    /// The file dialog the app asked for and that has not been answered yet.
+    ///
+    /// ```
+    /// # use kargui::{App, FileDialog, Ui};
+    /// # use kargui::test::Harness;
+    /// # struct Exporter;
+    /// # impl App for Exporter {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         if ui.button("Export").clicked() {
+    /// #             ui.file_dialog("export", FileDialog::save());
+    /// #         }
+    /// #     }
+    /// # }
+    /// let mut h = Harness::new(Exporter);
+    /// h.click("Export");
+    /// assert!(h.file_dialog().unwrap().is_save());
+    /// ```
+    pub fn file_dialog(&self) -> Option<&crate::FileDialog> {
+        self.file_dialog.as_ref().map(|(_, d)| d)
+    }
+
+    /// Answers the file dialog as if the user chose these files, and draws a frame.
+    ///
+    /// ```
+    /// # use kargui::{App, FileDialog, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Viewer {
+    ///     file: Option<std::path::PathBuf>,
+    /// }
+    ///
+    /// impl App for Viewer {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("Open").clicked() {
+    ///             ui.file_dialog("open", FileDialog::open());
+    ///         }
+    ///         if let Some(path) = ui.chosen_file("open") {
+    ///             self.file = Some(path);
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Viewer::default());
+    /// h.click("Open").choose_files(&["C:/photo.png"]);
+    /// assert_eq!(h.app().file.as_deref(), Some(std::path::Path::new("C:/photo.png")));
+    /// ```
+    pub fn choose_files(&mut self, paths: &[&str]) -> &mut Self {
+        let (key, _) = self.file_dialog.take().expect("no file dialog is waiting for an answer");
+        self.rt.cx.file_results.insert(key, paths.iter().map(std::path::PathBuf::from).collect());
+        self.main_window();
+        self.send(Vec::new())
+    }
+
+    /// Answers the file dialog as if the user cancelled it, and draws a frame.
+    ///
+    /// ```
+    /// # use kargui::{App, FileDialog, Ui};
+    /// # use kargui::test::Harness;
+    /// # struct Importer;
+    /// # impl App for Importer {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         if ui.button("Import").clicked() {
+    /// #             ui.file_dialog("import", FileDialog::open());
+    /// #         }
+    /// #     }
+    /// # }
+    /// let mut h = Harness::new(Importer);
+    /// h.click("Import").cancel_file_dialog();
+    /// assert_eq!(h.file_dialog_key(), None);
+    /// ```
+    pub fn cancel_file_dialog(&mut self) -> &mut Self {
+        self.file_dialog = None;
+        self.send(Vec::new())
+    }
+
+    /// Asks the app to close as if the user clicked the main window's close button: calls
+    /// [`App::close_requested`](crate::App::close_requested), and draws a frame.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Hello;
+    ///
+    /// impl App for Hello {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.label("Hello");
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Hello);
+    /// h.request_close();
+    /// assert!(h.is_closed());
+    /// ```
+    pub fn request_close(&mut self) -> &mut Self {
+        if self.app.close_requested() {
+            self.closed = true;
+        }
+        self.main_window();
+        self.send(Vec::new())
+    }
+
+    /// Whether the app has closed (the close was allowed, or the app called
+    /// [`Ui::quit`](crate::Ui::quit)).
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Quitter;
+    ///
+    /// impl App for Quitter {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("Exit").clicked() {
+    ///             ui.quit();
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Quitter);
+    /// assert!(!h.is_closed());
+    /// h.click("Exit");
+    /// assert!(h.is_closed());
+    /// ```
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     /// Right-clicks the widget with this name (opens its
@@ -3876,5 +4037,96 @@ mod tests {
         assert_eq!(h.windows().len(), 1);
         h.close_window("settings");
         assert!(!h.app().open && h.windows().is_empty());
+    }
+
+    /// ファイルのダイアログの見本
+    #[derive(Default)]
+    struct FileApp {
+        opened: Vec<std::path::PathBuf>,
+        saved: Option<std::path::PathBuf>,
+    }
+
+    impl App for FileApp {
+        fn view(&mut self, ui: &mut Ui) {
+            if ui.button("Open").clicked() {
+                ui.file_dialog("open", crate::FileDialog::open().title("Open notes").filter("Text", &["txt", "md"]).multiple());
+            }
+            if let Some(files) = ui.chosen_files("open") {
+                self.opened.extend(files);
+            }
+            if ui.button("Save as").clicked() {
+                ui.file_dialog("save", crate::FileDialog::save().file_name("notes.txt"));
+            }
+            if let Some(path) = ui.chosen_file("save") {
+                self.saved = Some(path);
+            }
+        }
+    }
+
+    #[test]
+    fn file_dialogs_are_shown_after_the_frame_and_answer_in_a_later_one() {
+        let mut h = Harness::new(FileApp::default());
+        assert_eq!(h.file_dialog_key(), None);
+        h.click("Open");
+        assert_eq!(h.file_dialog_key().as_deref(), Some("open"));
+        let d = h.file_dialog().unwrap();
+        assert_eq!((d.is_save(), d.allows_multiple()), (false, true));
+        h.choose_files(&["C:/notes/a.txt", "C:/notes/b.md"]);
+        assert_eq!(h.app().opened, vec![std::path::PathBuf::from("C:/notes/a.txt"), std::path::PathBuf::from("C:/notes/b.md")]);
+        assert_eq!(h.file_dialog_key(), None, "答えたら無くなる");
+        // 受け取るのは 1 回だけ
+        h.frame();
+        assert_eq!(h.app().opened.len(), 2);
+        // 取り消し
+        h.click("Save as");
+        assert!(h.file_dialog().unwrap().is_save());
+        h.cancel_file_dialog();
+        assert_eq!(h.app().saved, None);
+        h.click("Save as").choose_files(&["D:/out.txt"]);
+        assert_eq!(h.app().saved, Some(std::path::PathBuf::from("D:/out.txt")));
+    }
+
+    /// 閉じる前の確認の見本: 保存していない変更があれば、窓の中のダイアログで聞く
+    #[derive(Default)]
+    struct Editor2 {
+        dirty: bool,
+        asking: bool,
+    }
+
+    impl App for Editor2 {
+        fn view(&mut self, ui: &mut Ui) {
+            if ui.button("Type").clicked() {
+                self.dirty = true;
+            }
+            let mut quit = false;
+            ui.dialog(&mut self.asking, "Unsaved changes", |ui| {
+                if ui.button("Discard").clicked() {
+                    quit = true;
+                }
+            });
+            if quit {
+                ui.quit();
+            }
+        }
+
+        fn close_requested(&mut self) -> bool {
+            if self.dirty {
+                self.asking = true;
+            }
+            !self.dirty
+        }
+    }
+
+    #[test]
+    fn apps_can_ask_before_the_window_closes() {
+        let mut h = Harness::new(Editor2::default());
+        h.request_close();
+        assert!(h.is_closed(), "変更が無ければすぐ閉じる");
+        let mut h = Harness::new(Editor2::default());
+        h.click("Type").request_close();
+        assert!(!h.is_closed(), "変更があれば閉じない");
+        assert!(h.find("Unsaved changes").is_some(), "アプリが聞く");
+        h.click("Discard");
+        assert!(h.is_closed(), "ui.quit で閉じる");
     }
 }

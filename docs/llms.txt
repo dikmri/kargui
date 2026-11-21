@@ -608,6 +608,63 @@ if ui.button("Settings").clicked() {
 ui.window("settings", &Options { size: (400.0, 300.0), ..Options::new("Settings") }, &mut settings);
 ```
 
+### `pub fn file_dialog(&mut self, key: &str, dialog: FileDialog)`
+
+Shows the system's dialog to open or save files, after this frame (only one at a time; a
+new request replaces one not shown yet). The chosen files come back in a later frame
+through [`Ui::chosen_files`] or [`Ui::chosen_file`] with the same `key`. The app keeps
+running and drawing while the dialog is open; it is modal for the window.
+
+```
+use kargui::FileDialog;
+if ui.button("Open…").clicked() {
+    ui.file_dialog("open", FileDialog::open().filter("Text", &["txt", "md"]));
+}
+if let Some(path) = ui.chosen_file("open") {
+    text = std::fs::read_to_string(path).unwrap_or_default();
+}
+```
+
+### `pub fn chosen_files(&mut self, key: &str) -> Option<Vec<PathBuf>>`
+
+The files chosen in the dialog shown with `key`, once, in the frame after it closed.
+`None` before that, and when the user cancelled.
+
+```
+use kargui::FileDialog;
+if ui.button("Add photos…").clicked() {
+    ui.file_dialog("photos", FileDialog::open().filter("Pictures", &["png", "jpg"]).multiple());
+}
+if let Some(files) = ui.chosen_files("photos") {
+    photos.extend(files);
+}
+```
+
+### `pub fn chosen_file(&mut self, key: &str) -> Option<PathBuf>`
+
+The first file chosen in the dialog shown with `key`. See [`Ui::chosen_files`].
+
+```
+use kargui::FileDialog;
+if ui.button("Save as…").clicked() {
+    ui.file_dialog("save", FileDialog::save().file_name("notes.txt"));
+}
+if let Some(path) = ui.chosen_file("save") {
+    target = Some(path);
+}
+```
+
+### `pub fn quit(&mut self)`
+
+Ends the app after this frame: the main window (and every other window) closes, without
+asking [`App::close_requested`](crate::App::close_requested).
+
+```
+if ui.button("Exit").clicked() {
+    ui.quit();
+}
+```
+
 ### `pub fn icon(&mut self, icon: Icon) -> IconView<'_>`
 
 A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:

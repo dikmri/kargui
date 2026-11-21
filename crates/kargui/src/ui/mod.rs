@@ -60,6 +60,8 @@ pub use layout::{Align, Size};
 use layout::{Dir, LayoutNode};
 
 use crate::date::{Date, DateText};
+use crate::file_dialog::FileDialog;
+use std::path::PathBuf;
 use crate::geom::{Color, Rect};
 use crate::input::{Event, Key, Mods};
 use crate::wake::Waker;
@@ -2150,8 +2152,85 @@ impl<'a> Ui<'a> {
             crate::log::event("window.closed_by_user", &format!("key={key}"), "open=false");
         }
         if *open {
-            self.cx.windows.push(context::WindowRequest { key: key.to_string(), title: options.title.clone(), size: options.size, position: options.position, activate: options.activate });
+            self.cx.windows.push(context::WindowRequest { key: key.to_string(), title: options.title.clone(), size: options.size, position: options.position, activate: options.activate, icon: options.icon.clone(), min_size: options.min_size });
         }
+    }
+
+    /// Shows the system's dialog to open or save files, after this frame (only one at a time; a
+    /// new request replaces one not shown yet). The chosen files come back in a later frame
+    /// through [`Ui::chosen_files`] or [`Ui::chosen_file`] with the same `key`. The app keeps
+    /// running and drawing while the dialog is open; it is modal for the window.
+    ///
+    /// ```
+    /// use kargui::FileDialog;
+    /// # let mut text = String::new();
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Open…").clicked() {
+    ///     ui.file_dialog("open", FileDialog::open().filter("Text", &["txt", "md"]));
+    /// }
+    /// if let Some(path) = ui.chosen_file("open") {
+    ///     text = std::fs::read_to_string(path).unwrap_or_default();
+    /// }
+    /// # });
+    /// ```
+    pub fn file_dialog(&mut self, key: &str, dialog: FileDialog) {
+        if self.disabled {
+            return;
+        }
+        crate::log::event("file_dialog.request", &format!("key={key} save={}", dialog.save), "queued");
+        self.cx.file_dialog_request = Some((key.to_string(), dialog));
+    }
+
+    /// The files chosen in the dialog shown with `key`, once, in the frame after it closed.
+    /// `None` before that, and when the user cancelled.
+    ///
+    /// ```
+    /// use kargui::FileDialog;
+    /// # let mut photos: Vec<std::path::PathBuf> = Vec::new();
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Add photos…").clicked() {
+    ///     ui.file_dialog("photos", FileDialog::open().filter("Pictures", &["png", "jpg"]).multiple());
+    /// }
+    /// if let Some(files) = ui.chosen_files("photos") {
+    ///     photos.extend(files);
+    /// }
+    /// # });
+    /// ```
+    pub fn chosen_files(&mut self, key: &str) -> Option<Vec<PathBuf>> {
+        self.cx.file_results.remove(key)
+    }
+
+    /// The first file chosen in the dialog shown with `key`. See [`Ui::chosen_files`].
+    ///
+    /// ```
+    /// use kargui::FileDialog;
+    /// # let mut target = None;
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Save as…").clicked() {
+    ///     ui.file_dialog("save", FileDialog::save().file_name("notes.txt"));
+    /// }
+    /// if let Some(path) = ui.chosen_file("save") {
+    ///     target = Some(path);
+    /// }
+    /// # });
+    /// ```
+    pub fn chosen_file(&mut self, key: &str) -> Option<PathBuf> {
+        self.chosen_files(key).and_then(|f| f.into_iter().next())
+    }
+
+    /// Ends the app after this frame: the main window (and every other window) closes, without
+    /// asking [`App::close_requested`](crate::App::close_requested).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Exit").clicked() {
+    ///     ui.quit();
+    /// }
+    /// # });
+    /// ```
+    pub fn quit(&mut self) {
+        crate::log::event("app.quit", "", "requested");
+        self.cx.quit = true;
     }
 
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:

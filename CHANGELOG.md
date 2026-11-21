@@ -114,6 +114,17 @@
   Windows each window has its own renderer, screen-reader tree, input method state and timers.
   Tests: `Harness::window(key)`, `Harness::main_window`, `Harness::windows`,
   `Harness::close_window`.
+- File dialogs: `Ui::file_dialog(key, FileDialog::open()/save())` with `.title`, `.filter`,
+  `.file_name`, `.folder` and `.multiple`; the system's dialog is shown after the frame (on Windows,
+  IFileOpenDialog and IFileSaveDialog; the window thread is now a COM single-threaded apartment),
+  and the chosen files arrive once through `Ui::chosen_files` / `Ui::chosen_file`. Tests:
+  `Harness::file_dialog_key`, `file_dialog`, `choose_files`, `cancel_file_dialog`.
+- Closing: `App::close_requested` (return false to keep the main window open, for example to ask
+  about unsaved changes) and `Ui::quit`. Tests: `Harness::request_close`, `Harness::is_closed`.
+- `Options::icon` (the title bar and taskbar icon; other windows inherit it) and
+  `Options::min_size` (the smallest inside size the user can resize to). `Options` has two new
+  fields, so code that builds it with every field listed must add them (`..Options::new(..)`
+  avoids this).
 - Fix: when a popup, dialog, list or menu opens or closes, the focus that moves into it (or back)
   is drawn at once. Before, the frame was drawn before the focus moved, and the old focus stayed on
   screen until the next input.

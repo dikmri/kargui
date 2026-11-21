@@ -22,6 +22,7 @@
 mod app;
 mod cpu_frame;
 mod date;
+mod file_dialog;
 mod damage;
 #[cfg(windows)]
 mod gdi;
@@ -52,6 +53,7 @@ mod wake;
 
 pub use app::{App, Frame, Options, Renderer, run};
 pub use date::{Date, DateText};
+pub use file_dialog::FileDialog;
 pub use geom::{Color, IRect, Rect, rgb};
 pub use icon::Icon;
 pub use image::Image;
@@ -132,6 +134,8 @@ mod guide {
     struct Ja15TreesTablesDates;
     #[doc = include_str!("../../../docs/guide/ja/16-windows.md")]
     struct Ja16Windows;
+    #[doc = include_str!("../../../docs/guide/ja/17-app-mechanisms.md")]
+    struct Ja17AppMechanisms;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -166,6 +170,8 @@ mod guide {
     struct En15TreesTablesDates;
     #[doc = include_str!("../../../docs/guide/en/16-windows.md")]
     struct En16Windows;
+    #[doc = include_str!("../../../docs/guide/en/17-app-mechanisms.md")]
+    struct En17AppMechanisms;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]

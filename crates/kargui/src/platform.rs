@@ -92,6 +92,10 @@ enum Post {
     ClosedByUser(String),
     /// 入力でこの窓を描いた。ほかの窓も描き直す
     FrameOthers(HWND),
+    /// システムのファイルのダイアログを出す（モーダル。借りの外で出し、選んだファイルを窓に渡す）
+    FileDialog(HWND, String, crate::file_dialog::FileDialog),
+    /// アプリを終える（Ui::quit。主の窓を壊す）
+    Quit,
 }
 
 /// 読み上げの操作を、窓の持ち主のスレッドへ渡す係（AccessKit は別のスレッドから呼ぶことがある）
@@ -193,6 +197,118 @@ fn system_dark() -> bool {
     r.is_ok() && value == 0
 }
 
+/// システムのファイルのダイアログを出して、選んだファイルを返す（取り消したら空）。モーダルなので借りの外で呼ぶ
+fn show_file_dialog(owner: HWND, d: &crate::file_dialog::FileDialog) -> Vec<std::path::PathBuf> {
+    match file_dialog_inner(owner, d) {
+        Ok(files) => files,
+        Err(e) => {
+            log::event("file_dialog.error", &format!("save={}", d.save), &format!("{e:?}"));
+            Vec::new()
+        }
+    }
+}
+
+fn file_dialog_inner(owner: HWND, d: &crate::file_dialog::FileDialog) -> windows::core::Result<Vec<std::path::PathBuf>> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{
+        FOS_ALLOWMULTISELECT, FOS_FORCEFILESYSTEM, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    };
+    use windows::core::{Interface, PCWSTR};
+    unsafe {
+        let dialog: IFileDialog = if d.save {
+            CoCreateInstance::<_, IFileDialog>(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?
+        } else {
+            CoCreateInstance::<_, IFileDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?
+        };
+        // 種類の名前と「*.txt;*.md」の形の文字。COMDLG_FILTERSPEC が指す間は持っておく
+        let texts: Vec<(HSTRING, HSTRING)> = d
+            .filters
+            .iter()
+            .map(|(name, exts)| (HSTRING::from(name.as_str()), HSTRING::from(exts.iter().map(|e| format!("*.{e}")).collect::<Vec<_>>().join(";"))))
+            .collect();
+        let specs: Vec<COMDLG_FILTERSPEC> = texts.iter().map(|(n, s)| COMDLG_FILTERSPEC { pszName: PCWSTR(n.as_ptr()), pszSpec: PCWSTR(s.as_ptr()) }).collect();
+        if !specs.is_empty() {
+            dialog.SetFileTypes(&specs)?;
+        }
+        if let Some(t) = &d.title {
+            dialog.SetTitle(&HSTRING::from(t.as_str()))?;
+        }
+        if let Some(n) = &d.file_name {
+            dialog.SetFileName(&HSTRING::from(n.as_str()))?;
+        }
+        if let Some(ext) = d.filters.first().and_then(|(_, e)| e.first()).filter(|_| d.save) {
+            dialog.SetDefaultExtension(&HSTRING::from(ext.as_str()))?;
+        }
+        if let Some(folder) = &d.folder {
+            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(folder.as_os_str()), None) {
+                dialog.SetFolder(&item)?;
+            }
+        }
+        let mut options = dialog.GetOptions()?;
+        options |= FOS_FORCEFILESYSTEM;
+        if d.multiple && !d.save {
+            options |= FOS_ALLOWMULTISELECT;
+        }
+        dialog.SetOptions(options)?;
+        if let Err(e) = dialog.Show(Some(owner)) {
+            // 取り消しは失敗ではない
+            if e.code() == windows::core::HRESULT::from_win32(ERROR_CANCELLED.0) {
+                return Ok(Vec::new());
+            }
+            return Err(e);
+        }
+        let items: Vec<IShellItem> = if d.multiple && !d.save {
+            let all = dialog.cast::<IFileOpenDialog>()?.GetResults()?;
+            (0..all.GetCount()?).map(|k| all.GetItemAt(k)).collect::<windows::core::Result<_>>()?
+        } else {
+            vec![dialog.GetResult()?]
+        };
+        let mut files = Vec::with_capacity(items.len());
+        for item in items {
+            let p = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let path = p.to_string();
+            CoTaskMemFree(Some(p.0 as *const _));
+            files.push(std::path::PathBuf::from(path.map_err(|_| windows::core::Error::from(E_FAIL))?));
+        }
+        Ok(files)
+    }
+}
+
+/// 画像から窓のアイコンを作る（乗算済みの RGBA を、乗算を戻した BGRA にして 32 bit のアイコンにする）
+fn make_icon(image: &crate::Image) -> Option<HICON> {
+    let d = &image.0;
+    let (w, h) = (d.width as i32, d.height as i32);
+    let mut bgra = Vec::with_capacity(d.pixels.len());
+    for px in d.pixels.chunks_exact(4) {
+        let a = px[3] as u32;
+        let un = |c: u8| if a == 0 { 0 } else { ((c as u32 * 255 + a / 2) / a).min(255) as u8 };
+        bgra.extend([un(px[2]), un(px[1]), un(px[0]), px[3]]);
+    }
+    unsafe {
+        let mut info = BITMAPINFO::default();
+        info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = w;
+        // 負の高さは上の行から
+        info.bmiHeader.biHeight = -h;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB.0;
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let color = CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+        if bits.is_null() {
+            let _ = DeleteObject(color.into());
+            return None;
+        }
+        std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, bgra.len());
+        let mask = CreateBitmap(w, h, 1, 1, None);
+        let icon = CreateIconIndirect(&ICONINFO { fIcon: true.into(), xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color });
+        let _ = DeleteObject(color.into());
+        let _ = DeleteObject(mask.into());
+        icon.ok()
+    }
+}
+
 /// 今日の日付（地元の時刻の年・月・日）。Date::today が使う
 pub(crate) fn local_date() -> Option<(i32, u32, u32)> {
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
@@ -257,6 +373,11 @@ struct State {
     open_windows: Vec<String>,
     /// ほかの窓の入力のあとの描き直し（ほかの窓へは広げない）
     synced: bool,
+    /// 窓のアイコン（壊す時に片付ける）と、その元の画像（ほかの窓が引き継ぐ）
+    icon: Option<HICON>,
+    icon_image: Option<crate::Image>,
+    /// 中の大きさの下限（論理ピクセル）
+    min_size: Option<(f32, f32)>,
     rt: Runtime,
     surface: Option<Surface>,
     adapter: Option<Adapter>,
@@ -383,6 +504,22 @@ fn do_post(p: Post) {
                     st.need_frame = true;
                 });
             }
+            Post::FileDialog(hwnd, key, d) => {
+                let files = show_file_dialog(hwnd, &d);
+                log::event("file_dialog.answer", &format!("key={key} save={}", d.save), &format!("files={}", files.len()));
+                if !files.is_empty() {
+                    with_window(hwnd, |st| {
+                        st.rt.cx.file_results.insert(key, files);
+                        st.need_frame = true;
+                    });
+                }
+            }
+            Post::Quit => {
+                if let Some(h) = with_state(|st| st.hwnd) {
+                    let res = unsafe { DestroyWindow(h) };
+                    log::event("app.quit", "", &format!("{res:?}"));
+                }
+            }
             Post::FrameOthers(hwnd) => {
                 with_windows(|ws| {
                     for w in ws.iter_mut().filter(|w| w.hwnd != hwnd) {
@@ -397,8 +534,14 @@ fn do_post(p: Post) {
 
 /// Ui::window で頼まれた窓を作って見せ、1 枚目を描く（描き方・明暗は主の窓と同じ）
 fn open_window(r: crate::ui::context::WindowRequest) {
-    let Some((app, renderer, dark, full_rate, started)) = with_state(|st| (st.app.clone(), st.renderer, st.rt.cx.dark, st.full_rate, st.started)) else { return };
-    match create_window(Some(r.key.clone()), &r.title, r.size, r.position, renderer, dark, full_rate, app, started) {
+    let Some((app, renderer, dark, full_rate, started, main_icon)) =
+        with_state(|st| (st.app.clone(), st.renderer, st.rt.cx.dark, st.full_rate, st.started, st.icon_image.clone()))
+    else {
+        return;
+    };
+    // アイコンが無ければ主の窓のアイコン
+    let icon = r.icon.clone().or(main_icon);
+    match create_window(Some(r.key.clone()), &r.title, r.size, r.position, renderer, dark, full_rate, icon, r.min_size, app, started) {
         Ok(w) => {
             let hwnd = w.hwnd;
             with_windows(|ws| ws.push(w));
@@ -501,6 +644,14 @@ impl State {
             for k in self.open_windows.iter().filter(|k| !requested.iter().any(|r| &r.key == *k)) {
                 self.post.push(Post::CloseWindow(k.clone()));
             }
+        }
+        // Ui::quit: 主の窓を壊してアプリを終える
+        if std::mem::take(&mut self.rt.cx.quit) {
+            self.post.push(Post::Quit);
+        }
+        // ファイルのダイアログは、描いた後で借りの外で出す
+        if let Some((key, d)) = self.rt.cx.file_dialog_request.take() {
+            self.post.push(Post::FileDialog(self.hwnd, key, d));
         }
         // 入力で描いたら、ほかの窓も描き直す（アプリを共有するため。描き直しはそれ以上広げない）
         if why == "input" {
@@ -732,7 +883,16 @@ impl State {
                 match &self.key {
                     // ほかの窓はすぐには壊さない。アプリの open を false にしてもらい、次のフレームで閉じる
                     Some(key) => self.post.push(Post::ClosedByUser(key.clone())),
-                    None => self.post.push(Post::Destroy(self.hwnd)),
+                    // 主の窓: アプリが認めたら閉じる（認めなければ、アプリが聞いてから Ui::quit で閉じる）
+                    None => {
+                        let ok = self.app.try_borrow_mut().map(|mut a| a.close_requested()).unwrap_or(false);
+                        log::event("window.close_requested", "", &format!("allowed={ok}"));
+                        if ok {
+                            self.post.push(Post::Destroy(self.hwnd));
+                        } else {
+                            self.need_frame = true;
+                        }
+                    }
                 }
                 Some(LRESULT(0))
             }
@@ -740,10 +900,26 @@ impl State {
                 // 窓が残っているうちに、GPU の物と読み上げを片付ける
                 self.adapter = None;
                 let had = self.surface.take().is_some();
+                if let Some(i) = self.icon.take() {
+                    let _ = unsafe { DestroyIcon(i) };
+                }
                 log::event("window.destroy", &format!("key={:?}", self.key), &format!("surface_dropped={had}"));
                 // 主の窓を閉じたらアプリを終える
                 if self.key.is_none() {
                     unsafe { PostQuitMessage(0) };
+                }
+                Some(LRESULT(0))
+            }
+            // 中の大きさの下限を、今の拡大率の窓の大きさにして伝える
+            WM_GETMINMAXINFO => {
+                let (w, h) = self.min_size?;
+                let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
+                let s = dpi as f32 / 96.0;
+                let mut r = RECT { left: 0, top: 0, right: (w * s).round() as i32, bottom: (h * s).round() as i32 };
+                unsafe {
+                    let _ = AdjustWindowRectExForDpi(&mut r, WS_OVERLAPPEDWINDOW, false, WINDOW_EX_STYLE(0), dpi);
+                    let info = &mut *(lp.0 as *mut MINMAXINFO);
+                    info.ptMinTrackSize = POINT { x: r.right - r.left, y: r.bottom - r.top };
                 }
                 Some(LRESULT(0))
             }
@@ -1159,6 +1335,8 @@ fn create_window(
     renderer: Renderer,
     dark: bool,
     full_rate: bool,
+    icon_image: Option<crate::Image>,
+    min_size: Option<(f32, f32)>,
     app: Rc<RefCell<Box<dyn App>>>,
     started: Instant,
 ) -> Result<State, crate::Error> {
@@ -1184,6 +1362,15 @@ fn create_window(
     let mut client = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client)? };
     let (cw, ch) = (client.right - client.left, client.bottom - client.top);
+    // 窓のアイコン（題の帯とタスクバー）
+    let icon = icon_image.as_ref().and_then(make_icon);
+    if let Some(i) = icon {
+        unsafe {
+            SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(i.0 as isize)));
+            SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(i.0 as isize)));
+        }
+    }
+    log::event("window.icon", &format!("key={key:?}"), &format!("set={}", icon.is_some()));
     log::event(
         "window.create",
         &format!("key={key:?} pos={position:?} dpi={dpi} client={cw}x{ch} renderer={renderer:?}"),
@@ -1213,6 +1400,9 @@ fn create_window(
         renderer,
         open_windows: Vec::new(),
         synced: false,
+        icon,
+        icon_image,
+        min_size,
         rt,
         surface: Some(surface),
         adapter: Some(adapter),
@@ -1266,9 +1456,12 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     if unsafe { RegisterClassExW(&wc) } == 0 {
         log::event("window.class", "", "error=RegisterClassExW");
     }
+    // ファイルのダイアログ（COM）のため、窓のスレッドを STA にする
+    let com = unsafe { windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED) };
+    log::event("com.init", "apartment=sta", &format!("{com:?}"));
     let app = Rc::new(RefCell::new(app));
     let dark = options.dark.unwrap_or_else(system_dark);
-    let main = create_window(None, &options.title, options.size, options.position, options.renderer, dark, options.full_rate, app, started)?;
+    let main = create_window(None, &options.title, options.size, options.position, options.renderer, dark, options.full_rate, options.icon.clone(), options.min_size, app, started)?;
     let hwnd = main.hwnd;
     STATE.with(|s| s.borrow_mut().push(main));
 

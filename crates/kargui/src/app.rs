@@ -101,6 +101,46 @@ pub trait App: 'static {
     fn window(&mut self, key: &str, ui: &mut Ui) {
         let _ = (key, ui);
     }
+
+    /// Called when the user asks to close the main window (its close button, Alt+F4). Return
+    /// `false` to keep it open, for example to ask about unsaved changes first; close it later
+    /// with [`Ui::quit`]. Returns `true` (close) by default.
+    ///
+    /// ```
+    /// use kargui::{App, Ui};
+    ///
+    /// #[derive(Default)]
+    /// struct Notes {
+    ///     unsaved: bool,
+    ///     asking: bool,
+    /// }
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         let mut discard = false;
+    ///         ui.dialog(&mut self.asking, "Discard your changes?", |ui| {
+    ///             discard = ui.button("Discard").clicked();
+    ///         });
+    ///         if discard {
+    ///             ui.quit();
+    ///         }
+    ///     }
+    ///
+    ///     fn close_requested(&mut self) -> bool {
+    ///         self.asking = self.unsaved;
+    ///         !self.unsaved
+    ///     }
+    /// }
+    ///
+    /// let mut h = kargui::test::Harness::new(Notes { unsaved: true, asking: false });
+    /// h.request_close();
+    /// assert!(!h.is_closed());
+    /// h.click("Discard");
+    /// assert!(h.is_closed());
+    /// ```
+    fn close_requested(&mut self) -> bool {
+        true
+    }
 }
 
 /// Information about a frame that was shown. See [`App::presented`].
@@ -176,6 +216,12 @@ pub struct Options {
     pub full_rate: bool,
     /// Start in dark (`Some(true)`) or light (`Some(false)`) mode; `None` follows the system.
     pub dark: Option<bool>,
+    /// The window's icon (title bar and taskbar), or `None` for the system's default. Windows
+    /// opened with [`Ui::window`] use the main window's icon unless they have their own.
+    pub icon: Option<crate::Image>,
+    /// The smallest size of the inside of the window, in logical pixels, that the user can make
+    /// it, or `None` for no limit.
+    pub min_size: Option<(f32, f32)>,
 }
 
 impl Options {
@@ -195,6 +241,8 @@ impl Options {
             renderer: Renderer::default(),
             full_rate: false,
             dark: None,
+            icon: None,
+            min_size: None,
         }
     }
 }
