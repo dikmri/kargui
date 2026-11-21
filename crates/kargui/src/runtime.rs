@@ -143,8 +143,9 @@ impl Runtime {
             if let Some(f) = self.cx.focus {
                 self.cx.overlay_return.insert(o.id, f);
             }
-            if let Some(&first) = o.focus.first() {
-                self.cx.focus = Some(first);
+            let hint = self.cx.overlay_focus_hint.get(&o.id).copied().filter(|h| o.focus.contains(h));
+            if let Some(f) = hint.or_else(|| o.focus.first().copied()) {
+                self.cx.focus = Some(f);
             }
         }
     }

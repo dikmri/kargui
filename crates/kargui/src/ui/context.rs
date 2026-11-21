@@ -166,6 +166,10 @@ pub(crate) struct Context {
     pub tooltip_hidden: Option<Id>,
     /// 重ねて出した物 → 開く前に焦点があった部品（閉じた時に戻す）
     pub overlay_return: HashMap<Id, Id>,
+    /// 重ねて出した物 → 開いた時に焦点を置く部品（無ければ中の最初の部品。ドロップダウンは選んでいる項目）
+    pub overlay_focus_hint: HashMap<Id, Id>,
+    /// 開いているドロップダウンとメニュー（使う側の書き方を簡単にするため、kargui が持つ）
+    pub open: HashSet<Id>,
     pub pressed: Option<Id>,
     /// ポインターが乗っているスクロールの棒（一覧の id）
     pub bar_hover: Option<Id>,
@@ -236,6 +240,8 @@ impl Context {
             hover_since: None,
             tooltip_hidden: None,
             overlay_return: HashMap::new(),
+            overlay_focus_hint: HashMap::new(),
+            open: HashSet::new(),
             pressed: None,
             bar_hover: None,
             drag: None,
@@ -339,7 +345,7 @@ impl Context {
 
     /// 一番上の、外を押すと閉じる浮き出し（その上にダイアログがあれば無し）
     fn top_popup(&self) -> Option<&OverlayInfo> {
-        self.prev.overlays.iter().rev().find(|o| o.kind != OverlayKind::Tooltip).filter(|o| o.kind == OverlayKind::Popup)
+        self.prev.overlays.iter().rev().find(|o| o.kind != OverlayKind::Tooltip).filter(|o| o.kind.light_dismiss())
     }
 
     /// 一番上のダイアログ（焦点を中に閉じ込める）

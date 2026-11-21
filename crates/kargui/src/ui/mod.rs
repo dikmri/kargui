@@ -147,6 +147,10 @@ pub(crate) enum Kind {
     Link { text: String },
     /// 押したままにできるボタン
     ToggleButton { on: bool, text: String },
+    /// ドロップダウン（text は選んでいる項目、widest は一番長い項目。幅を決める）
+    Dropdown { text: String, widest: String, open: bool },
+    /// 選択の一覧の項目（ドロップダウンの中）
+    ListOption { text: String, selected: bool },
     Checkbox { checked: bool, text: String, strike: bool, mixed: bool },
     Toggle { on: bool, text: String },
     Segment { text: String, selected: bool },
@@ -172,6 +176,17 @@ pub(crate) enum OverlayKind {
     Dialog,
     /// 出す元の下に出す説明（Handle::tooltip）。押せない
     Tooltip,
+    /// 選択の一覧（ドロップダウン）。浮き出しと同じく、外を押すか Esc で閉じる
+    ListBox,
+    /// メニュー。浮き出しと同じく、外を押すか Esc で閉じる
+    Menu,
+}
+
+impl OverlayKind {
+    /// 外を押すと閉じる物（浮き出し・選択の一覧・メニュー）
+    pub fn light_dismiss(self) -> bool {
+        matches!(self, OverlayKind::Popup | OverlayKind::ListBox | OverlayKind::Menu)
+    }
 }
 
 /// この回の画面で重ねて出す物
@@ -200,6 +215,8 @@ impl Kind {
                 | Kind::Expander { .. }
                 | Kind::Link { .. }
                 | Kind::ToggleButton { .. }
+                | Kind::Dropdown { .. }
+                | Kind::ListOption { .. }
         )
     }
 }
@@ -926,6 +943,99 @@ impl<'a> Ui<'a> {
         }
         let composing = (self.cx.focus == Some(id) && !self.cx.preedit.is_empty()).then(|| self.cx.preedit.clone());
         TextInput { h: self.handle(idx, id), changed, submitted, composing }
+    }
+
+    /// A drop-down: a field showing the selected option; clicking it opens the list of options
+    /// below (or above when there is no room). Returns a [`Dropdown`]; ask it whether the selection
+    /// changed. With the focus on the closed field, Up and Down pick the previous or next option
+    /// directly, and Enter, Space, Alt+Down or F4 open the list. In the open list, Up, Down, Home
+    /// and End move, Enter or Space picks, and Escape or a click outside closes without picking.
+    /// Give it a name with `.label(..)` for screen readers (they also hear the selected option).
+    ///
+    /// ```
+    /// #[derive(Clone, Copy, PartialEq)]
+    /// enum Theme { System, Light, Dark }
+    /// # let mut theme = Theme::System;
+    /// # kargui::test::example(|ui| {
+    /// let options = [(Theme::System, "Use the system setting"), (Theme::Light, "Light"), (Theme::Dark, "Dark")];
+    /// if ui.dropdown(&mut theme, &options).label("Theme").changed() {
+    ///     // apply the theme
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn dropdown<T: Copy + PartialEq>(&mut self, value: &mut T, options: &[(T, &str)]) -> Dropdown<'_> {
+        let current = options.iter().position(|(v, _)| v == value);
+        let text = current.map_or("", |k| options[k].1).to_string();
+        // 幅は一番長い項目に合わせる（開いても閉じても幅が変わらない）
+        let style = crate::text::TextStyle { size: self.px(TextKind::Body.size()), bold: false };
+        let widest = options.iter().map(|(_, t)| *t).max_by(|a, b| self.cx.text.layout(a, style, None).width.total_cmp(&self.cx.text.layout(b, style, None).width)).unwrap_or("").to_string();
+        let (idx, id) = self.add(Kind::Dropdown { text, widest, open: false }, Dir::Leaf);
+        let pop = Id(hash_of((id.0, "dropdown")));
+        let mut open = self.cx.open.contains(&id) && !self.cx.closing.contains(&pop);
+        let mut picked = None;
+        if self.disabled {
+            open = false;
+        } else {
+            if self.cx.clicked == Some(id) {
+                open = !open;
+            }
+            if self.cx.focus == Some(id) && !options.is_empty() {
+                // 閉じたまま: 上下で選び直す。Alt+下と F4 で開く
+                for e in std::mem::take(&mut self.cx.keys) {
+                    if let Event::Key { key: key @ (Key::Up | Key::Down), mods } = e {
+                        if !mods.alt {
+                            let at = current.unwrap_or(0) as isize + if key == Key::Down { 1 } else { -1 };
+                            picked = Some(at.clamp(0, options.len() as isize - 1) as usize);
+                        }
+                    }
+                }
+                if self.cx.app_keys.contains(&(Key::Down, Mods::ALT)) || self.cx.app_keys.contains(&(Key::F4, Mods::NONE)) {
+                    open = true;
+                }
+            }
+        }
+        if open {
+            let o = self.push_overlay(pop, OverlayKind::ListBox, String::new(), Some(id));
+            let pad = self.px(4.0);
+            self.tree.layout[o].pad = (pad, pad);
+            // 一覧の幅は、欄の幅以上（前のフレームの欄の幅）
+            if let Some(w) = self.cx.prev.hits.iter().find(|h| h.id == id).map(|h| h.rect.w) {
+                self.tree.layout[o].width = Size::Fixed(w);
+            }
+            let mut item_ids = Vec::with_capacity(options.len());
+            {
+                let mut ui = self.child(o);
+                for (k, (_, label)) in options.iter().enumerate() {
+                    ui.salt = hash_of(k);
+                    let (_, iid) = ui.add(Kind::ListOption { text: label.to_string(), selected: Some(k) == current }, Dir::Leaf);
+                    item_ids.push(iid);
+                    if ui.cx.clicked == Some(iid) {
+                        picked = Some(k);
+                        open = false;
+                    }
+                }
+            }
+            // 開いた時は、選んでいる項目に焦点を置く
+            self.cx.overlay_focus_hint.insert(pop, item_ids[current.unwrap_or(0).min(item_ids.len().saturating_sub(1))]);
+            move_focus_with_arrows(self.cx, &item_ids);
+        }
+        if open {
+            self.cx.open.insert(id);
+        } else {
+            self.cx.open.remove(&id);
+        }
+        let changed = picked.is_some_and(|k| Some(k) != current);
+        if let Some(k) = picked {
+            *value = options[k].0;
+        }
+        if let Kind::Dropdown { text, open: o, .. } = &mut self.tree.info[idx].kind {
+            *o = open;
+            if let Some(k) = picked {
+                *text = options[k].1.to_string();
+            }
+        }
+        Dropdown { h: self.handle(idx, id), changed }
     }
 
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:
@@ -2528,6 +2638,62 @@ impl TextArea<'_> {
     }
 }
 
+/// A drop-down. See [`Ui::dropdown`].
+///
+/// ```
+/// # let mut n = 10;
+/// # kargui::test::example(|ui| {
+/// let rows = ui.dropdown(&mut n, &[(10, "10 rows"), (50, "50 rows"), (100, "100 rows")]).label("Rows per page");
+/// if rows.changed() {
+///     // show more or fewer rows
+/// }
+/// # });
+/// ```
+pub struct Dropdown<'t> {
+    h: Handle<'t>,
+    changed: bool,
+}
+
+common!(Dropdown, " # let mut n = 1;", "dropdown(&mut n, &[(1, \"One\"), (2, \"Two\")])");
+
+impl Dropdown<'_> {
+    /// Whether another option was picked in this frame.
+    ///
+    /// ```
+    /// # let mut n = 1;
+    /// # kargui::test::example(|ui| {
+    /// if ui.dropdown(&mut n, &[(1, "One"), (2, "Two")]).changed() {
+    ///     // react to the new choice
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+}
+
+/// 焦点が items のどれかにある時、上下・Home・End で焦点を移す（端で折り返す）。選択の一覧とメニューが使う
+fn move_focus_with_arrows(cx: &mut Context, items: &[Id]) {
+    let Some(at) = cx.focus.and_then(|f| items.iter().position(|&i| i == f)) else { return };
+    let n = items.len();
+    let mut next = at;
+    for e in std::mem::take(&mut cx.keys) {
+        if let Event::Key { key, .. } = e {
+            next = match key {
+                Key::Down => (next + 1) % n,
+                Key::Up => (next + n - 1) % n,
+                Key::Home => 0,
+                Key::End => n - 1,
+                _ => next,
+            };
+        }
+    }
+    if next != at {
+        cx.focus = Some(items[next]);
+        cx.focus_visible = true;
+    }
+}
+
 /// 入力欄の種類（edit の振る舞いを変える）
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -2797,6 +2963,7 @@ pub(crate) fn visible_text(kind: &Kind) -> Option<&str> {
     match kind {
         Kind::Label { text, .. } | Kind::Button { text, .. } | Kind::Checkbox { text, .. } | Kind::Toggle { text, .. } => Some(text),
         Kind::Segment { text, .. } | Kind::Radio { text, .. } | Kind::Expander { text, .. } | Kind::Link { text } | Kind::ToggleButton { text, .. } => Some(text),
+        Kind::Dropdown { text, .. } | Kind::ListOption { text, .. } => Some(text),
         _ => None,
     }
 }

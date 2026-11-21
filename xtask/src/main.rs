@@ -312,6 +312,19 @@ fn shots() -> Vec<Shot> {
             },
         },
         Shot {
+            name: "dropdown",
+            size: (360.0, 230.0),
+            view: |ui| {
+                let (mut theme, mut rows) = (0, 50);
+                ui.heading("Appearance");
+                ui.dropdown(&mut theme, &[(0, "Use the system setting"), (1, "Light"), (2, "Dark")]).label("Theme");
+                ui.dropdown(&mut rows, &[(10, "10 rows"), (50, "50 rows"), (100, "100 rows")]).label("Rows per page");
+            },
+            setup: |h| {
+                h.click("Theme");
+            },
+        },
+        Shot {
             name: "more_widgets",
             size: (560.0, 330.0),
             view: |ui| {

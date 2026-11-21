@@ -42,6 +42,12 @@
   the clicked line. Selections and the input method's clause underlines are drawn line by line.
   Pasted CR LF and CR become LF. Screen readers see a multi-line text input. The text layer now
   reports lines, caret positions and hit points (both DirectWrite and parley).
+- Drop-downs: `Ui::dropdown(&mut value, &[(value, label), ..])` returns a `Dropdown` with
+  `.changed()`. The list opens below the field (above when there is no room) as a light-dismiss
+  layer with the focus on the selected option. Closed, Up/Down pick the previous or next option;
+  Enter, Space, Alt+Down and F4 open it; open, Up/Down/Home/End move (wrapping), Enter or Space
+  picks, Escape or a click outside closes. Screen readers see a combo box with its value and
+  whether it is expanded, and a list box of options.
 - Linux and macOS (preparation): kargui now builds on them, and its tests (widgets, layout,
   drawing, the test harness) pass there. Text on these systems is laid out with parley and drawn
   with swash; Windows keeps DirectWrite and gains no dependencies. Windows cannot be opened there

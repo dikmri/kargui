@@ -80,6 +80,14 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             (p(sz::BOX) + p(sz::BOX_GAP) + laid.width.ceil(), laid.height.ceil().max(p(sz::TRACK_H)))
         }
         Kind::Separator => (1.0, 1.0),
+        Kind::Dropdown { widest, .. } => {
+            let laid = cx.text.layout(widest, style(cx, TextKind::Body, false), None);
+            ((laid.width.ceil() + 2.0 * p(sz::INPUT_PAD) + p(16.0) + p(sz::ICON_GAP)).max(p(sz::BUTTON_MIN_W)), p(sz::BUTTON_H))
+        }
+        Kind::ListOption { text, .. } => {
+            let laid = cx.text.layout(text, style(cx, TextKind::Body, false), None);
+            (laid.width.ceil() + 2.0 * p(12.0), p(30.0))
+        }
         Kind::Progress { ring: false, .. } => (p(sz::INPUT_W), p(12.0)),
         Kind::Progress { ring: true, .. } => (p(20.0), p(20.0)),
         Kind::Expander { text, .. } => {
@@ -217,7 +225,7 @@ fn place_overlays(tree: &mut Tree, cx: &Context, window: Rect) {
         let h = h.min((window.h - 2.0 * margin).max(0.0));
         let anchor = o.anchor.and_then(|a| tree.info.iter().position(|n| n.id == a)).map(|i| tree.layout[i].rect);
         let rect = match (o.kind, anchor) {
-            (OverlayKind::Popup | OverlayKind::Tooltip, Some(a)) => layout::place_near(a, w, h, window, margin, gap),
+            (OverlayKind::Popup | OverlayKind::Tooltip | OverlayKind::ListBox | OverlayKind::Menu, Some(a)) => layout::place_near(a, w, h, window, margin, gap),
             _ => layout::place_center(w, h, window),
         };
         layout::arrange(&mut tree.layout, o.idx, rect);
@@ -323,7 +331,7 @@ impl Painter<'_> {
         let small = matches!(tree.info[i].kind, Kind::Checkbox { .. } | Kind::Toggle { .. });
         let (sx, sy) = if small { (self.px(sz::SLOP_X), self.px(sz::SLOP_Y)) } else { (0.0, 0.0) };
         let slop = intersect(Rect::new(r.x - sx, r.y - sy, r.w + 2.0 * sx, r.h + 2.0 * sy), self.clip).unwrap_or(r);
-        let arrows = enabled && matches!(tree.info[i].kind, Kind::Slider { .. });
+        let arrows = enabled && matches!(tree.info[i].kind, Kind::Slider { .. } | Kind::Dropdown { .. } | Kind::ListOption { .. });
         let multiline = matches!(tree.info[i].kind, Kind::TextArea { .. });
         self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, multiline, enabled });
         if focusable {
@@ -491,6 +499,46 @@ impl Painter<'_> {
             Kind::Separator => {
                 let t = &self.cx.theme;
                 self.d.fill(r, t.border, 0.0);
+            }
+            Kind::Dropdown { text, open, .. } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(sz::RADIUS);
+                self.focus_ring(tree, i, radius);
+                let bg = if off {
+                    t.button
+                } else if self.cx.pressed == Some(id) {
+                    t.button_pressed
+                } else if self.cx.hover == Some(id) {
+                    t.button_hover
+                } else {
+                    t.button
+                };
+                self.d.boxed(r, bg, if *open { t.accent } else { t.border }, line, radius);
+                let color = if off { t.done_text } else { t.text };
+                let pad = self.px(sz::INPUT_PAD);
+                text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + pad, r, color);
+                let s = self.px(16.0);
+                self.icon(Icon::ChevronDown, r.right() - pad - s, (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                self.hit(tree, i, true, false);
+            }
+            Kind::ListOption { text, selected } => {
+                let t = self.cx.theme.clone();
+                let radius = self.px(4.0);
+                let hot = self.cx.hover == Some(id) || self.cx.focus == Some(id);
+                if *selected {
+                    self.d.fill(r, t.selected, radius);
+                    // 選んでいる項目は左に短い縦の線
+                    let bar = Rect::new(r.x, (r.y + r.h * 0.25).round(), self.px(3.0), (r.h * 0.5).round());
+                    self.d.fill(bar, t.accent, bar.w / 2.0);
+                } else if hot {
+                    self.d.fill(r, t.button_hover, radius);
+                }
+                if self.cx.focus_visible && self.cx.focus == Some(id) {
+                    self.d.boxed(r.inset(line), [0.0; 4], t.accent, 2.0 * line, radius);
+                }
+                text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + self.px(12.0), r, t.text);
+                self.hit(tree, i, true, false);
             }
             Kind::Progress { value, ring } => {
                 let t = self.cx.theme.clone();

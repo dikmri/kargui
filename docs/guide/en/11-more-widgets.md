@@ -1,5 +1,5 @@
-<!-- source: ja/11-more-widgets.md fnv=8be94daca53ab0b3 -->
-<!-- covers: Ui::radio_group Ui::separator Ui::progress Ui::progress_busy Ui::spinner Ui::card Ui::group Ui::expander Ui::link Ui::toggle_button Ui::password Toggled::mixed sig=a19e38880539381c -->
+<!-- source: ja/11-more-widgets.md fnv=c57d8b11d5c8b064 -->
+<!-- covers: Ui::radio_group Ui::separator Ui::progress Ui::progress_busy Ui::spinner Ui::card Ui::group Ui::expander Ui::link Ui::toggle_button Ui::password Toggled::mixed Ui::dropdown Dropdown::changed sig=13e8d8bd7ca74494 -->
 # More widgets
 
 ## Radio buttons
@@ -18,6 +18,24 @@ if ui.radio_group(&mut size, &[(Size::Small, "Small"), (Size::Medium, "Medium"),
 ```
 
 Tab stops once in the group (at the selected button), and the arrow keys move through the group, selecting as they go. At an end, they wrap around to the other end.
+
+## Drop-downs
+
+Pick one of several options, showing only the selected one. Use it when there are many options or little room.
+
+```rust
+#[derive(Clone, Copy, PartialEq)]
+enum Theme { System, Light, Dark }
+# let mut theme = Theme::System;
+# kargui::test::example(|ui| {
+let options = [(Theme::System, "Use the system setting"), (Theme::Light, "Light"), (Theme::Dark, "Dark")];
+if ui.dropdown(&mut theme, &options).label("Theme").changed() {
+    // switch the theme
+}
+# });
+```
+
+Clicking it opens the list below (above when there is no room). With the focus on the closed field, Up and Down pick the previous or next option. Enter, Space, Alt+Down and F4 open the list. In the open list, Up, Down, Home and End move, and Enter or Space picks. Escape or a click outside closes it without picking. Screen readers hear the name given with `.label(..)` and the selected option.
 
 ## Separators, cards and groups
 

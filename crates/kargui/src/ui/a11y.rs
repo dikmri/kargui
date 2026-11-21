@@ -191,6 +191,21 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Focus);
                 n
             }
+            Kind::Dropdown { text, open, .. } => {
+                let mut n = Node::new(Role::ComboBox);
+                n.set_value(text.clone());
+                n.set_expanded(*open);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::ListOption { selected, .. } => {
+                let mut n = Node::new(Role::ListBoxOption);
+                n.set_selected(*selected);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
             Kind::Separator => {
                 let mut n = Node::new(Role::GenericContainer);
                 n.set_hidden();
@@ -254,6 +269,8 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                     n
                 }
                 OverlayKind::Tooltip => Node::new(Role::Tooltip),
+                OverlayKind::ListBox => Node::new(Role::ListBox),
+                OverlayKind::Menu => Node::new(Role::Menu),
             },
             Kind::Space => unreachable!(),
         };

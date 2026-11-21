@@ -2634,4 +2634,72 @@ mod tests {
         assert!(!out.want_frame, "描き直しを続けない");
         assert!(out.wake_after.is_some_and(|d| d <= std::time::Duration::from_millis(40)), "{:?}", out.wake_after);
     }
+
+    /// ドロップダウンの見本
+    #[derive(Default)]
+    struct Pick {
+        size: u8,
+        other: u32,
+    }
+
+    impl App for Pick {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.row(|ui| {
+                ui.dropdown(&mut self.size, &[(0, "Small"), (1, "Medium"), (2, "Large")]).label("Size");
+                if ui.button("Other").clicked() {
+                    self.other += 1;
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn dropdowns_open_below_and_pick_with_the_pointer() {
+        let mut h = Harness::new(Pick::default());
+        assert!(h.find("Large").is_none());
+        h.click("Size");
+        let (field, large) = (h.find("Size").unwrap(), h.find("Large").expect("開くと選択肢が出る"));
+        assert!(large.y > field.bottom());
+        assert_eq!(focused_name(&h).as_deref(), Some("Small"), "選んでいる項目に焦点");
+        assert_eq!(a11y_node(&h, "Size").is_expanded(), Some(true));
+        h.click("Large");
+        assert_eq!(h.app().size, 2);
+        assert!(h.find("Large").is_none(), "選ぶと閉じる");
+        assert_eq!(focused_name(&h).as_deref(), Some("Size"), "焦点は戻る");
+        let n = a11y_node(&h, "Size");
+        assert_eq!((n.role(), n.value(), n.is_expanded()), (accesskit::Role::ComboBox, Some("Large"), Some(false)));
+    }
+
+    #[test]
+    fn dropdowns_work_with_the_keyboard() {
+        let mut h = Harness::new(Pick::default());
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("Size"));
+        // 閉じたまま下の矢印で選び直す
+        h.press(Key::Down);
+        assert_eq!(h.app().size, 1);
+        assert!(h.find("Small").is_none(), "開かない");
+        // Alt+下で開き、下で次の項目へ（まだ選ばない）、Enter で選んで閉じる
+        h.press_with(Key::Down, Mods::ALT);
+        assert_eq!(focused_name(&h).as_deref(), Some("Medium"));
+        h.press(Key::Down);
+        assert_eq!((h.app().size, focused_name(&h).as_deref()), (1, Some("Large")));
+        h.press(Key::Enter);
+        assert_eq!(h.app().size, 2);
+        assert_eq!(focused_name(&h).as_deref(), Some("Size"));
+        // Esc は選び直さずに閉じる
+        h.press(Key::Space).press(Key::Up).press(Key::Escape);
+        assert_eq!(h.app().size, 2);
+        assert!(h.find("Small").is_none());
+        // 外を押すと閉じ、そのクリックは下に届かない
+        h.click("Size").click("Other");
+        assert_eq!(h.app().other, 0);
+        assert!(h.find("Small").is_none());
+        let nodes = a11y_nodes(&h);
+        assert!(!nodes.iter().any(|n| n.role() == accesskit::Role::ListBoxOption));
+        h.click("Size");
+        let nodes = a11y_nodes(&h);
+        assert_eq!(nodes.iter().filter(|n| n.role() == accesskit::Role::ListBoxOption).count(), 3);
+        assert!(nodes.iter().any(|n| n.role() == accesskit::Role::ListBox));
+    }
 }

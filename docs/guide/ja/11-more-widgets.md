@@ -1,4 +1,4 @@
-<!-- covers: Ui::radio_group Ui::separator Ui::progress Ui::progress_busy Ui::spinner Ui::card Ui::group Ui::expander Ui::link Ui::toggle_button Ui::password Toggled::mixed sig=a19e38880539381c -->
+<!-- covers: Ui::radio_group Ui::separator Ui::progress Ui::progress_busy Ui::spinner Ui::card Ui::group Ui::expander Ui::link Ui::toggle_button Ui::password Toggled::mixed Ui::dropdown Dropdown::changed sig=13e8d8bd7ca74494 -->
 # いろいろな部品
 
 ## ラジオボタン
@@ -17,6 +17,24 @@ if ui.radio_group(&mut size, &[(Size::Small, "小"), (Size::Medium, "中"), (Siz
 ```
 
 Tab はグループに 1 回だけ止まり（選んでいるボタン）、矢印で選びながら移ります。端では反対の端へ回ります。
+
+## ドロップダウン
+
+いくつかから 1 つを選ぶ部品で、選んでいる項目だけを出します。項目が多い時や、場所が狭い時に使います。
+
+```rust
+#[derive(Clone, Copy, PartialEq)]
+enum Theme { System, Light, Dark }
+# let mut theme = Theme::System;
+# kargui::test::example(|ui| {
+let options = [(Theme::System, "システムの設定に合わせる"), (Theme::Light, "明るい"), (Theme::Dark, "暗い")];
+if ui.dropdown(&mut theme, &options).label("テーマ").changed() {
+    // テーマを切り替える
+}
+# });
+```
+
+押すと下に一覧が開きます（下に場所が無い時は上）。焦点がある時は、閉じたまま上下の矢印で前後の項目を選べます。Enter・Space・Alt+下・F4 で一覧が開きます。開いた一覧では、上下・Home・End で移り、Enter か Space で選びます。Esc を押すか一覧の外を押すと、選ばずに閉じます。読み上げソフトには、`.label(..)` で付けた名前と、選んでいる項目が伝わります。
 
 ## 区切り線・カード・枠
 
