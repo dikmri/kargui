@@ -1,0 +1,49 @@
+# 送るたびに、Windows・Linux・macOS で試験を走らせる。
+# - Windows: 全部の試験と検査（説明と例の割合・部品の写真・AI 向けの索引・ガイドの古さ）、Windows 以外の文字の道の試験
+# - Linux・macOS: kargui の試験（部品・並べ方・描き方・試験台・文字）。窓はまだ Windows だけなので、窓を開く試験は無い
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Tests (DirectWrite text)
+        run: cargo test --locked --workspace --exclude kargui-spike
+      - name: Tests (portable text, the same path as Linux and macOS)
+        run: cargo test --locked -p kargui --features portable-text --lib
+      - name: Documentation checks
+        run: cargo run --locked -p xtask -- check
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Japanese fonts
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Tests
+        run: cargo test --locked -p kargui
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Tests
+        run: cargo test --locked -p kargui

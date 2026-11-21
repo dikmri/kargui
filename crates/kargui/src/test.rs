@@ -141,7 +141,7 @@ impl<A: App> Harness<A> {
     /// assert_eq!(h.render().width, 720);
     /// ```
     pub fn with_size(app: A, width: f32, height: f32, scale: f32) -> Self {
-        let text = Text::new().expect("DirectWrite is available on Windows");
+        let text = Text::new().expect("the text engine starts");
         let mut rt = Runtime::new(text, false, Box::new(MemoryClipboard::default()), "test".into());
         rt.resize((width * scale).round(), (height * scale).round(), scale);
         let mut h = Self { app, rt };
@@ -797,7 +797,7 @@ fn png(img: &Image) -> Vec<u8> {
 /// Runs `f` once against a throwaway screen. Used by the examples in this documentation.
 #[doc(hidden)]
 pub fn example(f: impl FnOnce(&mut Ui)) {
-    let text = Text::new().expect("DirectWrite is available on Windows");
+    let text = Text::new().expect("the text engine starts");
     let mut rt = Runtime::new(text, false, Box::new(MemoryClipboard::default()), "example".into());
     rt.resize(900.0, 640.0, 1.0);
     let mut tree = crate::ui::Tree::new(crate::runtime::ROOT, 1.0);

@@ -114,13 +114,23 @@ Not there yet:
 
 - **Widgets:** multi-line text input, password field, drop-down, radio buttons, menus (menu bar and
   context menu), tooltips, dialogs (including opening and saving files), tabs, tree view, tables with
-  column headers, progress bar, images, a free drawing surface, links, and disabled widgets.
+  column headers, progress bar, images, a free drawing surface and links (disabled widgets were added
+  after 0.1).
 - **App mechanisms:** multiple windows, updating the screen from other threads or timers, receiving
   keys in the app (shortcuts), drag and drop, choosing fonts, window icon, minimum window size,
   confirming before close, and animations.
-- **Platforms:** Windows 10/11 only (no macOS or Linux). The Direct3D 11 renderer (not the default)
+- **Platforms:** windows open on Windows 10/11 only. The Direct3D 11 renderer (not the default)
   occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
   NVDA. Apps cannot start a reconversion themselves.
+
+### Linux and macOS
+
+They are planned. Everything that depends on the operating system (window, input, input method,
+text, putting pixels on screen, clipboard, screen-reader adapter) is kept in four files:
+`platform.rs`, `gdi.rs`, `gpu.rs` and `text/dwrite.rs`. The rest (widgets, layout, drawing, the
+test harness) builds on Linux and macOS as well, with text laid out and drawn by parley and swash.
+Every push runs the tests on Windows, Linux and macOS (GitHub Actions). Windows cannot be opened
+there yet, so `kargui::run` returns an `Err` saying the system is not supported. Linux comes first.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).
 

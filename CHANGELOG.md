@@ -6,6 +6,11 @@
   `Button::enabled(bool)` disables one button. Disabled widgets are drawn dimmed, ignore the
   pointer, the keyboard and screen-reader actions, are skipped by Tab, lose the focus, and are
   announced as unavailable. `Harness::enabled(name)` tells whether a widget can be used.
+- Linux and macOS (preparation): kargui now builds on them, and its tests (widgets, layout,
+  drawing, the test harness) pass there. Text on these systems is laid out with parley and drawn
+  with swash; Windows keeps DirectWrite and gains no dependencies. Windows cannot be opened there
+  yet: `kargui::run` returns an error. The `portable-text` feature uses the parley/swash text on
+  Windows too, to test that path. GitHub Actions runs the tests on all three systems.
 
 ## 0.1.0 (2026-11-21)
 

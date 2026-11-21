@@ -9,19 +9,36 @@ repository = "https://github.com/dikmri/kargui"
 keywords = ["gui", "windows", "immediate-mode", "ime", "accessibility"]
 categories = ["gui"]
 
-# Windows だけの crate なので、docs.rs でも Windows 向けに説明を作る
+# 窓を開けるのは Windows だけなので、docs.rs でも Windows 向けに説明を作る
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
 targets = ["x86_64-pc-windows-msvc"]
 
+[features]
+# Windows でも、Windows 以外の文字の道（parley・swash）を使う。Windows の上で、Linux や macOS と同じ文字の道の
+# 試験を走らせるため（cargo test -p kargui --features portable-text）
+portable-text = ["dep:parley", "dep:swash"]
+
+# どの OS でも使う物（部品・並べ方・描き方・試験台）
 [dependencies]
 accesskit = "=0.25.2"
-accesskit_windows = "=0.35.2"
-windows-core = "=0.62.2"
 # 入力欄で 1 文字を書記素（結合文字・絵文字の並び）で数える。MIT/Apache-2.0、依存なし
 unicode-segmentation = "=1.12.0"
 
-[dependencies.windows]
+# Windows 以外の文字の道: 並べる（折り返し・代わりのフォント・当たり判定）のは parley、OS のフォントを探すのは
+# parley に入っている fontique、形を作るのは swash。どれも MIT/Apache-2.0
+[target.'cfg(not(windows))'.dependencies]
+parley = "=0.12.0"
+swash = "=0.2.10"
+
+# OS との境目（窓・入力・日本語入力・文字・画面に出す・クリップボード・読み上げの橋渡し）の Windows の版
+[target.'cfg(windows)'.dependencies]
+accesskit_windows = "=0.35.2"
+windows-core = "=0.62.2"
+parley = { version = "=0.12.0", optional = true }
+swash = { version = "=0.2.10", optional = true }
+
+[target.'cfg(windows)'.dependencies.windows]
 version = "=0.62.2"
 features = [
     "Win32_Foundation",

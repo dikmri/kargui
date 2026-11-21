@@ -18,13 +18,17 @@
 mod app;
 mod cpu_frame;
 mod damage;
+#[cfg(windows)]
 mod gdi;
 mod geom;
+#[cfg(windows)]
 mod gpu;
 mod ime;
 mod input;
 pub mod log;
 mod paint;
+// OS との境目（窓・入力・日本語入力・画面に出す・クリップボード・読み上げの橋渡し）。文字の OS ごとの道は text の中
+#[cfg(windows)]
 mod platform;
 mod raster;
 mod runtime;
@@ -69,6 +73,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[cfg(windows)]
 impl From<windows::core::Error> for Error {
     fn from(e: windows::core::Error) -> Self {
         Error(format!("{e:?}"))

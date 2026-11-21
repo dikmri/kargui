@@ -1,8 +1,4 @@
-//! 文字。DirectWrite で並べ（行の折り返し・代わりのフォント）、形（ラスタライズ）も DirectWrite で作る。
-//! 作った形は 1 枚の表（アトラス）に詰め、GPU の道と CPU の道の両方で使う。
-//! 段階 0 の比べで、Windows では parley を足しても速さと日本語の折り返しが変わらず、
-//! 依存の crate だけが 40 個増えると分かったので、DirectWrite だけを使う。
-//! 文字の位置は整数の画素にそろえる（半端な位置の形は作らない）。
+//! 文字の Windows の道。DirectWrite で並べ（行の折り返し・代わりのフォント）、形（ラスタライズ）も DirectWrite で作る。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -13,78 +9,8 @@ use std::rc::Rc;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::{BOOL, ComObject, IUnknown, Interface, Ref, Result, implement, w};
 
+use super::{ATLAS_SIZE, Atlas, LayoutCache, LayoutKey, Placed, Slot, TextStyle};
 use crate::log;
-
-/// 文字の形の表の一辺（画素）
-pub(crate) const ATLAS_SIZE: u32 = 1024;
-
-/// 文字の形の表。棚に左から詰めていく。
-pub(crate) struct Atlas {
-    pub pixels: Vec<u8>,
-    pub size: u32,
-    shelf_x: u32,
-    shelf_y: u32,
-    shelf_h: u32,
-    /// GPU に送り直す行の範囲（上端, 下端）
-    pub dirty: Option<(u32, u32)>,
-    /// 中身を作り直した回数（GPU の道が表を全部送り直すかどうかの判断に使う）
-    pub generation: u64,
-}
-
-impl Atlas {
-    fn new(size: u32) -> Self {
-        Self { pixels: vec![0; (size * size) as usize], size, shelf_x: 0, shelf_y: 0, shelf_h: 0, dirty: None, generation: 0 }
-    }
-
-    /// w×h の場所を取る。形どうしがにじまないよう 1 画素あける
-    fn alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
-        if w + 1 > self.size || h + 1 > self.size {
-            return None;
-        }
-        if self.shelf_x + w + 1 > self.size {
-            self.shelf_y += self.shelf_h;
-            self.shelf_x = 0;
-            self.shelf_h = 0;
-        }
-        if self.shelf_y + h + 1 > self.size {
-            return None;
-        }
-        let at = (self.shelf_x, self.shelf_y);
-        self.shelf_x += w + 1;
-        self.shelf_h = self.shelf_h.max(h + 1);
-        Some(at)
-    }
-
-    fn write(&mut self, x: u32, y: u32, w: u32, h: u32, src: &[u8]) {
-        for row in 0..h {
-            let d = ((y + row) * self.size + x) as usize;
-            let s = (row * w) as usize;
-            self.pixels[d..d + w as usize].copy_from_slice(&src[s..s + w as usize]);
-        }
-        let (top, bottom) = self.dirty.unwrap_or((y, y + h));
-        self.dirty = Some((top.min(y), bottom.max(y + h)));
-    }
-}
-
-/// 表の中の 1 つの形
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Slot {
-    pub x: u16,
-    pub y: u16,
-    pub w: u16,
-    pub h: u16,
-    /// ペンの位置（ベースライン）から形の左上までのずれ
-    pub left: i16,
-    pub top: i16,
-}
-
-/// 並べた文字 1 つ。x, y はペンの位置（ベースライン上）で、並べた範囲の左上が原点
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Placed {
-    pub x: f32,
-    pub y: f32,
-    pub slot: Slot,
-}
 
 /// 並べ終えた文字列
 pub(crate) struct Laid {
@@ -129,14 +55,6 @@ struct GlyphKey {
     face: usize,
     index: u16,
     size: u32,
-}
-
-#[derive(Hash, Eq, PartialEq, Clone)]
-struct LayoutKey {
-    text: String,
-    size: u32,
-    bold: bool,
-    max_width: u32,
 }
 
 struct RunGlyph {
@@ -213,21 +131,13 @@ impl IDWriteTextRenderer_Impl for Collector_Impl {
     }
 }
 
-/// 文字の書式
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TextStyle {
-    /// 大きさ（物理ピクセル）
-    pub size: f32,
-    pub bold: bool,
-}
-
 pub(crate) struct Text {
     factory: IDWriteFactory2,
     formats: HashMap<(u32, bool), IDWriteTextFormat>,
     glyphs: HashMap<GlyphKey, Option<Slot>>,
     /// 形の鍵にフォントのポインタを使うので、使ったフォントを持ち続ける
     faces: Vec<IDWriteFontFace>,
-    layouts: HashMap<LayoutKey, Rc<Laid>>,
+    layouts: LayoutCache<Laid>,
     pub atlas: Atlas,
     collector: ComObject<Collector>,
     renderer: IDWriteTextRenderer,
@@ -235,8 +145,6 @@ pub(crate) struct Text {
     pub glyphs_made: u64,
 }
 
-/// 並べた結果を覚えておく数の上限。超えたら全部忘れる（形の表は残す）
-const LAYOUT_CACHE_LIMIT: usize = 4096;
 /// UI の文字に使うフォント
 const FONT: windows::core::PCWSTR = w!("Yu Gothic UI");
 
@@ -250,7 +158,7 @@ impl Text {
             formats: HashMap::new(),
             glyphs: HashMap::new(),
             faces: Vec::new(),
-            layouts: HashMap::new(),
+            layouts: LayoutCache::new(),
             atlas: Atlas::new(ATLAS_SIZE),
             collector,
             renderer,
@@ -265,10 +173,7 @@ impl Text {
         self.glyphs.clear();
         self.faces.clear();
         self.layouts.clear();
-        let generation = self.atlas.generation + 1;
-        self.atlas = Atlas::new(ATLAS_SIZE);
-        self.atlas.generation = generation;
-        self.atlas.dirty = Some((0, ATLAS_SIZE));
+        self.atlas = self.atlas.renewed();
     }
 
     fn format(&mut self, size: f32, bold: bool) -> Result<IDWriteTextFormat> {
@@ -286,17 +191,9 @@ impl Text {
 
     /// 文字列を並べる。max_width を渡すとその幅で折り返す。結果は覚えておき、同じ物には同じ結果を返す
     pub fn layout(&mut self, s: &str, style: TextStyle, max_width: Option<f32>) -> Rc<Laid> {
-        let key = LayoutKey {
-            text: s.to_string(),
-            size: (style.size * 64.0) as u32,
-            bold: style.bold,
-            max_width: max_width.map_or(u32::MAX, |w| w.max(0.0).round() as u32),
-        };
+        let key = LayoutKey::new(s, style, max_width);
         if let Some(l) = self.layouts.get(&key) {
-            return l.clone();
-        }
-        if self.layouts.len() >= LAYOUT_CACHE_LIMIT {
-            self.layouts.clear();
+            return l;
         }
         let laid = match self.make_layout(s, style, max_width) {
             Ok(l) => Rc::new(l),
@@ -390,44 +287,5 @@ impl Text {
         };
         self.atlas.write(x, y, w, h, &buf);
         Ok(Some(Slot { x: x as u16, y: y as u16, w: w as u16, h: h as u16, left: b.left as i16, top: b.top as i16 }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn atlas_packs_on_shelves_and_tracks_dirty_rows() {
-        let mut a = Atlas::new(16);
-        assert_eq!(a.alloc(7, 3), Some((0, 0)));
-        assert_eq!(a.alloc(7, 5), Some((8, 0)));
-        assert_eq!(a.alloc(4, 2), Some((0, 6)));
-        assert_eq!(a.alloc(16, 1), None);
-        a.write(8, 0, 2, 2, &[1, 2, 3, 4]);
-        assert_eq!(&a.pixels[8..10], &[1, 2]);
-        a.write(0, 6, 1, 1, &[9]);
-        assert_eq!(a.dirty, Some((0, 7)));
-    }
-
-    #[test]
-    fn layout_measures_wraps_and_hit_tests_japanese() {
-        let mut t = Text::new().unwrap();
-        let style = TextStyle { size: 14.0, bold: false };
-        let one = t.layout("資料", style, None);
-        assert!(one.width > 20.0 && one.width < 40.0, "{}", one.width);
-        assert!(!one.glyphs.is_empty());
-        // 2 文字目の前の位置は、1 文字目の幅に近い
-        let x1 = one.x_of(1);
-        assert!(x1 > 8.0 && x1 < one.width, "{x1}");
-        assert_eq!(one.index_at(0.0), 0);
-        assert_eq!(one.index_at(one.width + 10.0), 2);
-        // 同じ文字列は覚えた結果を返す
-        assert!(Rc::ptr_eq(&one, &t.layout("資料", style, None)));
-        // 幅を決めると折り返して高くなる
-        let long = "これは日本語の折り返しを確かめるための文です。";
-        let wrapped = t.layout(long, style, Some(100.0));
-        let single = t.layout(long, style, None);
-        assert!(wrapped.height > single.height * 2.0, "{} {}", wrapped.height, single.height);
     }
 }
