@@ -52,10 +52,16 @@ def main():
         attempts = []
         log = os.path.join(run, 'attempts.log')
         if os.path.exists(log):
-            for line in io.open(log, encoding='utf-8-sig'):
+            for k, line in enumerate(io.open(log, encoding='utf-8-sig'), start=1):
                 m = re.search(r'exit=(-?\d+) errors=(\d+)', line)
                 if m:
-                    attempts.append((int(m.group(1)), int(m.group(2))))
+                    # 誤りの数は、残した出力から数え直す（試しの回は PowerShell が 1 行目を「cargo.exe : error」に包んでいた）
+                    out = os.path.join(run, f'build-{k}.txt')
+                    errors = int(m.group(2))
+                    if os.path.exists(out):
+                        text = io.open(out, encoding='utf-8', errors='replace').read()
+                        errors = len(re.findall(r'(?m)^(?:cargo(?:\.exe)? : )?error(?:\[E\d+\])?:', text))
+                    attempts.append((int(m.group(1)), errors))
         ok_at = next((i + 1 for i, (code, _) in enumerate(attempts) if code == 0), None)
         reply = None
         rp = os.path.join(run, 'reply.json')
@@ -65,6 +71,9 @@ def main():
             'framework': fw,
             'model': model,
             'attempts': len(attempts),
+            # 一度も失敗しなかったか（途中で何度か組み立てる AI もいるので、「1 回目が通ったか」ではなくこれで比べる）
+            'clean': bool(attempts) and all(code == 0 for code, _ in attempts),
+            'failed_builds': sum(1 for code, _ in attempts if code != 0),
             'first_build_ok': bool(attempts) and attempts[0][0] == 0,
             'ok_at_attempt': ok_at,
             'final_ok': bool(attempts) and attempts[-1][0] == 0,
@@ -75,8 +84,10 @@ def main():
     by = {}
     for r in runs.values():
         key = f"{r['framework']}|{r['model']}"
-        b = by.setdefault(key, {'runs': 0, 'first_build_ok': 0, 'final_ok': 0, 'attempts': [], 'lines': []})
+        b = by.setdefault(key, {'runs': 0, 'clean': 0, 'failed_builds': [], 'first_build_ok': 0, 'final_ok': 0, 'attempts': [], 'lines': []})
         b['runs'] += 1
+        b['clean'] += r['clean']
+        b['failed_builds'].append(r['failed_builds'])
         b['first_build_ok'] += r['first_build_ok']
         b['final_ok'] += r['final_ok']
         b['attempts'].append(r['ok_at_attempt'])
@@ -85,7 +96,7 @@ def main():
     path = os.path.join(KARGUI, 'bench', 'ai-test-summary.json')
     io.open(path, 'w', encoding='utf-8', newline='\n').write(json.dumps(out, ensure_ascii=False, indent=1) + '\n')
     for k, b in sorted(by.items()):
-        print(f"{k:16} runs={b['runs']} first_ok={b['first_build_ok']} final_ok={b['final_ok']} ok_at={b['attempts']} lines={b['lines']}")
+        print(f"{k:16} runs={b['runs']} clean={b['clean']} failed={b['failed_builds']} final_ok={b['final_ok']} lines={b['lines']}")
     print('->', path)
 
 

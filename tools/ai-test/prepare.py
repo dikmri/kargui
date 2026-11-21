@@ -127,7 +127,8 @@ def main():
 $env:CARGO_TARGET_DIR = '{target}'
 Set-Location '{crate}'
 $n = 1 + @(Get-Content '{run}\\attempts.log' -ErrorAction SilentlyContinue).Count
-$out = & cargo build --offline 2>&1 | Out-String
+# cmd から呼ぶ（PowerShell に cargo の誤りの出力を包ませない。包むと 1 行目が「cargo.exe : error」になり、化けた説明の行も混ざる）
+$out = cmd /c "cargo build --offline --color never 2>&1" | Out-String
 $code = $LASTEXITCODE
 $errors = ([regex]::Matches($out, '(?m)^error(\\[E\\d+\\])?:')).Count
 "$(Get-Date -Format o) attempt=$n exit=$code errors=$errors" | Add-Content '{run}\\attempts.log'
