@@ -478,11 +478,13 @@ impl<'a> Ui<'a> {
     }
 
     /// An on/off switch with a label. Clicking it flips `on`.
+    /// For a dark mode switch, use [`Ui::dark_mode_switch`] instead: it follows the operating
+    /// system's setting from the start.
     ///
     /// ```
-    /// # let mut dark = false;
+    /// # let mut wifi = true;
     /// # kargui::test::example(|ui| {
-    /// ui.toggle(&mut dark, "Dark mode");
+    /// ui.toggle(&mut wifi, "Wi-Fi");
     /// # });
     /// ```
     #[track_caller]
@@ -754,6 +756,38 @@ impl<'a> Ui<'a> {
     /// ui.list(items.len(), 32.0).grow().show(|ui, i| {
     ///     ui.label(&items[i]);
     /// });
+    /// # });
+    /// ```
+    ///
+    /// Each row is already a row: put the widgets straight in, and use [`Ui::fill`] to push a
+    /// button to the right end. Do not change the data inside the row function (rows after it
+    /// would read it with old indices). Remember what was clicked, and change the data after the
+    /// list:
+    ///
+    /// ```
+    /// # struct Task { id: u32, text: String, done: bool }
+    /// # let mut tasks = vec![Task { id: 7, text: "Milk".into(), done: false }];
+    /// # kargui::test::example(|ui| {
+    /// let (mut toggled, mut removed) = (None, None);
+    /// ui.list(tasks.len(), 32.0).grow().show_keyed(|i| tasks[i].id, |ui, i| {
+    ///     let task = &tasks[i];
+    ///     let mut done = task.done;
+    ///     if ui.checkbox(&mut done, task.text.as_str()).strike(task.done).changed() {
+    ///         toggled = Some(task.id);
+    ///     }
+    ///     ui.fill();
+    ///     if ui.button("Delete").small().clicked() {
+    ///         removed = Some(task.id);
+    ///     }
+    /// });
+    /// if let Some(id) = toggled {
+    ///     if let Some(t) = tasks.iter_mut().find(|t| t.id == id) {
+    ///         t.done = !t.done;
+    ///     }
+    /// }
+    /// if let Some(id) = removed {
+    ///     tasks.retain(|t| t.id != id);
+    /// }
     /// # });
     /// ```
     #[track_caller]

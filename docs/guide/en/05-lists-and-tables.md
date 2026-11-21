@@ -1,5 +1,5 @@
-<!-- source: ja/05-lists-and-tables.md fnv=6a1077f6d9705062 -->
-<!-- covers: Ui::list List::show List::show_keyed List::selection List::grow List::separators List::scroll_to List::scroll_offset Label::right sig=a3205d9c04291788 -->
+<!-- source: ja/05-lists-and-tables.md fnv=7e6ceb7bbcdd28ef -->
+<!-- covers: Ui::list List::show List::show_keyed List::selection Ui::fill List::grow List::separators List::scroll_to List::scroll_offset Label::right sig=3b692e2a30af5317 -->
 # Lists and tables
 
 `ui.list(count, row_height)` is a list that only creates the visible rows. With ten thousand or a million items, one frame creates only the twenty or so rows on screen.
@@ -30,6 +30,38 @@ ui.list(tasks.len(), 32.0).grow().show_keyed(|i| ids[i], |ui, i| {
     let t = &mut tasks[i];
     ui.checkbox(&mut t.done, t.text.clone());
 });
+# });
+```
+
+## Laying out a row, and where to change the data
+
+Each list row is already a row. Put the widgets straight in, and use `ui.fill()` to push a button to the right end.
+Do not change the data inside the row function: rows after it would read the data with old indices. Remember what was clicked, and change the data after the list.
+
+```rust
+# struct Task { id: u32, text: String, done: bool }
+# let mut tasks = vec![Task { id: 7, text: "Milk".into(), done: false }];
+# kargui::test::example(|ui| {
+let (mut toggled, mut removed) = (None, None);
+ui.list(tasks.len(), 32.0).grow().show_keyed(|i| tasks[i].id, |ui, i| {
+    let task = &tasks[i];
+    let mut done = task.done;
+    if ui.checkbox(&mut done, task.text.as_str()).strike(task.done).changed() {
+        toggled = Some(task.id);
+    }
+    ui.fill();
+    if ui.button("Delete").small().clicked() {
+        removed = Some(task.id);
+    }
+});
+if let Some(id) = toggled {
+    if let Some(t) = tasks.iter_mut().find(|t| t.id == id) {
+        t.done = !t.done;
+    }
+}
+if let Some(id) = removed {
+    tasks.retain(|t| t.id != id);
+}
 # });
 ```
 

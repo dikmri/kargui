@@ -1,5 +1,5 @@
-<!-- source: ja/02-widgets.md fnv=6b1b1f4b2901a2d1 -->
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Toggled::changed Toggled::strike Slider::changed sig=347ae262fe4371ee -->
+<!-- source: ja/02-widgets.md fnv=9f28c2df951e37b7 -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Toggled::changed Toggled::strike Slider::changed sig=353c5bb94bedf66a -->
 # Widgets
 
 Widgets are created with methods on `ui`. Widgets that change a value take the state with `&mut`; ask the return value what happened.
@@ -36,6 +36,18 @@ ui.toggle(&mut wifi, "Wi-Fi");
 ```
 
 `strike(true)` draws a line through the text, as for a finished task. It stays clickable.
+
+For switching between light and dark, use `ui.dark_mode_switch("Dark")`. It shows and changes kargui's own setting (which starts as the operating system's), so the app does not need to keep a value, and the switch never disagrees with the look.
+
+```rust
+# kargui::test::example(|ui| {
+ui.row(|ui| {
+    ui.heading("Tasks");
+    ui.fill();
+    ui.dark_mode_switch("Dark");
+});
+# });
+```
 
 ## Picking one of a few
 

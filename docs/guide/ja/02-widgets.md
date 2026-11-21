@@ -1,4 +1,4 @@
-<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Toggled::changed Toggled::strike Slider::changed sig=347ae262fe4371ee -->
+<!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Toggled::changed Toggled::strike Slider::changed sig=353c5bb94bedf66a -->
 # 部品
 
 部品は `ui` のメソッドで作ります。値を変える部品には `&mut` で状態を渡し、戻り値で何が起きたかを聞きます。
@@ -35,6 +35,18 @@ ui.toggle(&mut wifi, "Wi-Fi");
 ```
 
 `strike(true)` は、終わったタスクのように文字に線を引きます。押せるのは変わりません。
+
+明暗の切り替えには、`ui.dark_mode_switch("ダーク")` を使います。kargui 自身の明暗（初めは OS の設定）を示して切り替えるので、アプリが値を持つ必要がなく、スイッチが見た目と食い違いません。
+
+```rust
+# kargui::test::example(|ui| {
+ui.row(|ui| {
+    ui.heading("タスク");
+    ui.fill();
+    ui.dark_mode_switch("ダーク");
+});
+# });
+```
 
 ## いくつかから 1 つ選ぶ
 

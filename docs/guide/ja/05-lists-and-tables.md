@@ -1,4 +1,4 @@
-<!-- covers: Ui::list List::show List::show_keyed List::selection List::grow List::separators List::scroll_to List::scroll_offset Label::right sig=a3205d9c04291788 -->
+<!-- covers: Ui::list List::show List::show_keyed List::selection Ui::fill List::grow List::separators List::scroll_to List::scroll_offset Label::right sig=3b692e2a30af5317 -->
 # 一覧と表
 
 `ui.list(件数, 行の高さ)` は、見えている行だけを作る一覧です。1 万件でも 100 万件でも、1 フレームで作るのは見えている 20 行ほどです。
@@ -29,6 +29,38 @@ ui.list(tasks.len(), 32.0).grow().show_keyed(|i| ids[i], |ui, i| {
     let t = &mut tasks[i];
     ui.checkbox(&mut t.done, t.text.clone());
 });
+# });
+```
+
+## 行の中の並べ方と、データを変える所
+
+一覧の行は、もう横の並びです。部品をそのまま並べ、`ui.fill()` でボタンを右端へ寄せます。
+行の関数の中では、データを変えません。変えると、後ろの行が古い番号でデータを読みます。押された物を覚えておき、一覧の後で変えます。
+
+```rust
+# struct Task { id: u32, text: String, done: bool }
+# let mut tasks = vec![Task { id: 7, text: "牛乳".into(), done: false }];
+# kargui::test::example(|ui| {
+let (mut toggled, mut removed) = (None, None);
+ui.list(tasks.len(), 32.0).grow().show_keyed(|i| tasks[i].id, |ui, i| {
+    let task = &tasks[i];
+    let mut done = task.done;
+    if ui.checkbox(&mut done, task.text.as_str()).strike(task.done).changed() {
+        toggled = Some(task.id);
+    }
+    ui.fill();
+    if ui.button("削除").small().clicked() {
+        removed = Some(task.id);
+    }
+});
+if let Some(id) = toggled {
+    if let Some(t) = tasks.iter_mut().find(|t| t.id == id) {
+        t.done = !t.done;
+    }
+}
+if let Some(id) = removed {
+    tasks.retain(|t| t.id != id);
+}
 # });
 ```
 
