@@ -11,6 +11,7 @@
 # 注意: キー入力は前面の窓に届く。走らせている間（約 30 秒）はキーボードとマウスに触らない。
 #   タスク帳が前面でなくなったら、その時点で止める（ほかの窓に文字を打たないため）。
 # 使い方: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ime-check.ps1 [-Pos -1410,200]
+#   作者が席を外している間に走らせるときは tools/away-run.ps1 から呼ぶ。人の入力があると止まる（終了コード 2）
 param(
   [string]$Pos = '-1410,200',
   [string]$Exe = "$PSScriptRoot\..\target\release\taskbook-kargui.exe",
@@ -21,46 +22,8 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 $log = Join-Path $OutDir 'taskbook.log'
 Remove-Item $log -ErrorAction SilentlyContinue
-Add-Type -AssemblyName System.Drawing
-Add-Type -TypeDefinition @"
-using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
-public static class K {
-  [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
-  [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public KEYBDINPUT ki; public ulong pad; }
-  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
-  [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] inputs, int size);
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
-  delegate bool EnumProc(IntPtr h, IntPtr l);
-  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
-  // 矢印・Home・End・PgUp・PgDn・Insert・Delete は拡張キーの印を付けて送る。
-  // 印が無いとテンキーのキーとして扱われ、NumLock が入っていると Shift を押していても離れた状態で届く
-  public static void Key(ushort vk, bool up) {
-    var i = new INPUT[1];
-    bool ext = (vk >= 0x21 && vk <= 0x28) || vk == 0x2D || vk == 0x2E;
-    i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = (up ? 2u : 0u) | (ext ? 1u : 0u);
-    SendInput(1, i, Marshal.SizeOf(typeof(INPUT)));
-  }
-  public static List<string> Visible() {
-    var list = new List<string>();
-    EnumWindows((h, l) => {
-      if (IsWindowVisible(h)) {
-        RECT r; GetWindowRect(h, out r);
-        var sb = new StringBuilder(256); GetClassNameW(h, sb, 256);
-        list.Add(h.ToInt64() + "|" + sb + "|" + r.L + "," + r.T + "," + r.R + "," + r.B);
-      }
-      return true;
-    }, IntPtr.Zero);
-    return list;
-  }
-}
-"@
-[void][K]::SetProcessDpiAwarenessContext([IntPtr](-4))
+Remove-Item (Join-Path $OutDir 'aborted.txt') -ErrorAction SilentlyContinue
+. "$PSScriptRoot\lib\sendinput.ps1"
 
 $p = Start-Process -FilePath $Exe -ArgumentList "--items 3 --pos $Pos --log `"$log`"" -PassThru
 $deadline = (Get-Date).AddSeconds(10)
@@ -70,21 +33,8 @@ while (-not ((Test-Path $log) -and (Select-String -Path $log -Pattern 'event=rea
 }
 $h = $p.MainWindowHandle
 for ($i = 0; $i -lt 20 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 100; $p.Refresh(); $h = $p.MainWindowHandle }
-[void][K]::SetForegroundWindow($h)
-Start-Sleep -Milliseconds 300
+Front
 
-function Guard { if ([K]::GetForegroundWindow() -ne $h) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; throw 'タスク帳が前面ではないので止めた（ほかの窓に文字を打たないため）' } }
-function Tap([int]$vk) { Guard; [K]::Key([uint16]$vk, $false); Start-Sleep -Milliseconds 25; [K]::Key([uint16]$vk, $true); Start-Sleep -Milliseconds 45 }
-function TypeRoma([string]$s) { foreach ($c in $s.ToUpper().ToCharArray()) { Tap ([int]$c) } }
-function MakeLParam([int]$x, [int]$y) { [IntPtr](([int64]($y -band 0xffff) -shl 16) -bor ($x -band 0xffff)) }
-function Click([int]$x, [int]$y) { [void][K]::PostMessageW($h, 0x201, [IntPtr]1, (MakeLParam $x $y)); Start-Sleep -Milliseconds 60; [void][K]::PostMessageW($h, 0x202, [IntPtr]0, (MakeLParam $x $y)); Start-Sleep -Milliseconds 300 }
-function Shot([string]$name) {
-  $r = New-Object K+RECT; [void][K]::GetWindowRect($h, [ref]$r)
-  $w = $r.R - $r.L; $hh = $r.B - $r.T + 260
-  $b = New-Object System.Drawing.Bitmap $w, $hh
-  $g = [System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($r.L, $r.T, 0, 0, (New-Object System.Drawing.Size $w, $hh)); $g.Dispose()
-  $b.Save((Join-Path $OutDir "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-}
 function LogCount([string]$pattern) { @(Select-String -Path $log -Pattern $pattern).Count }
 
 # 新しいタスクの入力欄（窓の中の 400,68）を押して、IME をオンにする
@@ -119,7 +69,7 @@ TypeRoma 'gyuunyuuwokau'; Start-Sleep -Milliseconds 300
 Tap 0x20; Start-Sleep -Milliseconds 500   # 変換
 Tap 0x0D; Start-Sleep -Milliseconds 400   # 確定（まだ追加しない）
 $text6 = if ((Get-Content $log -Encoding UTF8 | Where-Object { $_ -match 'event=ime.commit args="text=' } | Select-Object -Last 1) -match 'text=(.*?)"') { $Matches[1] } else { '' }
-Guard; [K]::Key(0x11, $false); Tap 0x41; [K]::Key(0x11, $true)   # Ctrl+A で全部を選ぶ
+Chord 0x11 0x41   # Ctrl+A で全部を選ぶ
 Start-Sleep -Milliseconds 300
 $selected = LogCount 'key=A mods=Mods \{ shift: false, ctrl: true'
 $startsBefore = LogCount 'event=ime.start'
@@ -131,9 +81,9 @@ $afterConvert = @(Get-Content $log -Encoding UTF8 | Select-Object -Skip $linesBe
 Tap 0x0D; Start-Sleep -Milliseconds 400   # 1 番目の候補で確定
 Shot '5-after-reconvert'
 Tap 0x0D; Start-Sleep -Milliseconds 400   # 追加
-$added6 = if ((Get-Content $log -Encoding UTF8 | Where-Object { $_ -match 'event=add args="text=' } | Select-Object -Last 1) -match 'text=(.*?)"') { $Matches[1] } else { '' }
+$added6 = if ((Get-Content $log -Encoding UTF8 | Select-Object -Skip $linesBefore | Where-Object { $_ -match 'event=add args="text=[^"]' } | Select-Object -First 1) -match 'text=(.*?)"') { $Matches[1] } else { '' }
 # 欄を空にする（Ctrl+A と Delete）
-Guard; [K]::Key(0x11, $false); Tap 0x41; [K]::Key(0x11, $true); Tap 0x2E
+Chord 0x11 0x41; Tap 0x2E
 Start-Sleep -Milliseconds 300
 # (5) 変換の途中で絞り込みの欄（130,112）を押す
 TypeRoma 'shiryou'; Start-Sleep -Milliseconds 400
@@ -149,6 +99,7 @@ $filtersCommitted = LogCount 'event=filter '
 Tap 0x1A   # VK_IME_OFF
 [void][K]::PostMessageW($h, 0x0010, [IntPtr]0, [IntPtr]0)   # WM_CLOSE
 [void]$p.WaitForExit(5000)
+[void][K]::ForceForeground($script:prevForeground)
 
 # 結果をまとめる
 $lines = Get-Content $log -Encoding UTF8
