@@ -709,6 +709,29 @@ mod tests {
         assert_eq!(h.find("Chapter 1").unwrap().y, area.y);
     }
 
+    #[test]
+    fn wrapped_text_in_a_column_does_not_push_the_next_widget_to_the_bottom() {
+        let mut h = Harness::with_size(Wrapped, 400.0, 400.0, 1.0);
+        h.frame();
+        let text = h.find("A short paragraph that wraps onto two lines in a narrow window, maybe.").unwrap();
+        let ok = h.find("OK").unwrap();
+        // 文の高さは 2〜3 行分（残りの高さいっぱいにならない）で、そのすぐ下にボタンがある
+        assert!(text.h < 80.0, "文の高さ {text:?}");
+        assert!(ok.y - text.bottom() < 20.0, "文 {text:?} のすぐ下にボタン {ok:?}");
+    }
+
+    struct Wrapped;
+
+    impl App for Wrapped {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.column(|ui| {
+                ui.label("A short paragraph that wraps onto two lines in a narrow window, maybe.").wrap();
+                ui.button("OK");
+            })
+            .grow();
+        }
+    }
+
     fn settings() -> Harness<Settings> {
         let mut h = Harness::with_size(Settings { options: vec![false; 30] }, 400.0, 300.0, 1.0);
         h.frame();

@@ -78,6 +78,8 @@ pub(crate) enum TextKind {
     Body,
     Small,
     Heading,
+    /// 大きさを決めた文字（論理ピクセルの 10 倍。Eq のため整数で持つ）
+    Custom(u32),
 }
 
 impl TextKind {
@@ -87,6 +89,7 @@ impl TextKind {
             TextKind::Body => 14.0,
             TextKind::Small => 12.5,
             TextKind::Heading => 21.0,
+            TextKind::Custom(tenths) => tenths as f32 / 10.0,
         }
     }
 }
@@ -914,9 +917,25 @@ impl Label<'_> {
             *w |= on;
         })
     }
-    /// Wraps the text onto several lines to fit the width.
+    /// Wraps the text onto several lines to fit the width. In a row, the text also takes the
+    /// remaining width.
     pub fn wrap(self) -> Self {
-        self.text_kind(|_, _, _, _, w| *w = true).grow()
+        let l = self.text_kind(|_, _, _, _, w| *w = true);
+        // 列の中では幅いっぱいに広がるので、高さを残りいっぱいにしない（下の部品を押し下げないように）
+        if l.0.parent_dir == Dir::Row { l.grow() } else { l }
+    }
+    /// Sets the text size in logical pixels (body text is 14, headings 21). Use it for text the
+    /// user can enlarge, such as a reading view.
+    ///
+    /// ```
+    /// # let font_size = 18.0;
+    /// # kargui::test::example(|ui| {
+    /// ui.label("Large text for reading.").size(font_size).wrap();
+    /// # });
+    /// ```
+    pub fn size(self, size: f32) -> Self {
+        let tenths = (size.clamp(4.0, 200.0) * 10.0).round() as u32;
+        self.text_kind(|s, _, _, _, _| *s = TextKind::Custom(tenths))
     }
     /// Puts the text at the right end of its space (for example numbers in a table column).
     /// Give the label a width with [`Label::width`] or [`Label::grow`] for this to show.
