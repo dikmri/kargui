@@ -5,6 +5,33 @@
 use crate::ui::Id;
 
 /// A key that widgets react to. Letters are only listed when they are used as shortcuts.
+///
+/// ```
+/// # use kargui::{App, Ui, Key, Mods};
+/// # use kargui::test::Harness;
+/// # #[derive(Default)]
+/// # struct Notes {
+/// #     input: String,
+/// #     notes: Vec<String>,
+/// # }
+/// # impl App for Notes {
+/// #     fn view(&mut self, ui: &mut Ui) {
+/// #         ui.row(|ui| {
+/// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+/// #             if field.submitted() || ui.button("Add").clicked() {
+/// #                 self.notes.push(std::mem::take(&mut self.input));
+/// #             }
+/// #         });
+/// #         for note in &self.notes {
+/// #             ui.label(note);
+/// #         }
+/// #     }
+/// # }
+///
+/// let mut h = Harness::new(Notes::default());
+/// h.click("New note").type_text("milk").press(Key::Enter);
+/// assert_eq!(h.app().notes, ["milk"]);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     /// Enter / Return.
@@ -46,6 +73,15 @@ pub enum Key {
 }
 
 /// Modifier keys held during a key press.
+///
+/// ```
+/// use kargui::{Key, Mods};
+///
+/// let ctrl = Mods { ctrl: true, ..Mods::default() };
+/// assert!(ctrl.ctrl && !ctrl.shift && !ctrl.alt);
+/// // Ctrl+Z, as sent to `Harness::press_with`.
+/// let _ = (Key::Z, ctrl);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Mods {
     /// Shift.

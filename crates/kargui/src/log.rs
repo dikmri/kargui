@@ -10,6 +10,11 @@
 use std::sync::OnceLock;
 
 /// A function that receives `(event, args, result)`.
+///
+/// ```
+/// let logger: kargui::log::Logger = |event, args, result| println!("{event} {args} -> {result}");
+/// logger("open", "900x640", "ok");
+/// ```
 pub type Logger = fn(event: &str, args: &str, result: &str);
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();

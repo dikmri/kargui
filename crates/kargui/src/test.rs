@@ -48,6 +48,33 @@ use crate::ui::context::MemoryClipboard;
 use crate::ui::{Ui, a11y};
 
 /// Runs an [`App`] without a window. See the [module documentation](self).
+///
+/// ```
+/// # use kargui::{App, Ui, Key, Mods};
+/// # use kargui::test::Harness;
+/// # #[derive(Default)]
+/// # struct Notes {
+/// #     input: String,
+/// #     notes: Vec<String>,
+/// # }
+/// # impl App for Notes {
+/// #     fn view(&mut self, ui: &mut Ui) {
+/// #         ui.row(|ui| {
+/// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+/// #             if field.submitted() || ui.button("Add").clicked() {
+/// #                 self.notes.push(std::mem::take(&mut self.input));
+/// #             }
+/// #         });
+/// #         for note in &self.notes {
+/// #             ui.label(note);
+/// #         }
+/// #     }
+/// # }
+///
+/// let mut h = Harness::new(Notes::default());
+/// h.click("New note").type_text("milk").press(Key::Enter);
+/// assert_eq!(h.app().notes, ["milk"]);
+/// ```
 pub struct Harness<A: App> {
     app: A,
     rt: Runtime,
@@ -55,11 +82,64 @@ pub struct Harness<A: App> {
 
 impl<A: App> Harness<A> {
     /// A 900×640 screen in light mode at 100% scale, after the first frame.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let h = Harness::new(Notes::default());
+    /// assert!(h.find("New note").is_some());
+    /// ```
     pub fn new(app: A) -> Self {
         Self::with_size(app, 900.0, 640.0, 1.0)
     }
 
     /// A screen of the given size (logical pixels) and scale, after the first frame.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// // A small phone-sized screen at 200% scale: 360 x 640 logical pixels is 720 x 1280 pixels.
+    /// let mut h = Harness::with_size(Notes::default(), 360.0, 640.0, 2.0);
+    /// assert_eq!(h.render().width, 720);
+    /// ```
     pub fn with_size(app: A, width: f32, height: f32, scale: f32) -> Self {
         let text = Text::new().expect("DirectWrite is available on Windows");
         let mut rt = Runtime::new(text, false, Box::new(MemoryClipboard::default()), "test".into());
@@ -70,16 +150,99 @@ impl<A: App> Harness<A> {
     }
 
     /// The app.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let h = Harness::new(Notes::default());
+    /// assert!(h.app().notes.is_empty());
+    /// ```
     pub fn app(&self) -> &A {
         &self.app
     }
 
     /// The app, to change its state between frames.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.app_mut().notes.push("milk".to_string());
+    /// h.frame();
+    /// assert!(h.find("milk").is_some());
+    /// ```
     pub fn app_mut(&mut self) -> &mut A {
         &mut self.app
     }
 
     /// Runs a frame without input.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.app_mut().notes.push("milk".to_string());
+    /// assert!(h.find("milk").is_none()); // not drawn yet
+    /// h.frame();
+    /// assert!(h.find("milk").is_some());
+    /// ```
     pub fn frame(&mut self) -> &mut Self {
         self.send(Vec::new())
     }
@@ -94,11 +257,65 @@ impl<A: App> Harness<A> {
     }
 
     /// The names a screen reader would read, in screen order.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let h = Harness::new(Notes::default());
+    /// assert!(h.names().contains(&"Add".to_string()));
+    /// ```
     pub fn names(&self) -> Vec<String> {
         (0..self.rt.tree.info.len()).filter_map(|i| a11y::name_of(&self.rt.tree, i)).collect()
     }
 
     /// Where the widget with this name is (physical pixels), if it is on screen.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let h = Harness::new(Notes::default());
+    /// let add = h.find("Add").expect("the Add button is on screen");
+    /// assert!(add.w > 0.0 && add.h > 0.0);
+    /// assert!(h.find("Remove").is_none());
+    /// ```
     pub fn find(&self, name: &str) -> Option<Rect> {
         (0..self.rt.tree.info.len()).find(|&i| a11y::name_of(&self.rt.tree, i).as_deref() == Some(name)).map(|i| self.rt.tree.layout[i].rect)
     }
@@ -133,44 +350,256 @@ impl<A: App> Harness<A> {
     }
 
     /// Clicks the widget with this name (and focuses it if it can take focus).
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.click("New note").type_text("tea").click("Add");
+    /// assert_eq!(h.app().notes, ["tea"]);
+    /// ```
     pub fn click(&mut self, name: &str) -> &mut Self {
         let (x, y) = self.center(name);
         self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }])
     }
 
     /// Types text into the focused field, as if typed without an input method.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.click("New note").type_text("milk");
+    /// assert_eq!(h.app().input, "milk");
+    /// ```
     pub fn type_text(&mut self, text: &str) -> &mut Self {
         self.send(text.chars().map(Event::Char).collect())
     }
 
     /// Presses a key.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.click("New note").type_text("milk").press(Key::Enter);
+    /// assert_eq!(h.app().notes, ["milk"]);
+    /// ```
     pub fn press(&mut self, key: Key) -> &mut Self {
         self.press_with(key, Mods::default())
     }
 
     /// Presses a key with modifiers (for example Ctrl+Z).
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.click("New note").type_text("milk");
+    /// // Ctrl+A selects everything, so the next text replaces it.
+    /// h.press_with(Key::A, Mods { ctrl: true, ..Mods::default() }).type_text("tea");
+    /// assert_eq!(h.app().input, "tea");
+    /// ```
     pub fn press_with(&mut self, key: Key, mods: Mods) -> &mut Self {
         self.send(vec![Event::Key { key, mods }])
     }
 
     /// The input method shows `text` as being composed (not yet converted or committed).
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.click("New note").ime_compose("ぎゅうにゅう");
+    /// assert_eq!(h.app().input, ""); // still composing
+    /// ```
     pub fn ime_compose(&mut self, text: &str) -> &mut Self {
         self.send(vec![Event::ImePreedit(text.to_string())])
     }
 
     /// The input method commits `text` (the user pressed Enter to accept the conversion).
     /// This Enter is handled by the input method and does not reach the app.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.click("New note").ime_compose("ぎゅうにゅう").ime_commit("牛乳");
+    /// assert_eq!(h.app().input, "牛乳");
+    /// assert!(h.app().notes.is_empty()); // the committing Enter does not submit
+    /// ```
     pub fn ime_commit(&mut self, text: &str) -> &mut Self {
         self.send(vec![Event::ImePreedit(String::new()), Event::ImeCommit(text.to_string())])
     }
 
     /// Scrolls the list under the widget with this name by `dy` logical pixels (down is positive).
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// # struct Log;
+    /// # impl App for Log {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.heading("Log");
+    /// #         ui.list(1000, 28.0).grow().show(|ui, i| {
+    /// #             ui.label(format!("Line {i}"));
+    /// #         });
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Log);
+    /// assert!(h.find("Line 0").is_some());
+    /// h.scroll("Line 0", 2800.0);
+    /// assert!(h.find("Line 0").is_none());
+    /// ```
     pub fn scroll(&mut self, name: &str, dy: f32) -> &mut Self {
         let (x, y) = self.center(name);
         self.send(vec![Event::Wheel { x, y, dy }])
     }
 
     /// Draws the screen with the CPU renderer.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// let image = h.render();
+    /// assert_eq!((image.width, image.height), (900, 640));
+    /// assert_eq!(image.rgb(0, 0), 0xffffff); // the light background
+    /// ```
     pub fn render(&mut self) -> Image {
         let (w, h) = (self.rt.cx.width as i32, self.rt.cx.height as i32);
         let mut pixels = vec![0u32; (w * h) as usize];
@@ -182,6 +611,33 @@ impl<A: App> Harness<A> {
 }
 
 /// An image drawn by [`Harness::render`]: pixels as `0xAARRGGBB`, row by row from the top.
+///
+/// ```
+/// # use kargui::{App, Ui, Key, Mods};
+/// # use kargui::test::Harness;
+/// # #[derive(Default)]
+/// # struct Notes {
+/// #     input: String,
+/// #     notes: Vec<String>,
+/// # }
+/// # impl App for Notes {
+/// #     fn view(&mut self, ui: &mut Ui) {
+/// #         ui.row(|ui| {
+/// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+/// #             if field.submitted() || ui.button("Add").clicked() {
+/// #                 self.notes.push(std::mem::take(&mut self.input));
+/// #             }
+/// #         });
+/// #         for note in &self.notes {
+/// #             ui.label(note);
+/// #         }
+/// #     }
+/// # }
+///
+/// let mut h = Harness::new(Notes::default());
+/// let image = h.render();
+/// assert_eq!(image.pixels.len(), (image.width * image.height) as usize);
+/// ```
 pub struct Image {
     /// Width in pixels.
     pub width: u32,
@@ -193,11 +649,67 @@ pub struct Image {
 
 impl Image {
     /// The pixel at `(x, y)` as `0xRRGGBB`.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// let image = h.render();
+    /// assert_eq!(image.rgb(1, 1), 0xffffff);
+    /// ```
     pub fn rgb(&self, x: u32, y: u32) -> u32 {
         self.pixels[(y * self.width + x) as usize] & 0x00ff_ffff
     }
 
     /// Saves as PNG (uncompressed, for screenshots in documentation and tests).
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key, Mods};
+    /// # use kargui::test::Harness;
+    /// # #[derive(Default)]
+    /// # struct Notes {
+    /// #     input: String,
+    /// #     notes: Vec<String>,
+    /// # }
+    /// # impl App for Notes {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.row(|ui| {
+    /// #             let field = ui.text_input(&mut self.input).hint("New note").grow();
+    /// #             if field.submitted() || ui.button("Add").clicked() {
+    /// #                 self.notes.push(std::mem::take(&mut self.input));
+    /// #             }
+    /// #         });
+    /// #         for note in &self.notes {
+    /// #             ui.label(note);
+    /// #         }
+    /// #     }
+    /// # }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// let path = std::env::temp_dir().join("kargui-example.png");
+    /// h.render().save_png(&path).unwrap();
+    /// assert!(std::fs::metadata(&path).unwrap().len() > 0);
+    /// std::fs::remove_file(&path).unwrap();
+    /// ```
     pub fn save_png(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
         std::fs::write(path, png(self))
     }

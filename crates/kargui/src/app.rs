@@ -25,14 +25,69 @@ pub trait App: 'static {
     /// Describes the whole screen. kargui calls this when something changed (input, window size,
     /// [`Ui::request_frame`]). It may be called twice in a frame: once to deliver input to the
     /// widgets, once to draw the result.
+    ///
+    /// ```
+    /// use kargui::{App, Ui};
+    ///
+    /// struct Greeting {
+    ///     name: String,
+    /// }
+    ///
+    /// impl App for Greeting {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.label(format!("Hello, {}", self.name));
+    ///     }
+    /// }
+    ///
+    /// let h = kargui::test::Harness::new(Greeting { name: "Ada".into() });
+    /// assert!(h.find("Hello, Ada").is_some());
+    /// ```
     fn view(&mut self, ui: &mut Ui);
 
     /// Called after each frame is on the screen. The first call happens once the window's first
     /// image has been composed by the operating system, which is a good point to measure startup.
+    ///
+    /// ```
+    /// use kargui::{App, Frame, Ui};
+    ///
+    /// struct Timed {
+    ///     first: Option<std::time::Duration>,
+    /// }
+    ///
+    /// impl App for Timed {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.label("Hello");
+    ///     }
+    ///
+    ///     fn presented(&mut self, frame: &Frame) {
+    ///         if frame.number == 0 {
+    ///             self.first = Some(frame.since_start);
+    ///         }
+    ///     }
+    /// }
+    /// ```
     fn presented(&mut self, _frame: &Frame) {}
 }
 
 /// Information about a frame that was shown. See [`App::presented`].
+///
+/// ```
+/// use kargui::{App, Frame, Ui};
+///
+/// struct Counter {
+///     frames: u64,
+/// }
+///
+/// impl App for Counter {
+///     fn view(&mut self, ui: &mut Ui) {
+///         ui.label("Hello");
+///     }
+///
+///     fn presented(&mut self, frame: &Frame) {
+///         self.frames = frame.number + 1;
+///     }
+/// }
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Frame {
     /// 0 for the first frame.
@@ -42,6 +97,14 @@ pub struct Frame {
 }
 
 /// How the window is drawn.
+///
+/// ```
+/// use kargui::{Options, Renderer};
+///
+/// let mut options = Options::new("Fast");
+/// assert_eq!(options.renderer, Renderer::Cpu);
+/// options.renderer = Renderer::Gpu;
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Renderer {
     /// With the CPU, redrawing only what changed. Starts fastest and uses the least memory;
@@ -53,6 +116,15 @@ pub enum Renderer {
 }
 
 /// Window settings for [`run`].
+///
+/// ```
+/// use kargui::Options;
+///
+/// let mut options = Options::new("Notes");
+/// options.size = (480.0, 640.0);
+/// options.dark = Some(true);
+/// assert_eq!(options.title, "Notes");
+/// ```
 #[derive(Clone, Debug)]
 pub struct Options {
     /// Window title (also the name screen readers use for the window).
@@ -74,6 +146,12 @@ pub struct Options {
 
 impl Options {
     /// Default options with the given title.
+    ///
+    /// ```
+    /// let options = kargui::Options::new("Notes");
+    /// assert_eq!(options.size, (900.0, 640.0));
+    /// assert!(options.activate);
+    /// ```
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
@@ -88,6 +166,22 @@ impl Options {
 }
 
 /// Opens a window for `app` and runs until the window is closed.
+///
+/// ```no_run
+/// use kargui::{App, Options, Ui};
+///
+/// struct Hello;
+///
+/// impl App for Hello {
+///     fn view(&mut self, ui: &mut Ui) {
+///         ui.heading("Hello, kargui");
+///     }
+/// }
+///
+/// if let Err(e) = kargui::run(Options::new("Hello"), Hello) {
+///     eprintln!("could not open the window: {e}");
+/// }
+/// ```
 pub fn run(options: Options, app: impl App) -> Result<(), crate::Error> {
     crate::platform::run(options, Box::new(app))
 }

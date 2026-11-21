@@ -6,6 +6,7 @@
 //!   cargo run -p xtask -- shots --check 写真が今の見た目と同じか（違えば落とす）
 //!   cargo run -p xtask -- llms          AI 向けの索引 docs/llms.txt を作り直す
 //!   cargo run -p xtask -- llms --check  索引が今のソースと同じか（違えば落とす）
+//!   cargo run -p xtask -- coverage      公開項目の全部に説明と動く例があるか（rustdoc の数え方）
 //!   cargo run -p xtask -- guide-check   ガイドの扱う API と訳が古くないか（guide.rs）
 //!   cargo run -p xtask -- guide-check --update  見直した後に、ガイドの値を入れ直す
 //!   cargo run -p xtask -- check         上の検査を全部（取り込みの前に走らせる）
@@ -192,6 +193,47 @@ fn shots() -> Vec<Shot> {
             },
             setup: no_setup,
         },
+        Shot {
+            name: "list_selection",
+            size: (360.0, 150.0),
+            view: |ui| {
+                let mut selected = Some(1);
+                ui.list(1000, 30.0).grow().selection(&mut selected).show(|ui, i| {
+                    ui.label(format!("report-{i:03}.pdf")).grow();
+                    ui.label(format!("{} KB", 120 + i * 7)).weak().right().width(Size::Fixed(70.0));
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "slider",
+            size: (360.0, 90.0),
+            view: |ui| {
+                ui.row(|ui| {
+                    ui.label("Font size");
+                    ui.slider(&mut 14, 10..=24).label("Font size");
+                    ui.label("14 pt");
+                });
+                ui.row(|ui| {
+                    ui.label("Volume");
+                    ui.slider(&mut 0.3_f32, 0.0..=1.0).label("Volume");
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
+            name: "scroll",
+            size: (360.0, 160.0),
+            view: |ui| {
+                ui.scroll(|ui| {
+                    ui.label("Settings").bold();
+                    for (i, name) in ["Spell check", "Auto save", "Notifications", "Sounds", "Statistics"].iter().enumerate() {
+                        ui.checkbox(&mut (i % 2 == 0), *name);
+                    }
+                });
+            },
+            setup: no_setup,
+        },
     ]
 }
 
@@ -280,6 +322,27 @@ fn make_llms(check: bool) -> bool {
         true
     };
     println!("llms: {}", if ok { "ok" } else { "違いあり" });
+    ok
+}
+
+/// 公開項目の全部に説明と例があるか。rustdoc の --show-coverage（stable では RUSTC_BOOTSTRAP=1）の JSON を数える
+fn coverage() -> bool {
+    let out = std::process::Command::new("cargo")
+        .current_dir(root())
+        .env("RUSTC_BOOTSTRAP", "1")
+        .args(["rustdoc", "-q", "-p", "kargui", "--offline", "--", "-Z", "unstable-options", "--show-coverage", "--output-format", "json"])
+        .output()
+        .expect("cargo rustdoc");
+    let json = String::from_utf8_lossy(&out.stdout);
+    let sum = |key: &str| -> u64 {
+        json.match_indices(&format!("\"{key}\":")).filter_map(|(i, m)| json[i + m.len()..].split(|c: char| !c.is_ascii_digit()).next()?.parse::<u64>().ok()).sum()
+    };
+    let (total, docs, ex_total, ex) = (sum("total"), sum("with_docs"), sum("total_examples"), sum("with_examples"));
+    let ok = out.status.success() && total > 0 && docs == total && ex == ex_total;
+    println!("coverage: 説明 {docs}/{total}、例 {ex}/{ex_total}: {}", if ok { "ok" } else { "不足あり" });
+    if !out.status.success() {
+        println!("{}", String::from_utf8_lossy(&out.stderr));
+    }
     ok
 }
 
@@ -396,15 +459,17 @@ fn main() -> ExitCode {
         Some("shots") => make_shots(check),
         Some("llms") => make_llms(check),
         Some("guide-check") => guide_check(args.iter().any(|a| a == "--update")),
+        Some("coverage") => coverage(),
         Some("check") => {
             let a = doc_check();
             let b = make_shots(true);
             let c = make_llms(true);
             let d = guide_check(false);
-            a && b && c && d
+            let e = coverage();
+            a && b && c && d && e
         }
         _ => {
-            println!("使い方: cargo run -p xtask -- doc-check | shots [--check] | llms [--check] | guide-check [--update] | check");
+            println!("使い方: cargo run -p xtask -- doc-check | shots [--check] | llms [--check] | guide-check [--update] | coverage | check");
             false
         }
     };

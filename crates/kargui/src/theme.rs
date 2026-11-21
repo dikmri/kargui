@@ -6,6 +6,15 @@ use crate::geom::{Color, rgb};
 ///
 /// kargui starts in the mode the operating system uses (Settings > Personalization > Colors)
 /// and an app can switch with [`Ui::set_dark`](crate::Ui::set_dark).
+///
+/// ```
+/// use kargui::Theme;
+///
+/// let light = Theme::light();
+/// let dark = Theme::dark();
+/// assert_ne!(light.background, dark.background);
+/// assert_eq!(light.accent[3], 1.0);
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     /// Window background.
@@ -40,6 +49,11 @@ pub struct Theme {
 
 impl Theme {
     /// The light palette.
+    ///
+    /// ```
+    /// let theme = kargui::Theme::light();
+    /// assert_eq!(theme.background, kargui::rgb(0xffffff));
+    /// ```
     pub fn light() -> Self {
         Self {
             background: rgb(0xffffff),
@@ -60,6 +74,11 @@ impl Theme {
     }
 
     /// The dark palette.
+    ///
+    /// ```
+    /// let theme = kargui::Theme::dark();
+    /// assert_eq!(theme.background, kargui::rgb(0x16191d));
+    /// ```
     pub fn dark() -> Self {
         Self {
             background: rgb(0x16191d),

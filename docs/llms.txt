@@ -73,6 +73,23 @@ ui.stack(|ui| {
 });
 ```
 
+### `pub fn scroll(&mut self, f: impl FnOnce(&mut Ui)) -> Handle<'_>`
+
+A container whose content scrolls up and down when it is taller than the space left.
+The widgets created in `f` are placed one below another, as in [`Ui::column`].
+It takes the rest of the height (change it with [`Handle::height`]). Users scroll it with
+the mouse wheel, by dragging or clicking the scroll bar, or by moving the keyboard focus
+(Tab) to a widget that is out of view.
+
+```
+ui.heading("Settings");
+ui.scroll(|ui| {
+    for i in 0..50 {
+        ui.label(format!("Line {i}"));
+    }
+});
+```
+
 ### `pub fn keyed<K: Hash>(&mut self, key: K, f: impl FnOnce(&mut Ui))`
 
 Gives the widgets created in `f` identities based on `key`, so that their state
@@ -178,10 +195,31 @@ if field.submitted() {
 }
 ```
 
+### `pub fn slider<T: SliderValue>(&mut self, value: &mut T, range: RangeInclusive<T>) -> Slider<'_>`
+
+A slider for picking a number in `range` by dragging, clicking, or with the arrow keys
+(Home and End jump to the ends). Integer values move in steps of 1; `f32` and `f64` move
+freely with the pointer and in hundredths of the range with the keyboard. Give it a name for
+screen readers with `.label(..)`.
+
+```
+ui.row(|ui| {
+    ui.label("Font size");
+    ui.slider(&mut font_size, 10..=24).label("Font size");
+    ui.label(font_size.to_string());
+});
+if ui.slider(&mut volume, 0.0..=1.0).label("Volume").changed() {
+    // apply the new volume
+}
+```
+
 ### `pub fn list(&mut self, count: usize, row_height: f32) -> List<'_, 'a>`
 
 A list that only creates the rows that are visible, so it stays fast with any number of
 rows. All rows have the same height (logical pixels). Finish with [`List::show`].
+Each row is a [`Ui::row`] with 12 logical pixels of padding on the left and right, so a
+header row placed above the list lines up when it has the same padding:
+`ui.row(..).padding(12.0, 0.0)`.
 Users scroll it with the mouse wheel, by dragging the scroll bar, or by clicking the bar
 above or below the thumb to move one page.
 

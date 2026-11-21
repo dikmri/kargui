@@ -41,6 +41,23 @@ pub use theme::Theme;
 pub use ui::{Align, Id, Size, SliderValue, Ui};
 
 /// An error from the operating system while opening or drawing the window.
+///
+/// ```no_run
+/// use kargui::{App, Options, Ui};
+///
+/// struct Hello;
+///
+/// impl App for Hello {
+///     fn view(&mut self, ui: &mut Ui) {
+///         ui.heading("Hello");
+///     }
+/// }
+///
+/// match kargui::run(Options::new("Hello"), Hello) {
+///     Ok(()) => {}
+///     Err(e) => eprintln!("could not open the window: {e}"),
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Error(pub(crate) String);
 
@@ -56,4 +73,49 @@ impl From<windows::core::Error> for Error {
     fn from(e: windows::core::Error) -> Self {
         Error(format!("{e:?}"))
     }
+}
+
+/// ガイド（docs/guide/ の日本語と英語）のコードも、説明の試験（cargo test --doc）で動かす
+#[cfg(doctest)]
+mod guide {
+    #[doc = include_str!("../../../docs/guide/ja/01-first-app.md")]
+    struct Ja01FirstApp;
+    #[doc = include_str!("../../../docs/guide/ja/02-widgets.md")]
+    struct Ja02Widgets;
+    #[doc = include_str!("../../../docs/guide/ja/03-layout.md")]
+    struct Ja03Layout;
+    #[doc = include_str!("../../../docs/guide/ja/04-state-and-ids.md")]
+    struct Ja04StateAndIds;
+    #[doc = include_str!("../../../docs/guide/ja/05-lists-and-tables.md")]
+    struct Ja05ListsAndTables;
+    #[doc = include_str!("../../../docs/guide/ja/06-scroll-and-text.md")]
+    struct Ja06ScrollAndText;
+    #[doc = include_str!("../../../docs/guide/ja/07-japanese-input.md")]
+    struct Ja07JapaneseInput;
+    #[doc = include_str!("../../../docs/guide/ja/08-accessibility.md")]
+    struct Ja08Accessibility;
+    #[doc = include_str!("../../../docs/guide/ja/09-testing.md")]
+    struct Ja09Testing;
+    #[doc = include_str!("../../../docs/guide/ja/README.md")]
+    struct JaReadme;
+    #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
+    struct En01FirstApp;
+    #[doc = include_str!("../../../docs/guide/en/02-widgets.md")]
+    struct En02Widgets;
+    #[doc = include_str!("../../../docs/guide/en/03-layout.md")]
+    struct En03Layout;
+    #[doc = include_str!("../../../docs/guide/en/04-state-and-ids.md")]
+    struct En04StateAndIds;
+    #[doc = include_str!("../../../docs/guide/en/05-lists-and-tables.md")]
+    struct En05ListsAndTables;
+    #[doc = include_str!("../../../docs/guide/en/06-scroll-and-text.md")]
+    struct En06ScrollAndText;
+    #[doc = include_str!("../../../docs/guide/en/07-japanese-input.md")]
+    struct En07JapaneseInput;
+    #[doc = include_str!("../../../docs/guide/en/08-accessibility.md")]
+    struct En08Accessibility;
+    #[doc = include_str!("../../../docs/guide/en/09-testing.md")]
+    struct En09Testing;
+    #[doc = include_str!("../../../docs/guide/en/README.md")]
+    struct EnReadme;
 }

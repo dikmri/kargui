@@ -14,6 +14,18 @@
 use crate::geom::Rect;
 
 /// How long a widget is along one axis.
+///
+/// ```
+/// # use kargui::Size;
+/// # let mut name = String::new();
+/// # kargui::test::example(|ui| {
+/// ui.row(|ui| {
+///     ui.label("Name").width(Size::Fixed(80.0));
+///     ui.text_input(&mut name).width(Size::Fill(1.0));
+///     ui.button("OK").width(Size::Auto);
+/// });
+/// # });
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Size {
     /// As long as its content.
@@ -25,6 +37,17 @@ pub enum Size {
 }
 
 /// Where children go on the cross axis.
+///
+/// ```
+/// # use kargui::Align;
+/// # kargui::test::example(|ui| {
+/// ui.column(|ui| {
+///     ui.label("Centered");
+///     ui.button("OK");
+/// })
+/// .align(Align::Center);
+/// # });
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Align {
     /// Top (in a row) or left (in a column).

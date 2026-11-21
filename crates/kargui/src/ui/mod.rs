@@ -48,6 +48,14 @@ use crate::input::{Event, Key};
 use crate::theme::Theme;
 
 /// Identifies a widget across frames.
+///
+/// ```
+/// # kargui::test::example(|ui| {
+/// let ok = ui.button("OK").id();
+/// let cancel = ui.button("Cancel").id();
+/// assert_ne!(ok, cancel);
+/// # });
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Id(pub(crate) u64);
 
@@ -155,6 +163,22 @@ impl Tree {
 }
 
 /// The screen being described. See the [module documentation](self).
+///
+/// ```
+/// use kargui::{App, Ui};
+///
+/// struct Hello;
+///
+/// impl App for Hello {
+///     fn view(&mut self, ui: &mut Ui) {
+///         ui.heading("Hello");
+///         ui.label("Written every frame.");
+///     }
+/// }
+///
+/// let h = kargui::test::Harness::new(Hello);
+/// assert!(h.find("Hello").is_some());
+/// ```
 pub struct Ui<'a> {
     pub(crate) cx: &'a mut Context,
     pub(crate) tree: &'a mut Tree,
@@ -768,6 +792,18 @@ impl<'a> Ui<'a> {
 }
 
 /// Settings shared by all widgets: size, spacing and accessibility name.
+///
+/// ```
+/// # kargui::test::example(|ui| {
+/// ui.row(|ui| {
+///     ui.label("Left");
+///     ui.fill();
+///     ui.label("Right");
+/// })
+/// .padding(8.0, 4.0)
+/// .gap(12.0);
+/// # });
+/// ```
 pub struct Handle<'t> {
     cx_scroll: &'t mut Option<Id>,
     tree: &'t mut Tree,
@@ -786,6 +822,16 @@ impl Handle<'_> {
     }
 
     /// Sets the width ([`Size::Fixed`] is in logical pixels).
+    ///
+    /// ```
+    /// # use kargui::Size;
+    /// # kargui::test::example(|ui| {
+    /// ui.column(|ui| {
+    ///     ui.label("Narrow");
+    /// })
+    /// .width(Size::Fixed(200.0));
+    /// # });
+    /// ```
     pub fn width(self, size: Size) -> Self {
         let s = self.px(size);
         self.tree.layout[self.idx].width = s;
@@ -793,6 +839,16 @@ impl Handle<'_> {
     }
 
     /// Sets the height ([`Size::Fixed`] is in logical pixels).
+    ///
+    /// ```
+    /// # use kargui::Size;
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.label("Tall");
+    /// })
+    /// .height(Size::Fixed(48.0));
+    /// # });
+    /// ```
     pub fn height(self, size: Size) -> Self {
         let s = self.px(size);
         self.tree.layout[self.idx].height = s;
@@ -800,6 +856,15 @@ impl Handle<'_> {
     }
 
     /// Takes the remaining space along the parent's direction (width in a row, height in a column).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.column(|ui| {
+    ///     ui.label("Fills the height that is left.");
+    /// })
+    /// .grow();
+    /// # });
+    /// ```
     pub fn grow(self) -> Self {
         match self.parent_dir {
             Dir::Column => self.height(Size::Fill(1.0)),
@@ -808,18 +873,48 @@ impl Handle<'_> {
     }
 
     /// Space between the children (logical pixels).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.column(|ui| {
+    ///     ui.label("One");
+    ///     ui.label("Two");
+    /// })
+    /// .gap(2.0);
+    /// # });
+    /// ```
     pub fn gap(self, length: f32) -> Self {
         self.tree.layout[self.idx].gap = (length * self.scale).round();
         self
     }
 
     /// Space inside the edges (logical pixels): `x` left and right, `y` top and bottom.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.label("Indented");
+    /// })
+    /// .padding(12.0, 0.0);
+    /// # });
+    /// ```
     pub fn padding(self, x: f32, y: f32) -> Self {
         self.tree.layout[self.idx].pad = ((x * self.scale).round(), (y * self.scale).round());
         self
     }
 
     /// Where the children go across the main direction.
+    ///
+    /// ```
+    /// # use kargui::Align;
+    /// # kargui::test::example(|ui| {
+    /// ui.column(|ui| {
+    ///     ui.label("Centered");
+    ///     ui.button("OK");
+    /// })
+    /// .align(Align::Center);
+    /// # });
+    /// ```
     pub fn align(self, align: Align) -> Self {
         self.tree.layout[self.idx].align = align;
         self
@@ -827,12 +922,32 @@ impl Handle<'_> {
 
     /// The name screen readers use for this widget, when its visible text is not enough
     /// (for example an icon-only button).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.button("+");
+    ///     ui.button("-");
+    /// })
+    /// .label("Zoom");
+    /// # });
+    /// ```
     pub fn label(self, name: impl Into<String>) -> Self {
         self.tree.info[self.idx].label = Some(name.into());
         self
     }
 
     /// The widget's identity.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let toolbar = ui.row(|ui| {
+    ///     ui.button("Save");
+    /// });
+    /// let id = toolbar.id();
+    /// assert_eq!(id, id);
+    /// # });
+    /// ```
     pub fn id(&self) -> Id {
         self.id
     }
@@ -867,25 +982,69 @@ impl Handle<'_> {
 }
 
 macro_rules! common {
-    ($t:ident) => {
+    // `$setup` is one hidden line of the examples (it declares the variable `$make` uses);
+    // `$make` is the call on `ui` that creates the widget.
+    ($t:ident, $setup:literal, $make:literal) => {
         impl<'t> $t<'t> {
             /// Sets the width. See [`Handle::width`].
+            ///
+            /// ```
+            /// # use kargui::Size;
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            #[doc = concat!(" ui.", $make, ".width(Size::Fixed(120.0));")]
+            /// # });
+            /// ```
             pub fn width(self, size: Size) -> Self {
                 Self { h: self.h.width(size), ..self }
             }
             /// Takes the remaining space. See [`Handle::grow`].
+            ///
+            /// ```
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            /// ui.row(|ui| {
+            #[doc = concat!("     ui.", $make, ".grow();")]
+            /// });
+            /// # });
+            /// ```
             pub fn grow(self) -> Self {
                 Self { h: self.h.grow(), ..self }
             }
             /// Sets the accessibility name. See [`Handle::label`].
+            ///
+            /// ```
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            #[doc = concat!(" ui.", $make, ".label(\"Settings\");")]
+            /// # });
+            /// ```
             pub fn label(self, name: impl Into<String>) -> Self {
                 Self { h: self.h.label(name), ..self }
             }
             /// The widget's identity.
+            ///
+            /// ```
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            #[doc = concat!(" let first = ui.", $make, ".id();")]
+            #[doc = concat!(" let second = ui.", $make, ".id();")]
+            /// assert_ne!(first, second);
+            /// # });
+            /// ```
             pub fn id(&self) -> Id {
                 self.h.id
             }
             /// Scrolls the nearest scroll container so this widget is at its top. See [`Handle::scroll_into_view`].
+            ///
+            /// ```
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            /// ui.scroll(|ui| {
+            #[doc = concat!("     ui.", $make, ".scroll_into_view();")]
+            /// });
+            /// # });
+            /// ```
             pub fn scroll_into_view(self) -> Self {
                 Self { h: self.h.scroll_into_view(), ..self }
             }
@@ -894,6 +1053,13 @@ macro_rules! common {
 }
 
 /// A text widget. See [`Ui::label`].
+///
+/// ```
+/// # kargui::test::example(|ui| {
+/// ui.label("Plain text");
+/// ui.label("Quiet text").weak().small();
+/// # });
+/// ```
 pub struct Label<'t>(Handle<'t>);
 
 impl Label<'_> {
@@ -904,18 +1070,43 @@ impl Label<'_> {
         self
     }
     /// Draws in the less prominent text color.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.label("3 of 10 done").weak();
+    /// # });
+    /// ```
     pub fn weak(self) -> Self {
         self.text_kind(|_, _, w, _, _| *w = true)
     }
     /// Draws smaller.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.label("Saved a minute ago").small();
+    /// # });
+    /// ```
     pub fn small(self) -> Self {
         self.text_kind(|s, _, _, _, _| *s = TextKind::Small)
     }
     /// Draws bold.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.label("Total: 1,280").bold();
+    /// # });
+    /// ```
     pub fn bold(self) -> Self {
         self.text_kind(|_, b, _, _, _| *b = true)
     }
     /// Draws a line through the text (for example for finished tasks) when `on` is true.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let done = true;
+    /// ui.label("Buy milk").strike(done);
+    /// # });
+    /// ```
     pub fn strike(self, on: bool) -> Self {
         self.text_kind(|_, _, w, s, _| {
             *s = on;
@@ -924,6 +1115,12 @@ impl Label<'_> {
     }
     /// Wraps the text onto several lines to fit the width. In a row, the text also takes the
     /// remaining width.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.label("A long paragraph that does not fit on one line is wrapped to the width.").wrap();
+    /// # });
+    /// ```
     pub fn wrap(self) -> Self {
         let l = self.text_kind(|_, _, _, _, w| *w = true);
         // 列の中では幅いっぱいに広がるので、高さを残りいっぱいにしない（下の部品を押し下げないように）
@@ -960,29 +1157,72 @@ impl Label<'_> {
         self
     }
     /// Takes the remaining space. See [`Handle::grow`].
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.label("Title").grow();
+    ///     ui.button("Close");
+    /// });
+    /// # });
+    /// ```
     pub fn grow(self) -> Self {
         Label(self.0.grow())
     }
     /// Sets the width. See [`Handle::width`].
+    ///
+    /// ```
+    /// # use kargui::Size;
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.label("Name").width(Size::Fixed(80.0));
+    ///     ui.label("Ada");
+    /// });
+    /// # });
+    /// ```
     pub fn width(self, size: Size) -> Self {
         Label(self.0.width(size))
     }
     /// Scrolls the nearest scroll container so this text is at its top. See [`Handle::scroll_into_view`].
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.scroll(|ui| {
+    ///     for i in 0..30 {
+    ///         ui.label(format!("Line {i}"));
+    ///     }
+    ///     ui.label("The end").scroll_into_view();
+    /// });
+    /// # });
+    /// ```
     pub fn scroll_into_view(self) -> Self {
         Label(self.0.scroll_into_view())
     }
 }
 
 /// A button. See [`Ui::button`].
+///
+/// ```
+/// # kargui::test::example(|ui| {
+/// let button = ui.button("Save");
+/// assert!(!button.clicked());
+/// # });
+/// ```
 pub struct Button<'t> {
     h: Handle<'t>,
     clicked: bool,
 }
 
-common!(Button);
+common!(Button, "", "button(\"OK\")");
 
 impl Button<'_> {
     /// Draws in the main color, for the most important action.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.button("Save").primary();
+    /// # });
+    /// ```
     pub fn primary(mut self) -> Self {
         if let Kind::Button { primary, .. } = self.h.kind() {
             *primary = true;
@@ -990,6 +1230,15 @@ impl Button<'_> {
         self
     }
     /// Draws smaller (for buttons in list rows).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.label("Milk");
+    ///     ui.button("Delete").small();
+    /// });
+    /// # });
+    /// ```
     pub fn small(mut self) -> Self {
         if let Kind::Button { small, .. } = self.h.kind() {
             *small = true;
@@ -997,21 +1246,47 @@ impl Button<'_> {
         self
     }
     /// Whether the button was clicked.
+    ///
+    /// ```
+    /// # let mut count = 0;
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Add one").clicked() {
+    ///     count += 1;
+    /// }
+    /// # });
+    /// ```
     pub fn clicked(&self) -> bool {
         self.clicked
     }
 }
 
 /// A check box or switch. See [`Ui::checkbox`] and [`Ui::toggle`].
+///
+/// ```
+/// # let (mut done, mut dark) = (false, false);
+/// # kargui::test::example(|ui| {
+/// ui.checkbox(&mut done, "Done");
+/// ui.toggle(&mut dark, "Dark mode");
+/// # });
+/// ```
 pub struct Toggled<'t> {
     h: Handle<'t>,
     changed: bool,
 }
 
-common!(Toggled);
+common!(Toggled, " # let mut on = false;", "toggle(&mut on, \"Wi-Fi\")");
 
 impl Toggled<'_> {
     /// Whether it was clicked (and the value flipped).
+    ///
+    /// ```
+    /// # let mut sound = true;
+    /// # kargui::test::example(|ui| {
+    /// if ui.toggle(&mut sound, "Sound").changed() {
+    ///     // save the setting
+    /// }
+    /// # });
+    /// ```
     pub fn changed(&self) -> bool {
         self.changed
     }
@@ -1034,6 +1309,14 @@ impl Toggled<'_> {
 
 /// A number that a [`Ui::slider`] can change: `f32`, `f64` and the integer types.
 /// Integers move in steps of 1.
+///
+/// ```
+/// # let (mut level, mut ratio) = (3_u8, 0.5_f64);
+/// # kargui::test::example(|ui| {
+/// ui.slider(&mut level, 0..=10);
+/// ui.slider(&mut ratio, 0.0..=1.0);
+/// # });
+/// ```
 pub trait SliderValue: Copy {
     #[doc(hidden)]
     const INTEGER: bool;
@@ -1060,21 +1343,46 @@ slider_value!(true; i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
 slider_value!(false; f32, f64);
 
 /// A slider. See [`Ui::slider`].
+///
+/// ```
+/// # let mut volume = 40;
+/// # kargui::test::example(|ui| {
+/// let slider = ui.slider(&mut volume, 0..=100).label("Volume");
+/// assert!(!slider.changed());
+/// # });
+/// ```
 pub struct Slider<'t> {
     h: Handle<'t>,
     changed: bool,
 }
 
-common!(Slider);
+common!(Slider, " # let mut level = 5;", "slider(&mut level, 0..=10)");
 
 impl Slider<'_> {
     /// Whether the value changed in this frame (by pointer, keyboard or screen reader).
+    ///
+    /// ```
+    /// # let mut volume = 40;
+    /// # kargui::test::example(|ui| {
+    /// if ui.slider(&mut volume, 0..=100).label("Volume").changed() {
+    ///     // apply the new volume
+    /// }
+    /// # });
+    /// ```
     pub fn changed(&self) -> bool {
         self.changed
     }
 }
 
 /// A text field. See [`Ui::text_input`].
+///
+/// ```
+/// # let mut name = String::new();
+/// # kargui::test::example(|ui| {
+/// let field = ui.text_input(&mut name).hint("Your name");
+/// assert!(!field.changed());
+/// # });
+/// ```
 pub struct TextInput<'t> {
     h: Handle<'t>,
     changed: bool,
@@ -1082,10 +1390,17 @@ pub struct TextInput<'t> {
     composing: Option<String>,
 }
 
-common!(TextInput);
+common!(TextInput, " # let mut text = String::new();", "text_input(&mut text)");
 
 impl TextInput<'_> {
     /// Text shown while the field is empty.
+    ///
+    /// ```
+    /// # let mut query = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.text_input(&mut query).hint("Search");
+    /// # });
+    /// ```
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
         if let Kind::TextInput { hint: h, .. } = self.h.kind() {
             *h = hint.into();
@@ -1093,20 +1408,58 @@ impl TextInput<'_> {
         self
     }
     /// Whether the text changed. Composing with the input method does not count until committed.
+    ///
+    /// ```
+    /// # let mut query = String::new();
+    /// # kargui::test::example(|ui| {
+    /// if ui.text_input(&mut query).hint("Search").changed() {
+    ///     // run the search
+    /// }
+    /// # });
+    /// ```
     pub fn changed(&self) -> bool {
         self.changed
     }
     /// Whether Enter was pressed (not the Enter that commits an input method conversion).
+    ///
+    /// ```
+    /// # let mut query = String::new();
+    /// # kargui::test::example(|ui| {
+    /// if ui.text_input(&mut query).submitted() {
+    ///     // Enter was pressed
+    /// }
+    /// # });
+    /// ```
     pub fn submitted(&self) -> bool {
         self.submitted
     }
     /// The text the input method is composing, if any (shown underlined in the field, not yet in the value).
+    ///
+    /// ```
+    /// # let mut query = String::new();
+    /// # kargui::test::example(|ui| {
+    /// let field = ui.text_input(&mut query);
+    /// if let Some(kana) = field.composing() {
+    ///     // the input method is converting `kana`
+    ///     assert!(!kana.is_empty());
+    /// }
+    /// # });
+    /// ```
     pub fn composing(&self) -> Option<&str> {
         self.composing.as_deref()
     }
 }
 
 /// A virtual list being set up. See [`Ui::list`].
+///
+/// ```
+/// # kargui::test::example(|ui| {
+/// let list = ui.list(100, 28.0);
+/// list.show(|ui, i| {
+///     ui.label(format!("Row {i}"));
+/// });
+/// # });
+/// ```
 pub struct List<'u, 'a> {
     ui: &'u mut Ui<'a>,
     idx: usize,
@@ -1119,6 +1472,15 @@ pub struct List<'u, 'a> {
 
 impl<'u> List<'u, '_> {
     /// Takes the remaining space. See [`Handle::grow`].
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.heading("Files");
+    /// ui.list(100, 28.0).grow().show(|ui, i| {
+    ///     ui.label(format!("File {i}"));
+    /// });
+    /// # });
+    /// ```
     pub fn grow(self) -> Self {
         let dir = self.ui.parent_dir();
         let l = &mut self.ui.tree.layout[self.idx];
@@ -1130,6 +1492,15 @@ impl<'u> List<'u, '_> {
         self
     }
     /// Sets the height ([`Size::Fixed`] is in logical pixels).
+    ///
+    /// ```
+    /// # use kargui::Size;
+    /// # kargui::test::example(|ui| {
+    /// ui.list(100, 28.0).height(Size::Fixed(200.0)).show(|ui, i| {
+    ///     ui.label(format!("Row {i}"));
+    /// });
+    /// # });
+    /// ```
     pub fn height(self, size: Size) -> Self {
         let s = match size {
             Size::Fixed(v) => Size::Fixed((v * self.ui.cx.scale).round()),
@@ -1139,6 +1510,14 @@ impl<'u> List<'u, '_> {
         self
     }
     /// Draws lines between rows (on by default).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.list(100, 28.0).separators(false).show(|ui, i| {
+    ///     ui.label(format!("Row {i}"));
+    /// });
+    /// # });
+    /// ```
     pub fn separators(self, on: bool) -> Self {
         if let Kind::List { separators, .. } = &mut self.ui.tree.info[self.idx].kind {
             *separators = on;
@@ -1146,11 +1525,30 @@ impl<'u> List<'u, '_> {
         self
     }
     /// Scrolls so that the content starts `offset` logical pixels above the top of the list.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// // Jump back to the top.
+    /// ui.list(100, 28.0).scroll_to(0.0).show(|ui, i| {
+    ///     ui.label(format!("Row {i}"));
+    /// });
+    /// # });
+    /// ```
     pub fn scroll_to(mut self, offset: f32) -> Self {
         self.scroll_to = Some(offset);
         self
     }
     /// The current scroll position in logical pixels.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let list = ui.list(100, 28.0);
+    /// assert_eq!(list.scroll_offset(), 0.0);
+    /// list.show(|ui, i| {
+    ///     ui.label(format!("Row {i}"));
+    /// });
+    /// # });
+    /// ```
     pub fn scroll_offset(&self) -> f32 {
         self.ui.cx.scrolls.get(&self.id).copied().unwrap_or(0.0)
     }
@@ -1181,6 +1579,15 @@ impl<'u> List<'u, '_> {
     /// Rows are told apart by their position, so when items are inserted or removed above,
     /// the rows below get new identities. If the items have ids of their own, use
     /// [`List::show_keyed`] instead.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let id = ui.list(100, 28.0).show(|ui, i| {
+    ///     ui.label(format!("Row {i}"));
+    /// });
+    /// assert_eq!(id, id);
+    /// # });
+    /// ```
     pub fn show(self, row: impl FnMut(&mut Ui, usize)) -> Id {
         self.show_keyed(|i| i, row)
     }
