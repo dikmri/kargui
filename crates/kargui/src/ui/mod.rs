@@ -280,6 +280,7 @@ impl<'a> Ui<'a> {
     pub fn scroll(&mut self, f: impl FnOnce(&mut Ui)) -> Handle<'_> {
         let (idx, id) = self.add(Kind::Scroll, Dir::Scroll);
         let gap = self.px(6.0);
+        let gutter = self.px(draw::SCROLL_GUTTER);
         let scale = self.cx.scale;
         // 前のフレームの中身の高さで端を決める（中身が変わった時は、配置の後でもう一度そろえる）
         let max = self.cx.prev.lists.iter().find(|l| l.id == id).map(|l| ((l.content_h - l.rect.h) / scale).max(0.0));
@@ -288,6 +289,7 @@ impl<'a> Ui<'a> {
         self.cx.scrolls.insert(id, offset);
         let l = &mut self.tree.layout[idx];
         l.gap = gap;
+        l.gutter = gutter;
         l.height = Size::Fill(1.0);
         l.offset = (offset * scale).round();
         f(&mut self.child(idx));

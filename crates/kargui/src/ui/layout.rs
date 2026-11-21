@@ -67,6 +67,8 @@ pub(crate) struct LayoutNode {
     pub row_index: usize,
     /// Scroll の中身の高さ（余白を含む。物理ピクセル）
     pub content: f32,
+    /// Scroll の右に空けておく幅（スクロールの棒の分。中身があふれていなくても空け、幅が変わって折り返しが揺れないようにする）
+    pub gutter: f32,
     // 結果
     pub measured: (f32, f32),
     pub rect: Rect,
@@ -87,6 +89,7 @@ impl LayoutNode {
             offset: 0.0,
             row_index: 0,
             content: 0.0,
+            gutter: 0.0,
             measured: (0.0, 0.0),
             rect: Rect::default(),
         }
@@ -111,7 +114,7 @@ fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
         Dir::Column => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).sum::<f32>() + gaps),
         Dir::Stack => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).fold(0.0, f32::max)),
         Dir::List => (0.0, 0.0),
-        Dir::Scroll => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).sum::<f32>() + gaps),
+        Dir::Scroll => (sizes.iter().map(|s| s.0).fold(0.0, f32::max) + n.gutter, sizes.iter().map(|s| s.1).sum::<f32>() + gaps),
     };
     let (w, h) = if n.dir == Dir::Leaf { (w, h) } else { (w + 2.0 * n.pad.0, h + 2.0 * n.pad.1) };
     let (dir, width, height) = (n.dir, n.width, n.height);
@@ -185,8 +188,9 @@ fn arrange(nodes: &mut [LayoutNode], i: usize, rect: Rect) {
             let avail = if n.dir == Dir::Scroll { inner.h.max(n.content - 2.0 * n.pad.1) } else { inner.h };
             let lens = distribute(&sizes, &measured, avail - gaps);
             let mut y = if n.dir == Dir::Scroll { inner.y - n.offset } else { inner.y };
+            let cross_w = if n.dir == Dir::Scroll { (inner.w - n.gutter).max(0.0) } else { inner.w };
             for (k, &c) in n.children.iter().enumerate() {
-                let (at, w) = cross(nodes[c].width, nodes[c].measured.0, inner.w, n.align);
+                let (at, w) = cross(nodes[c].width, nodes[c].measured.0, cross_w, n.align);
                 arrange(nodes, c, Rect::new(inner.x + at, y.round(), w, lens[k].round()));
                 y += lens[k] + n.gap;
             }

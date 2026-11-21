@@ -103,6 +103,30 @@ impl<A: App> Harness<A> {
         (0..self.rt.tree.info.len()).find(|&i| a11y::name_of(&self.rt.tree, i).as_deref() == Some(name)).map(|i| self.rt.tree.layout[i].rect)
     }
 
+    /// Where every widget with this name is (physical pixels), in screen-reader order. Use it when
+    /// two widgets share a name, such as a table of contents entry and the heading it points to.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # struct Book;
+    /// # impl App for Book {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.button("Chapter 1");
+    /// #         ui.heading("Chapter 1");
+    /// #     }
+    /// # }
+    /// let h = kargui::test::Harness::new(Book);
+    /// let both = h.find_all("Chapter 1");
+    /// assert_eq!(both.len(), 2);
+    /// assert!(both[0].y < both[1].y);
+    /// ```
+    pub fn find_all(&self, name: &str) -> Vec<Rect> {
+        (0..self.rt.tree.info.len())
+            .filter(|&i| a11y::name_of(&self.rt.tree, i).as_deref() == Some(name))
+            .map(|i| self.rt.tree.layout[i].rect)
+            .collect()
+    }
+
     fn center(&self, name: &str) -> (f32, f32) {
         let r = self.find(name).unwrap_or_else(|| panic!("no widget named {name:?}; on screen: {:?}", self.names()));
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
@@ -707,6 +731,31 @@ mod tests {
         h.app_mut().jump = Some(1);
         h.frame();
         assert_eq!(h.find("Chapter 1").unwrap().y, area.y);
+    }
+
+    struct Form {
+        text: String,
+    }
+
+    impl App for Form {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.scroll(|ui| {
+                ui.text_input(&mut self.text).hint("Name");
+                for i in 0..40 {
+                    ui.label(format!("Line {i}"));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn the_scroll_bar_does_not_cover_the_content() {
+        // 段階 3 の設定画面と読む画面の写真で、スクロールの棒が入力欄の右端と行の終わりの文字に重なっていた
+        let mut h = Harness::with_size(Form { text: String::new() }, 400.0, 300.0, 1.0);
+        h.frame();
+        let field = h.find("Name").unwrap();
+        let thumb = h.rt.cx.prev.lists[0].thumb.expect("中身が高いので棒がある");
+        assert!(field.right() + 2.0 <= thumb.x, "入力欄 {field:?} と棒 {thumb:?} が重なる");
     }
 
     #[test]

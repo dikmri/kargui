@@ -79,6 +79,9 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
     })
 }
 
+/// スクロールの入れ物の右に空ける幅（論理ピクセル。棒の幅と、棒の左右のすき間）
+pub(crate) const SCROLL_GUTTER: f32 = sz::SCROLLBAR_W + 3.0 + 4.0;
+
 /// スライダーの溝の左端と長さ（つまみの半分ずつ内側）。押した位置から値を決める時も同じ値を使う
 pub(crate) fn slider_track(r: Rect, scale: f32) -> (f32, f32) {
     let knob = (sz::KNOB * scale).round();
