@@ -116,7 +116,8 @@
   `Harness::close_window`.
 - File dialogs: `Ui::file_dialog(key, FileDialog::open()/save())` with `.title`, `.filter`,
   `.file_name`, `.folder` and `.multiple`; the system's dialog is shown after the frame (on Windows,
-  IFileOpenDialog and IFileSaveDialog; the window thread is now a COM single-threaded apartment),
+  IFileOpenDialog and IFileSaveDialog; the window thread becomes a COM single-threaded apartment the
+  first time a dialog is shown, and shell32 is loaded only then, so startup does not slow down),
   and the chosen files arrive once through `Ui::chosen_files` / `Ui::chosen_file` (a cancel once
   through `Ui::file_dialog_cancelled`). Tests:
   `Harness::file_dialog_key`, `file_dialog`, `choose_files`, `cancel_file_dialog`.

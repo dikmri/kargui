@@ -208,13 +208,41 @@ fn show_file_dialog(owner: HWND, d: &crate::file_dialog::FileDialog) -> Vec<std:
     }
 }
 
+/// パスから IShellItem を作る（始めのフォルダー）。shell32.dll は大きく、ふつうに読み込むと起動の時に読み込まれて
+/// 起動が十数 ms 遅くなったので、使う時に探して呼ぶ
+fn shell_item_from_path(path: &std::path::Path) -> Option<windows::Win32::UI::Shell::IShellItem> {
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows::Win32::UI::Shell::IShellItem;
+    use windows::core::{GUID, HRESULT, Interface, PCWSTR, s};
+    type Create = unsafe extern "system" fn(PCWSTR, *mut core::ffi::c_void, *const GUID, *mut *mut core::ffi::c_void) -> HRESULT;
+    unsafe {
+        let module = LoadLibraryW(w!("shell32.dll")).ok()?;
+        let f = GetProcAddress(module, s!("SHCreateItemFromParsingName"))?;
+        let create: Create = std::mem::transmute(f);
+        let wide = HSTRING::from(path.as_os_str());
+        let mut out = std::ptr::null_mut();
+        create(PCWSTR(wide.as_ptr()), std::ptr::null_mut(), &IShellItem::IID, &mut out).ok().ok()?;
+        (!out.is_null()).then(|| IShellItem::from_raw(out))
+    }
+}
+
+/// ファイルのダイアログの前に 1 回だけ、窓のスレッドを COM の STA にする（起動の時にはしない。起動を遅くしないため）
+fn ensure_com() {
+    thread_local! {
+        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if !DONE.with(|d| d.replace(true)) {
+        let r = unsafe { windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED) };
+        log::event("com.init", "apartment=sta", &format!("{r:?}"));
+    }
+}
+
 fn file_dialog_inner(owner: HWND, d: &crate::file_dialog::FileDialog) -> windows::core::Result<Vec<std::path::PathBuf>> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
     use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-    use windows::Win32::UI::Shell::{
-        FOS_ALLOWMULTISELECT, FOS_FORCEFILESYSTEM, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
-    };
+    use windows::Win32::UI::Shell::{FOS_ALLOWMULTISELECT, FOS_FORCEFILESYSTEM, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IShellItem, SIGDN_FILESYSPATH};
     use windows::core::{Interface, PCWSTR};
+    ensure_com();
     unsafe {
         let dialog: IFileDialog = if d.save {
             CoCreateInstance::<_, IFileDialog>(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?
@@ -240,10 +268,8 @@ fn file_dialog_inner(owner: HWND, d: &crate::file_dialog::FileDialog) -> windows
         if let Some(ext) = d.filters.first().and_then(|(_, e)| e.first()).filter(|_| d.save) {
             dialog.SetDefaultExtension(&HSTRING::from(ext.as_str()))?;
         }
-        if let Some(folder) = &d.folder {
-            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(folder.as_os_str()), None) {
-                dialog.SetFolder(&item)?;
-            }
+        if let Some(item) = d.folder.as_deref().and_then(shell_item_from_path) {
+            dialog.SetFolder(&item)?;
         }
         let mut options = dialog.GetOptions()?;
         options |= FOS_FORCEFILESYSTEM;
@@ -1455,9 +1481,6 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     if unsafe { RegisterClassExW(&wc) } == 0 {
         log::event("window.class", "", "error=RegisterClassExW");
     }
-    // ファイルのダイアログ（COM）のため、窓のスレッドを STA にする
-    let com = unsafe { windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED) };
-    log::event("com.init", "apartment=sta", &format!("{com:?}"));
     let app = Rc::new(RefCell::new(app));
     let dark = options.dark.unwrap_or_else(system_dark);
     let main = create_window(None, &options.title, options.size, options.position, options.renderer, dark, options.full_rate, options.icon.clone(), options.min_size, app, started)?;
