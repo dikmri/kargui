@@ -29,6 +29,21 @@
 //! kargui remembers each widget between frames (text cursor, scroll position, focus) by an
 //! [`Id`] derived from where in your code the widget is created. Widgets created in a loop are
 //! told apart by their order; use [`Ui::keyed`] when items can move.
+//!
+//! # Common mistakes
+//!
+//! These come from apps that AIs wrote with kargui in a measured test:
+//!
+//! - **Changing data inside a list row.** Rows after it would read the data with old indices.
+//!   Remember what was clicked and change the data after the list (see [`Ui::list`]).
+//! - **Keeping your own dark-mode flag.** It starts out of step with the operating system's
+//!   setting. Use [`Ui::dark_mode_switch`], which shows and changes kargui's own setting.
+//! - **Wrapping a list row in another row.** A list row is already a row: put the widgets straight
+//!   in and use [`Ui::fill`] to push a button to the right end.
+//! - **Handling Enter or input-method events yourself.** [`TextInput::submitted`] already ignores
+//!   the Enter that commits a composition, and [`TextInput::changed`] only reports committed text.
+//! - **Widgets without a name.** Sliders and symbol-only buttons need `.label("..")` so screen
+//!   readers (and tests) can find them.
 
 pub(crate) mod a11y;
 pub(crate) mod context;
