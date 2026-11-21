@@ -1,0 +1,361 @@
+{
+ "note": "段階 3 の終わり",
+ "machine": {
+  "refresh": 144,
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "w": 1920,
+  "h": 1080
+ },
+ "results": {
+  "startup|kargui-tb-gpu": {
+   "n": 7,
+   "startupMs": 354,
+   "memMB": 10.625,
+   "gpuMB": 16.48,
+   "idleCpuPctMax": 0.156,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup|gpui": {
+   "n": 7,
+   "startupMs": 450,
+   "memMB": 14.504,
+   "gpuMB": 17.313,
+   "idleCpuPctMax": 3.742,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup|egui-glow": {
+   "n": 7,
+   "startupMs": 344,
+   "memMB": 34.395,
+   "gpuMB": 14.938,
+   "idleCpuPctMax": 0,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup|kargui-tb": {
+   "n": 7,
+   "startupMs": 42,
+   "memMB": 3.605,
+   "gpuMB": 0,
+   "idleCpuPctMax": 0,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "items10k|kargui-tb-gpu": {
+   "n": 3,
+   "startupMs": 358,
+   "memMB": 12.289,
+   "gpuMB": 16.48,
+   "idleCpuPctMax": 0.312,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "items10k|gpui": {
+   "n": 3,
+   "startupMs": 447,
+   "memMB": 17.91,
+   "gpuMB": 18.313,
+   "idleCpuPctMax": 4.836,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "items10k|egui-glow": {
+   "n": 3,
+   "startupMs": 341,
+   "memMB": 42.355,
+   "gpuMB": 17.453,
+   "idleCpuPctMax": 0,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "items10k|kargui-tb": {
+   "n": 3,
+   "startupMs": 47,
+   "memMB": 5.379,
+   "gpuMB": 0,
+   "idleCpuPctMax": 0,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "items100k|kargui-tb-gpu": {
+   "n": 3,
+   "startupMs": 407,
+   "memMB": 25.793,
+   "gpuMB": 16.48,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "items100k|gpui": {
+   "n": 3,
+   "startupMs": 499,
+   "memMB": 29.727,
+   "gpuMB": 18.313,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "items100k|egui-glow": {
+   "n": 3,
+   "startupMs": 402,
+   "memMB": 53.637,
+   "gpuMB": 17.449,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "items100k|kargui-tb": {
+   "n": 3,
+   "startupMs": 85,
+   "memMB": 19.422,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "scroll|kargui-tb-gpu-full": {
+   "n": 3,
+   "startupMs": 355,
+   "memMB": 14.102,
+   "gpuMB": 16.527,
+   "idleCpuPctMax": null,
+   "fps": 60,
+   "cpuMsPerFrame": 0.594,
+   "maxGapMsWorst": 214.2
+  },
+  "scroll|kargui-tb": {
+   "n": 3,
+   "startupMs": 48,
+   "memMB": 7.254,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": 30,
+   "cpuMsPerFrame": 0.829,
+   "maxGapMsWorst": 33.8
+  },
+  "scroll|gpui-full": {
+   "n": 3,
+   "startupMs": 469,
+   "memMB": 18.172,
+   "gpuMB": 22.797,
+   "idleCpuPctMax": null,
+   "fps": 144,
+   "cpuMsPerFrame": 2.722,
+   "maxGapMsWorst": 9.1
+  },
+  "scroll|egui": {
+   "n": 3,
+   "startupMs": 807,
+   "memMB": 165.801,
+   "gpuMB": 172.328,
+   "idleCpuPctMax": null,
+   "fps": 144,
+   "cpuMsPerFrame": 1.974,
+   "maxGapMsWorst": 18.3
+  },
+  "scroll|kargui-tb-full": {
+   "n": 3,
+   "startupMs": 48,
+   "memMB": 7.246,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": 60,
+   "cpuMsPerFrame": 0.364,
+   "maxGapMsWorst": 20.6
+  },
+  "startup_2core|kargui-tb-gpu": {
+   "n": 5,
+   "startupMs": 359,
+   "memMB": 10.465,
+   "gpuMB": 16.48,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_2core|egui-glow": {
+   "n": 5,
+   "startupMs": 339,
+   "memMB": 34.512,
+   "gpuMB": 14.938,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_2core|gpui": {
+   "n": 5,
+   "startupMs": 451,
+   "memMB": 14.266,
+   "gpuMB": 17.313,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_2core|kargui-tb": {
+   "n": 5,
+   "startupMs": 40,
+   "memMB": 3.602,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_1core|kargui-tb-gpu": {
+   "n": 5,
+   "startupMs": 364,
+   "memMB": 10.398,
+   "gpuMB": 16.48,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_1core|egui-glow": {
+   "n": 5,
+   "startupMs": 346,
+   "memMB": 23.168,
+   "gpuMB": 14.934,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_1core|gpui": {
+   "n": 5,
+   "startupMs": 468,
+   "memMB": 14.219,
+   "gpuMB": 17.313,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_1core|kargui-tb": {
+   "n": 5,
+   "startupMs": 43,
+   "memMB": 3.586,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "scroll_1core|kargui-tb-gpu-full": {
+   "n": 3,
+   "startupMs": 570,
+   "memMB": 13.887,
+   "gpuMB": 16.434,
+   "idleCpuPctMax": null,
+   "fps": 60,
+   "cpuMsPerFrame": 0.937,
+   "maxGapMsWorst": 62.7
+  },
+  "scroll_1core|egui": {
+   "n": 3,
+   "startupMs": 789,
+   "memMB": 155.48,
+   "gpuMB": 172.332,
+   "idleCpuPctMax": null,
+   "fps": 143.8,
+   "cpuMsPerFrame": 1.329,
+   "maxGapMsWorst": 22.9
+  },
+  "scroll_1core|gpui-full": {
+   "n": 3,
+   "startupMs": 473,
+   "memMB": 18.262,
+   "gpuMB": 22.797,
+   "idleCpuPctMax": null,
+   "fps": 144,
+   "cpuMsPerFrame": 2.983,
+   "maxGapMsWorst": 18.2
+  },
+  "scroll_1core|kargui-tb-full": {
+   "n": 3,
+   "startupMs": 53,
+   "memMB": 7.25,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": 60,
+   "cpuMsPerFrame": 0.728,
+   "maxGapMsWorst": 20.8
+  },
+  "startup_soft|gpui-warp": {
+   "n": 5,
+   "startupMs": 157,
+   "memMB": 7.926,
+   "gpuMB": 0,
+   "idleCpuPctMax": 3.276,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_soft|tauri": {
+   "n": 5,
+   "startupMs": 518,
+   "memMB": 72.047,
+   "gpuMB": 0,
+   "idleCpuPctMax": 0.468,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "startup_soft|kargui-tb": {
+   "n": 5,
+   "startupMs": 42,
+   "memMB": 3.617,
+   "gpuMB": 0,
+   "idleCpuPctMax": 0,
+   "fps": null,
+   "cpuMsPerFrame": null,
+   "maxGapMsWorst": null
+  },
+  "scroll_soft|gpui-warp": {
+   "n": 3,
+   "startupMs": 180,
+   "memMB": 14.336,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": 69,
+   "cpuMsPerFrame": 68.182,
+   "maxGapMsWorst": 126
+  },
+  "scroll_soft|tauri": {
+   "n": 3,
+   "startupMs": 545,
+   "memMB": 139.281,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": 143.6,
+   "cpuMsPerFrame": 5.224,
+   "maxGapMsWorst": 20.8
+  },
+  "scroll_soft|kargui-tb-full": {
+   "n": 3,
+   "startupMs": 52,
+   "memMB": 7.289,
+   "gpuMB": 0,
+   "idleCpuPctMax": null,
+   "fps": 60,
+   "cpuMsPerFrame": 0.885,
+   "maxGapMsWorst": 17.3
+  }
+ }
+}
