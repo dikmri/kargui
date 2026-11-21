@@ -102,7 +102,7 @@ impl TextKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Kind {
     Root,
     Row,
@@ -137,6 +137,7 @@ impl Kind {
     }
 }
 
+#[derive(PartialEq)]
 pub(crate) struct NodeInfo {
     pub id: Id,
     pub kind: Kind,
@@ -152,6 +153,11 @@ pub(crate) struct Tree {
 }
 
 impl Tree {
+    /// 部品と、その並べ方の決まり（配置の結果の前）が同じか。ビューを回し直して画面が落ち着いたかを見るのに使う
+    pub fn same_as(&self, other: &Tree) -> bool {
+        self.info == other.info && self.layout == other.layout
+    }
+
     /// 根は縦に並べる。既定の余白は左右 16・上下 12、間は 10（論理ピクセル）
     pub fn new(root: Id, scale: f32) -> Self {
         let mut layout = LayoutNode::new(Dir::Column);
@@ -245,6 +251,7 @@ impl<'a> Ui<'a> {
         let (idx, id) = self.add(Kind::Row, Dir::Row);
         self.tree.layout[idx].gap = self.px(8.0);
         f(&mut self.child(idx));
+        self.grow_if_filled(idx);
         self.handle(idx, id)
     }
 
@@ -263,7 +270,27 @@ impl<'a> Ui<'a> {
         let (idx, id) = self.add(Kind::Column, Dir::Column);
         self.tree.layout[idx].gap = self.px(6.0);
         f(&mut self.child(idx));
+        self.grow_if_filled(idx);
         self.handle(idx, id)
+    }
+
+    /// 行の中の行（列の中の列）が fill（残りを取る子）を持つなら、その行も親の残りを取る。
+    /// 書く人は「fill で右端へ寄せる」つもりなので、入れ子の行が中身の幅で止まらないようにする（AI の試験で見つけた）
+    fn grow_if_filled(&mut self, idx: usize) {
+        let dir = self.tree.layout[idx].dir;
+        if self.parent_dir() != dir {
+            return;
+        }
+        let main = |l: &LayoutNode| if dir == Dir::Row { l.width } else { l.height };
+        let filled = self.tree.layout[idx].children.iter().any(|&c| matches!(main(&self.tree.layout[c]), Size::Fill(_)));
+        let l = &mut self.tree.layout[idx];
+        if filled && main(l) == Size::Auto {
+            if dir == Dir::Row {
+                l.width = Size::Fill(1.0);
+            } else {
+                l.height = Size::Fill(1.0);
+            }
+        }
     }
 
     /// Places the widgets created in `f` on top of each other.
@@ -466,6 +493,33 @@ impl<'a> Ui<'a> {
             *on = !*on;
             if let Kind::Toggle { on: o, .. } = &mut self.tree.info[idx].kind {
                 *o = *on;
+            }
+        }
+        Toggled { h: self.handle(idx, id), changed }
+    }
+
+    /// A switch that turns dark mode on and off. It shows and changes kargui's own setting, which
+    /// starts as the operating system's, so the app does not need to keep a value for it (and the
+    /// switch never disagrees with the look). Read the current state with [`Ui::dark`].
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.row(|ui| {
+    ///     ui.heading("Tasks");
+    ///     ui.fill();
+    ///     ui.dark_mode_switch("Dark");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn dark_mode_switch(&mut self, text: impl Into<String>) -> Toggled<'_> {
+        let dark = self.cx.dark;
+        let (idx, id) = self.add(Kind::Toggle { on: dark, text: text.into() }, Dir::Leaf);
+        let changed = self.cx.clicked == Some(id);
+        if changed {
+            self.cx.set_dark(!dark);
+            if let Kind::Toggle { on, .. } = &mut self.tree.info[idx].kind {
+                *on = !dark;
             }
         }
         Toggled { h: self.handle(idx, id), changed }

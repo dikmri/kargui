@@ -70,7 +70,7 @@ pub(crate) enum Dir {
     Scroll,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LayoutNode {
     pub dir: Dir,
     /// 物理ピクセル（Fixed の値も物理ピクセルに直して入れる）

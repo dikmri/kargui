@@ -1293,6 +1293,82 @@ mod tests {
         }
     }
 
+    /// 数の表示を先に描き、絞り込みの作り直しを後でする（AI の試験で AI が書いた形）
+    struct Late {
+        items: Vec<u32>,
+        shown: Vec<u32>,
+        dirty: bool,
+    }
+
+    impl App for Late {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.label(format!("Showing {} of {}", self.shown.len(), self.items.len()));
+            if self.dirty {
+                self.shown = self.items.clone();
+                self.dirty = false;
+            }
+            if ui.button("Clear all").clicked() {
+                self.items.clear();
+                self.dirty = true;
+            }
+        }
+    }
+
+    #[test]
+    fn values_computed_later_in_view_show_up_in_the_same_frame() {
+        // AI の試験で、Clear all の後に「Showing 3 of 0」が次の入力まで残った（描く回の途中で作り直していた）
+        let mut h = Harness::new(Late { items: vec![1, 2, 3], shown: Vec::new(), dirty: true });
+        h.frame();
+        assert!(h.names().contains(&"Showing 3 of 3".to_string()), "{:?}", h.names());
+        h.click("Clear all");
+        assert!(h.names().contains(&"Showing 0 of 0".to_string()), "押した同じフレームで新しい数が出る: {:?}", h.names());
+    }
+
+    /// 一覧の行の中に、もう 1 つ行を入れて fill を使う（AI の試験で AI が書いた形）
+    struct Nested {
+        dark_seen: Option<bool>,
+    }
+
+    impl App for Nested {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.dark_mode_switch("Dark");
+            self.dark_seen = Some(ui.dark());
+            ui.list(3, 32.0).grow().show(|ui, i| {
+                ui.row(|ui| {
+                    ui.label(format!("Task {i}"));
+                    ui.fill();
+                    ui.button("Delete").small().label(format!("Delete {i}"));
+                });
+            });
+        }
+    }
+
+    #[test]
+    fn fill_inside_a_nested_row_reaches_the_end_of_the_outer_row() {
+        // AI の試験で、行の中の行に fill を入れても、Delete が行の右端ではなく文字のすぐ右に並んだ
+        let mut h = Harness::with_size(Nested { dark_seen: None }, 400.0, 300.0, 1.0);
+        h.frame();
+        let list = h.rt.cx.prev.lists[0].rect;
+        let delete = h.find("Delete 0").unwrap();
+        assert!(list.right() - delete.right() <= 20.0, "Delete {delete:?} が一覧 {list:?} の右端にある");
+    }
+
+    #[test]
+    fn the_dark_mode_switch_follows_and_changes_the_frameworks_look() {
+        // AI の試験で、アプリが自分の bool（false）で始めたため、OS がダークだとスイッチが見た目と逆を示した
+        let mut h = Harness::new(Nested { dark_seen: None });
+        h.rt.cx.set_dark(true); // OS がダーク
+        h.frame();
+        let on = |h: &Harness<Nested>| h.rt.tree.info.iter().find_map(|n| match &n.kind {
+            crate::ui::Kind::Toggle { on, text } if text == "Dark" => Some(*on),
+            _ => None,
+        });
+        assert_eq!(on(&h), Some(true), "スイッチは今の見た目（ダーク）を示す");
+        h.click("Dark");
+        assert_eq!(h.app().dark_seen, Some(false));
+        assert_eq!(on(&h), Some(false));
+    }
+
     fn settings() -> Harness<Settings> {
         let mut h = Harness::with_size(Settings { options: vec![false; 30] }, 400.0, 300.0, 1.0);
         h.frame();

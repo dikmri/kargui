@@ -2,6 +2,8 @@
 //!
 //! 入力を振り分ける → ビューの 1 回目（入力を部品に渡す）→ ビューの 2 回目（描く）→ 配置 → 描く物の一覧 → 読み上げの木。
 //! 入力が無いフレーム（窓の大きさが変わった、アニメーション）は 2 回目だけを回す。
+//! 入力があったフレームは、描く回の後にもう一度回し、画面の木が変わらなくなるまで（最大 SETTLE 回）回し直す。
+//! アプリが描いた後で値を作り直す書き方（数の表示の後で絞り込みを作り直すなど）でも、古い値を画面に出さない。
 
 use std::collections::HashSet;
 
@@ -16,6 +18,9 @@ use crate::ui::{Id, Tree, Ui, a11y, draw};
 
 /// 画面の木の根の番号（どのフレームでも同じ）
 pub(crate) const ROOT: Id = Id(0x6b61_7267_7569); // "kargui"
+
+/// 入力があったフレームで、描く回の後に回し直す回数の上限（毎回変わる画面でも止まるように）
+const SETTLE: usize = 2;
 
 pub(crate) struct Runtime {
     pub cx: Context,
@@ -57,7 +62,8 @@ impl Runtime {
 
     pub fn frame(&mut self, app: &mut dyn App, events: Vec<Event>) -> FrameOut {
         let mut want = false;
-        if !events.is_empty() {
+        let had_input = !events.is_empty();
+        if had_input {
             self.cx.handle(events);
             let mut tree = Tree::new(ROOT, self.cx.scale);
             app.view(&mut Ui::new(&mut self.cx, &mut tree));
@@ -67,6 +73,18 @@ impl Runtime {
         let mut tree = Tree::new(ROOT, self.cx.scale);
         app.view(&mut Ui::new(&mut self.cx, &mut tree));
         want |= std::mem::take(&mut self.cx.want_frame);
+        if had_input {
+            for _ in 0..SETTLE {
+                let mut again = Tree::new(ROOT, self.cx.scale);
+                app.view(&mut Ui::new(&mut self.cx, &mut again));
+                want |= std::mem::take(&mut self.cx.want_frame);
+                let settled = again.same_as(&tree);
+                tree = again;
+                if settled {
+                    break;
+                }
+            }
+        }
         draw::layout(&mut tree, &mut self.cx);
         draw::paint(&tree, &mut self.cx, &mut self.draw);
         // 一覧の見える範囲を決めた高さがずれていたら（最初のフレーム、窓の大きさが変わった時）、
