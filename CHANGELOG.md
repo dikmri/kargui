@@ -13,6 +13,15 @@
   when the keyboard focuses the widget; also the widget's screen-reader description). Opening moves
   the focus inside; closing gives it back. Screen readers see them as a pane, a modal dialog with
   its title and a tooltip.
+- Keys, time and threads: `Ui::shortcut(key, mods)` receives the keys no widget used (the focused
+  text field keeps letters and its editing keys, sliders and lists keep the arrows); `Key` now has
+  every letter, digits, F1-F12, Page Up/Down and Insert, and is `#[non_exhaustive]` (breaking for
+  exhaustive matches); `Mods::NONE/SHIFT/CTRL/ALT` combine with `|`. `Ui::now` and
+  `Ui::request_frame_after(duration)` wake the window at a time without drawing in between (on
+  Windows a timer); tooltips now wait this way instead of drawing every frame. `Ui::waker` returns a
+  `Waker` that wakes the window from any thread (merged until the window reads it). Alt+F4 and F10
+  keep their Windows behaviour, and Alt+letter no longer beeps. Tests: `Harness::hover(name)` and
+  `Harness::wait(duration)` (time moves without sleeping).
 - Linux and macOS (preparation): kargui now builds on them, and its tests (widgets, layout,
   drawing, the test harness) pass there. Text on these systems is laid out with parley and drawn
   with swash; Windows keeps DirectWrite and gains no dependencies. Windows cannot be opened there

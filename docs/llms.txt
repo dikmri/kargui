@@ -405,6 +405,55 @@ kargui otherwise draws only when something changes.
 ui.request_frame();
 ```
 
+### `pub fn shortcut(&self, key: Key, mods: Mods) -> bool`
+
+Whether `key` was pressed with exactly the modifier keys `mods` in this frame, and no widget
+used it. The focused widget keeps the keys it needs: a text field keeps letters, digits,
+Enter, the editing keys and Ctrl+A/C/V/X/Y/Z, a slider or a selectable list keeps the arrows.
+Everything else (Ctrl+S, F5, Escape with nothing to close, ...) comes here. Inside
+[`Ui::enabled`]`(false, ..)` it is always false.
+
+```
+use kargui::{Key, Mods};
+if ui.shortcut(Key::S, Mods::CTRL) {
+    saved += 1;
+}
+if ui.shortcut(Key::S, Mods::CTRL | Mods::SHIFT) {
+    // save as
+}
+```
+
+### `pub fn now(&self) -> Instant`
+
+The time of this frame. Use it with [`Ui::request_frame_after`] for timers and countdowns.
+In tests, [`Harness::wait`](crate::test::Harness::wait) moves it forward.
+
+```
+let started = ui.now();
+assert!(ui.now() >= started);
+```
+
+### `pub fn request_frame_after(&mut self, after: Duration)`
+
+Asks for a frame after `after` has passed, without drawing in between (the window sleeps
+until then). If it is called several times, the earliest time wins. Use it for timers,
+blinking or anything that changes with time but not every frame.
+
+```
+use std::time::Duration;
+// show the clock again in a second
+ui.request_frame_after(Duration::from_secs(1));
+```
+
+### `pub fn waker(&self) -> Waker`
+
+A [`Waker`] that wakes this window from another thread.
+
+```
+let waker = ui.waker();
+std::thread::spawn(move || waker.wake());
+```
+
 ## Every widget (methods of `Handle`; most widgets also have `width`, `grow`, `label`, `id`, `scroll_into_view`)
 
 ### `pub fn width(self, size: Size) -> Self`

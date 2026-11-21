@@ -59,7 +59,9 @@ use context::{Context, TipState};
 pub use layout::{Align, Size};
 use layout::{Dir, LayoutNode};
 
-use crate::input::{Event, Key};
+use crate::input::{Event, Key, Mods};
+use crate::wake::Waker;
+use std::time::{Duration, Instant};
 use crate::theme::Theme;
 
 /// Identifies a widget across frames.
@@ -298,7 +300,7 @@ impl<'a> Ui<'a> {
         let tip = self.cx.tip_state(id);
         Handle {
             cx_scroll: &mut self.cx.scroll_into_view,
-            want_frame: &mut self.cx.want_frame,
+            wake_at: &mut self.cx.wake_at,
             tree: &mut *self.tree,
             idx,
             id,
@@ -1058,6 +1060,69 @@ impl<'a> Ui<'a> {
     pub fn request_frame(&mut self) {
         self.cx.want_frame = true;
     }
+
+    /// Whether `key` was pressed with exactly the modifier keys `mods` in this frame, and no widget
+    /// used it. The focused widget keeps the keys it needs: a text field keeps letters, digits,
+    /// Enter, the editing keys and Ctrl+A/C/V/X/Y/Z, a slider or a selectable list keeps the arrows.
+    /// Everything else (Ctrl+S, F5, Escape with nothing to close, ...) comes here. Inside
+    /// [`Ui::enabled`]`(false, ..)` it is always false.
+    ///
+    /// ```
+    /// use kargui::{Key, Mods};
+    /// # let mut saved = 0;
+    /// # kargui::test::example(|ui| {
+    /// if ui.shortcut(Key::S, Mods::CTRL) {
+    ///     saved += 1;
+    /// }
+    /// if ui.shortcut(Key::S, Mods::CTRL | Mods::SHIFT) {
+    ///     // save as
+    /// }
+    /// # });
+    /// ```
+    pub fn shortcut(&self, key: Key, mods: Mods) -> bool {
+        !self.disabled && self.cx.app_keys.contains(&(key, mods))
+    }
+
+    /// The time of this frame. Use it with [`Ui::request_frame_after`] for timers and countdowns.
+    /// In tests, [`Harness::wait`](crate::test::Harness::wait) moves it forward.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let started = ui.now();
+    /// assert!(ui.now() >= started);
+    /// # });
+    /// ```
+    pub fn now(&self) -> Instant {
+        self.cx.now
+    }
+
+    /// Asks for a frame after `after` has passed, without drawing in between (the window sleeps
+    /// until then). If it is called several times, the earliest time wins. Use it for timers,
+    /// blinking or anything that changes with time but not every frame.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// # kargui::test::example(|ui| {
+    /// // show the clock again in a second
+    /// ui.request_frame_after(Duration::from_secs(1));
+    /// # });
+    /// ```
+    pub fn request_frame_after(&mut self, after: Duration) {
+        let t = self.cx.now + after;
+        self.cx.wake_by(t);
+    }
+
+    /// A [`Waker`] that wakes this window from another thread.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let waker = ui.waker();
+    /// std::thread::spawn(move || waker.wake());
+    /// # });
+    /// ```
+    pub fn waker(&self) -> Waker {
+        self.cx.waker.clone()
+    }
 }
 
 /// Settings shared by all widgets: size, spacing and accessibility name.
@@ -1075,7 +1140,8 @@ impl<'a> Ui<'a> {
 /// ```
 pub struct Handle<'t> {
     cx_scroll: &'t mut Option<Id>,
-    want_frame: &'t mut bool,
+    /// 次に起こす時刻（ツールチップを出す時刻に起こしてもらう）
+    wake_at: &'t mut Option<Instant>,
     tree: &'t mut Tree,
     idx: usize,
     id: Id,
@@ -1240,8 +1306,8 @@ impl Handle<'_> {
         let text = text.into();
         self.tree.info[self.idx].description = Some(text.clone());
         match self.tip {
-            // 0.5 秒たつまで描き直しを続ける（タイマーの土台ができたら、時間を決めて起こす形にする）
-            TipState::Waiting => *self.want_frame = true,
+            // 出す時刻に起こしてもらう（それまでは描かない）
+            TipState::Waiting(due) => *self.wake_at = Some(self.wake_at.map_or(due, |w| w.min(due))),
             TipState::Shown => {
                 let (id, scale) = (self.id, self.scale);
                 let ov = Id(hash_of((id.0, "tooltip")));

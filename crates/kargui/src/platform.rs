@@ -48,6 +48,10 @@ use crate::ui::Id;
 use crate::ui::context::Clipboard;
 
 const WM_APP_A11Y: u32 = WM_APP + 1;
+/// ほかのスレッドが Waker::wake で窓を起こした
+const WM_APP_WAKE: u32 = WM_APP + 2;
+/// Ui::request_frame_after とツールチップの時刻に起こすタイマーの番号
+const WAKE_TIMER: usize = 1;
 /// windows crate の読み込んだ範囲に無いので自分で定義する。
 /// match の中で読み込まれていない名前を書くと、何にでも当てはまる変数になり、
 /// それより後のメッセージを全部受け止めてしまう（2026-11-21 に窓の枠が消えた原因）
@@ -182,6 +186,19 @@ fn system_dark() -> bool {
 }
 
 fn key_of(vk: VIRTUAL_KEY) -> Option<Key> {
+    const LETTERS: [Key; 26] = [Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I, Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R, Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z];
+    const DIGITS: [Key; 10] = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+    const FKEYS: [Key; 12] = [Key::F1, Key::F2, Key::F3, Key::F4, Key::F5, Key::F6, Key::F7, Key::F8, Key::F9, Key::F10, Key::F11, Key::F12];
+    let v = vk.0;
+    if (0x41..=0x5A).contains(&v) {
+        return Some(LETTERS[(v - 0x41) as usize]);
+    }
+    if (0x30..=0x39).contains(&v) {
+        return Some(DIGITS[(v - 0x30) as usize]);
+    }
+    if (VK_F1.0..=VK_F12.0).contains(&v) {
+        return Some(FKEYS[(v - VK_F1.0) as usize]);
+    }
     Some(match vk {
         VK_RETURN => Key::Enter,
         VK_TAB => Key::Tab,
@@ -195,12 +212,9 @@ fn key_of(vk: VIRTUAL_KEY) -> Option<Key> {
         VK_DOWN => Key::Down,
         VK_HOME => Key::Home,
         VK_END => Key::End,
-        VK_A => Key::A,
-        VK_C => Key::C,
-        VK_V => Key::V,
-        VK_X => Key::X,
-        VK_Y => Key::Y,
-        VK_Z => Key::Z,
+        VK_PRIOR => Key::PageUp,
+        VK_NEXT => Key::PageDown,
+        VK_INSERT => Key::Insert,
         _ => return None,
     })
 }
@@ -228,6 +242,8 @@ struct State {
     events: Vec<Event>,
     /// 次のメッセージの区切りで描く
     need_frame: bool,
+    /// 起こすタイマー（WAKE_TIMER）を掛けている
+    wake_timer: bool,
     /// アプリがアニメーションを求めている
     animating: bool,
     started: Instant,
@@ -353,12 +369,33 @@ impl State {
         self.need_frame = true;
     }
 
+    /// 起こしてほしい時間があればタイマーを掛け、無ければ外す（掛けている時だけ外す）
+    fn set_wake(&mut self, after: Option<std::time::Duration>) {
+        match after {
+            Some(d) => {
+                let ms = (d.as_millis().min(u32::MAX as u128) as u32).max(1);
+                unsafe {
+                    SetTimer(Some(self.hwnd), WAKE_TIMER, ms, None);
+                }
+                self.wake_timer = true;
+            }
+            None if self.wake_timer => {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), WAKE_TIMER);
+                }
+                self.wake_timer = false;
+            }
+            None => {}
+        }
+    }
+
     /// 1 フレーム: 入力を渡してビューを回し、描いて画面に出す
     fn frame(&mut self, why: &str) {
         let t = Instant::now();
         let events = std::mem::take(&mut self.events);
         let focus_before = self.rt.cx.focus;
         let out = self.rt.frame(&mut *self.app, events);
+        self.set_wake(out.wake_after);
         self.animating = out.want_frame;
         self.need_frame = false;
         self.t_build = t.elapsed().as_secs_f64() * 1000.0;
@@ -664,6 +701,9 @@ impl State {
                 if bar != self.rt.cx.bar_hover {
                     log::event("scrollbar.hover", &format!("x={x} y={y}"), &format!("on={}", bar.is_some()));
                 }
+                if hover != self.rt.cx.hover {
+                    log::event("hover", &format!("x={x} y={y}"), &format!("id={}", hover.map_or("none".to_string(), |h| format!("{:x}", h.0))));
+                }
                 if hover != self.rt.cx.hover || bar != self.rt.cx.bar_hover {
                     self.rt.cx.set_hover(hover);
                     self.rt.cx.bar_hover = bar;
@@ -678,6 +718,7 @@ impl State {
                     log::event("scrollbar.hover", "leave", "on=false");
                 }
                 let had = self.rt.cx.hover.is_some();
+                log::event("pointer.leave", "", &format!("had_hover={had}"));
                 self.rt.cx.set_hover(None);
                 if had | bar {
                     self.need_frame = true;
@@ -732,10 +773,29 @@ impl State {
                         let mods = mods_now();
                         log::event("key", &format!("key={key:?} mods={mods:?} composing={}", self.composing), "sent");
                         self.push(Event::Key { key, mods });
-                        Some(LRESULT(0))
+                        // Alt+F4（閉じる）と F10（窓のメニュー）は、アプリに知らせた上で OS の既定の動きも残す
+                        if msg == WM_SYSKEYDOWN && matches!(key, Key::F4 | Key::F10) { None } else { Some(LRESULT(0)) }
                     }
                     None => None,
                 }
+            }
+            // Alt と文字はアプリのショートカットとして WM_SYSKEYDOWN で受けた。メニューが無いので OS が鳴らす
+            // 警告音を止める（Alt+Space の窓のメニューは残す）
+            WM_SYSCHAR if wp.0 != 0x20 => Some(LRESULT(0)),
+            WM_TIMER if wp.0 == WAKE_TIMER => {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), WAKE_TIMER);
+                }
+                self.wake_timer = false;
+                log::event("timer", "", "frame");
+                self.need_frame = true;
+                Some(LRESULT(0))
+            }
+            WM_APP_WAKE => {
+                self.rt.cx.waker.take_woken();
+                log::event("wake", "from=waker", "frame");
+                self.need_frame = true;
+                Some(LRESULT(0))
             }
             WM_CHAR => {
                 let unit = wp.0 as u16;
@@ -1003,6 +1063,11 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     log::event("surface.init", &format!("renderer={:?}", options.renderer), &format!("ms={:.1}", t_surface.elapsed().as_secs_f64() * 1000.0));
     let dark = options.dark.unwrap_or_else(system_dark);
     let mut rt = Runtime::new(text, dark, Box::new(SystemClipboard { hwnd: hwnd.0 as isize }), options.title.clone());
+    // ほかのスレッドから起こされたら、窓へメッセージを送る（窓の番号は数として渡す）
+    let target = hwnd.0 as isize;
+    rt.cx.waker = crate::wake::Waker::new(move || unsafe {
+        let _ = PostMessageW(Some(HWND(target as *mut _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
+    });
     rt.resize(cw as f32, ch as f32, dpi as f32 / 96.0);
 
     let actions = Arc::new(Mutex::new(VecDeque::new()));
@@ -1020,6 +1085,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             post: Vec::new(),
             events: Vec::new(),
             need_frame: true,
+            wake_timer: false,
             animating: false,
             started,
             shown: false,

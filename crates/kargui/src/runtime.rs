@@ -35,6 +35,8 @@ pub(crate) struct Runtime {
 pub(crate) struct FrameOut {
     /// もう 1 フレーム描いてほしい（アニメーション、一覧の高さのずれ）
     pub want_frame: bool,
+    /// この時間がたったら起こしてほしい（Ui::request_frame_after、ツールチップ）
+    pub wake_after: Option<std::time::Duration>,
 
 }
 
@@ -61,6 +63,8 @@ impl Runtime {
     }
 
     pub fn frame(&mut self, app: &mut dyn App, events: Vec<Event>) -> FrameOut {
+        self.cx.now = self.cx.clock();
+        self.cx.wake_at = None;
         let mut want = false;
         let had_input = !events.is_empty();
         if had_input {
@@ -107,7 +111,8 @@ impl Runtime {
         }
         self.tree = tree;
         self.frames += 1;
-        FrameOut { want_frame: want }
+        let wake_after = self.cx.wake_at.map(|t| t.saturating_duration_since(self.cx.now));
+        FrameOut { want_frame: want, wake_after }
     }
 
     /// 重ねて出す物が開いたら、開く前の焦点を覚えて中の最初の部品へ焦点を移す。閉じたら、焦点が中にあった
@@ -115,6 +120,12 @@ impl Runtime {
     fn overlay_focus(&mut self, before: &[OverlayInfo], tree: &Tree) {
         let exists = |id: Id| tree.info.iter().any(|n| n.id == id);
         let now = self.cx.prev.overlays.clone();
+        for o in now.iter().filter(|o| !before.iter().any(|p| p.id == o.id)) {
+            crate::log::event("overlay.open", &format!("kind={:?}", o.kind), &format!("id={:x}", o.id.0));
+        }
+        for o in before.iter().filter(|o| !now.iter().any(|n| n.id == o.id)) {
+            crate::log::event("overlay.close", &format!("kind={:?}", o.kind), &format!("id={:x}", o.id.0));
+        }
         for o in before.iter().filter(|o| o.kind != OverlayKind::Tooltip) {
             if now.iter().any(|n| n.id == o.id) {
                 continue;

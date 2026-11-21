@@ -370,6 +370,64 @@ impl<A: App> Harness<A> {
         (0..self.rt.tree.info.len()).find(|&i| a11y::name_of(&self.rt.tree, i).as_deref() == Some(name)).map(|i| !self.rt.tree.info[i].disabled)
     }
 
+    /// Moves the pointer over the widget with this name and draws a frame (its hover look and, after
+    /// half a second, its tooltip).
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// # use std::time::Duration;
+    /// struct Bar;
+    ///
+    /// impl App for Bar {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.button("Save").tooltip("Saves the file");
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Bar);
+    /// h.hover("Save").wait(Duration::from_millis(600));
+    /// assert!(h.find("Saves the file").is_some());
+    /// ```
+    pub fn hover(&mut self, name: &str) -> &mut Self {
+        let (x, y) = self.center(name);
+        let id = self.rt.hover_at(x, y);
+        self.rt.cx.set_hover(id);
+        self.frame()
+    }
+
+    /// Lets `time` pass (for [`Ui::now`], [`Ui::request_frame_after`] and tooltips) and draws a
+    /// frame. Nothing really sleeps, so tests stay fast.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// # use std::time::{Duration, Instant};
+    /// struct Countdown {
+    ///     end: Option<Instant>,
+    /// }
+    ///
+    /// impl App for Countdown {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         let end = *self.end.get_or_insert(ui.now() + Duration::from_secs(3));
+    ///         let left = end.saturating_duration_since(ui.now());
+    ///         ui.label(format!("{} s", left.as_secs_f32().ceil()));
+    ///         if !left.is_zero() {
+    ///             ui.request_frame_after(Duration::from_secs(1).min(left));
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Countdown { end: None });
+    /// assert!(h.find("3 s").is_some());
+    /// h.wait(Duration::from_secs(2));
+    /// assert!(h.find("1 s").is_some());
+    /// ```
+    pub fn wait(&mut self, time: std::time::Duration) -> &mut Self {
+        self.rt.cx.skew += time;
+        self.frame()
+    }
+
     fn center(&self, name: &str) -> (f32, f32) {
         let r = self.find(name).unwrap_or_else(|| panic!("no widget named {name:?}; on screen: {:?}", self.names()));
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
@@ -1997,13 +2055,9 @@ mod tests {
     fn tooltip_shows_after_the_pointer_rests_and_on_keyboard_focus() {
         let mut h = Harness::new(Layers::default());
         let save = h.find("Save").unwrap();
-        let hover = h.rt.hover_at(save.x + 4.0, save.y + 4.0);
-        h.rt.cx.set_hover(hover);
-        h.frame();
+        h.hover("Save");
         assert!(h.find("Saves the file").is_none(), "すぐには出ない");
-        // 0.5 秒より長く止まったことにする
-        h.rt.cx.hover_since = Some(std::time::Instant::now() - std::time::Duration::from_millis(600));
-        h.frame();
+        h.wait(std::time::Duration::from_millis(600));
         let tip = h.find("Saves the file").expect("止まると出る");
         assert!(tip.y >= save.bottom(), "下に出る: {save:?} {tip:?}");
         h.press(Key::Escape);
@@ -2042,6 +2096,170 @@ mod tests {
         assert!(dialog.is_modal());
         assert_eq!(dialog.label(), Some("Rename item"));
         assert!(nodes.contains_key(&id_named(&h, "Rename").0));
+    }
+
+    /// アプリのキー（ショートカット）の見本
+    #[derive(Default)]
+    struct Keys {
+        note: String,
+        saves: u32,
+        refreshes: u32,
+        plain_a: u32,
+        all: u32,
+        locked: u32,
+    }
+
+    impl App for Keys {
+        fn view(&mut self, ui: &mut Ui) {
+            if ui.shortcut(Key::S, Mods::CTRL) {
+                self.saves += 1;
+            }
+            if ui.shortcut(Key::F5, Mods::NONE) {
+                self.refreshes += 1;
+            }
+            if ui.shortcut(Key::A, Mods::NONE) {
+                self.plain_a += 1;
+            }
+            if ui.shortcut(Key::A, Mods::CTRL) {
+                self.all += 1;
+            }
+            ui.enabled(false, |ui| {
+                if ui.shortcut(Key::S, Mods::CTRL) {
+                    self.locked += 1;
+                }
+            });
+            ui.text_input(&mut self.note).hint("Note");
+            ui.button("Other");
+        }
+    }
+
+    #[test]
+    fn shortcuts_reach_the_app_unless_a_widget_uses_the_key() {
+        let mut h = Harness::new(Keys::default());
+        // 焦点が無い時は全部アプリへ
+        h.press_with(Key::S, Mods::CTRL).press(Key::A).press_with(Key::A, Mods::CTRL).press(Key::F5);
+        let a = h.app();
+        assert_eq!((a.saves, a.plain_a, a.all, a.refreshes), (1, 1, 1, 1));
+        // 押せない範囲の中では受け取らない
+        assert_eq!(h.app().locked, 0);
+        // 入力欄に焦点がある時: 入力欄が使うキー（A、Ctrl+A）は入力欄へ、使わないキー（Ctrl+S、F5）はアプリへ
+        h.click("Note").type_text("abc");
+        h.press(Key::A).press_with(Key::A, Mods::CTRL).press_with(Key::S, Mods::CTRL).press(Key::F5);
+        let a = h.app();
+        assert_eq!((a.saves, a.plain_a, a.all, a.refreshes), (2, 1, 1, 2));
+        assert_eq!(a.note, "abc", "Ctrl+A は入力欄の全部を選ぶだけ");
+        // ボタンに焦点がある時: Space はボタンへ、Ctrl+S はアプリへ
+        h.press(Key::Tab);
+        h.press(Key::Space).press_with(Key::S, Mods::CTRL | Mods::SHIFT).press_with(Key::S, Mods::CTRL);
+        assert_eq!(h.app().saves, 3, "Ctrl+Shift+S は Ctrl+S と別");
+    }
+
+    #[test]
+    fn mods_combine() {
+        let m = Mods::CTRL | Mods::SHIFT;
+        assert!(m.ctrl && m.shift && !m.alt);
+        assert_eq!(Mods::NONE, Mods::default());
+    }
+
+    /// 1 秒たったら「Done」を出す見本（タイマー）
+    #[derive(Default)]
+    struct Timer {
+        start: Option<std::time::Instant>,
+    }
+
+    impl App for Timer {
+        fn view(&mut self, ui: &mut Ui) {
+            let start = *self.start.get_or_insert(ui.now());
+            let wait = std::time::Duration::from_secs(1);
+            if ui.now() >= start + wait {
+                ui.label("Done");
+            } else {
+                ui.label("Waiting");
+                ui.request_frame_after(start + wait - ui.now());
+            }
+        }
+    }
+
+    #[test]
+    fn request_frame_after_wakes_the_app_later() {
+        let mut h = Harness::new(Timer::default());
+        assert!(h.find("Waiting").is_some());
+        // 描き直しを続けずに、1 秒後に起こしてもらう
+        let out = h.rt.frame(&mut h.app, Vec::new());
+        assert!(!out.want_frame);
+        let after = out.wake_after.expect("起こす時間");
+        assert!(after > std::time::Duration::from_millis(900) && after <= std::time::Duration::from_secs(1), "{after:?}");
+        h.wait(std::time::Duration::from_millis(500));
+        assert!(h.find("Waiting").is_some());
+        h.wait(std::time::Duration::from_millis(600));
+        assert!(h.find("Done").is_some());
+        let out = h.rt.frame(&mut h.app, Vec::new());
+        assert_eq!(out.wake_after, None, "もう起こさない");
+    }
+
+    #[test]
+    fn tooltip_waits_with_a_timer_instead_of_drawing_every_frame() {
+        let mut h = Harness::new(Layers::default());
+        h.hover("Save");
+        let out = h.rt.frame(&mut h.app, Vec::new());
+        assert!(!out.want_frame, "待つ間に描き直しを続けない");
+        let after = out.wake_after.expect("出す時刻に起こす");
+        assert!(after <= crate::ui::context::TOOLTIP_DELAY, "{after:?}");
+        h.wait(crate::ui::context::TOOLTIP_DELAY);
+        assert!(h.find("Saves the file").is_some());
+    }
+
+    /// ほかのスレッドから届いた物を出す見本（起こし役）
+    struct Inbox {
+        rx: std::sync::mpsc::Receiver<String>,
+        waker: Option<crate::Waker>,
+        got: Vec<String>,
+    }
+
+    impl App for Inbox {
+        fn view(&mut self, ui: &mut Ui) {
+            if self.waker.is_none() {
+                self.waker = Some(ui.waker());
+            }
+            self.got.extend(self.rx.try_iter());
+            for g in &self.got {
+                ui.label(g);
+            }
+        }
+    }
+
+    #[test]
+    fn waker_wakes_the_window_from_another_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut h = Harness::new(Inbox { rx, waker: None, got: Vec::new() });
+        let waker = h.app().waker.clone().unwrap();
+        assert!(!h.rt.cx.waker.take_woken());
+        std::thread::spawn(move || {
+            tx.send("hello from a thread".to_string()).unwrap();
+            waker.wake();
+        })
+        .join()
+        .unwrap();
+        assert!(h.rt.cx.waker.take_woken(), "起こされた印");
+        assert!(!h.rt.cx.waker.take_woken(), "印は 1 回で消える");
+        h.frame();
+        assert!(h.find("hello from a thread").is_some());
+    }
+
+    #[test]
+    fn waker_merges_wakes_until_the_window_reads_them() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let c = count.clone();
+        let w = crate::Waker::new(move || {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let w2 = w.clone();
+        std::thread::spawn(move || w2.wake()).join().unwrap();
+        w.wake();
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "窓が読む前の起こしは 1 回にまとめる");
+        assert!(w.take_woken());
+        w.wake();
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2, "読んだ後はまた知らせる");
     }
 }
 

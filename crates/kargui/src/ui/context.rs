@@ -14,6 +14,7 @@ use crate::theme::Theme;
 use crate::ui::{Id, OverlayKind};
 use crate::ime::{Clauses, ImeField};
 use crate::ui::edit::EditState;
+use crate::wake::Waker;
 
 /// クリップボードの読み書き（窓では OS のもの、試験台では手元の文字列）
 pub(crate) trait Clipboard {
@@ -64,8 +65,8 @@ pub(crate) struct OverlayInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TipState {
     Hidden,
-    /// ポインターが乗ってから、まだ時間がたっていない
-    Waiting,
+    /// ポインターが乗ってから、まだ時間がたっていない（出す時刻）
+    Waiting(Instant),
     Shown,
 }
 
@@ -135,6 +136,14 @@ pub(crate) struct Context {
     pub edit_scroll: HashMap<Id, f32>,
     /// 一覧のスクロールの位置（論理ピクセル）
     pub scrolls: HashMap<Id, f32>,
+    /// このフレームの時刻（Ui::now。試験台は skew で進める）
+    pub now: Instant,
+    /// 試験台が進めた時間（Harness::wait）
+    pub skew: Duration,
+    /// 次に起こす時刻（Ui::request_frame_after とツールチップ）。窓はタイマーで起きる
+    pub wake_at: Option<Instant>,
+    /// ほかのスレッドから窓を起こす係（Ui::waker）
+    pub waker: Waker,
     pub focus: Option<Id>,
     pub hover: Option<Id>,
     /// ポインターが今の部品に乗った時刻（ツールチップを出すまでの時間を数える）
@@ -156,6 +165,8 @@ pub(crate) struct Context {
     pub closing: HashSet<Id>,
     /// 焦点のある入力欄へ届ける入力
     pub keys: Vec<Event>,
+    /// 部品が使わなかったキー（Ui::shortcut）
+    pub app_keys: Vec<(Key, Mods)>,
     /// 入力欄の中のクリック（場所と Shift）
     pub pointer_text: Option<(Id, f32, f32, bool)>,
     /// 押している部品の上のポインターの位置（押した・動かした・離した時に入れる）
@@ -196,6 +207,10 @@ impl Context {
             edits: HashMap::new(),
             edit_scroll: HashMap::new(),
             scrolls: HashMap::new(),
+            now: Instant::now(),
+            skew: Duration::ZERO,
+            wake_at: None,
+            waker: Waker::new(|| {}),
             focus: None,
             hover: None,
             hover_since: None,
@@ -208,6 +223,7 @@ impl Context {
             clicked: None,
             closing: HashSet::new(),
             keys: Vec::new(),
+            app_keys: Vec::new(),
             pointer_text: None,
             pointer: None,
             released: None,
@@ -236,7 +252,7 @@ impl Context {
     pub fn set_hover(&mut self, id: Option<Id>) {
         if id != self.hover {
             self.hover = id;
-            self.hover_since = id.map(|_| Instant::now());
+            self.hover_since = id.map(|_| self.clock());
             self.tooltip_hidden = None;
         }
     }
@@ -249,13 +265,23 @@ impl Context {
             TipState::Shown
         } else if self.hover == Some(id) {
             match self.hover_since {
-                Some(t) if t.elapsed() >= TOOLTIP_DELAY => TipState::Shown,
-                Some(_) => TipState::Waiting,
+                Some(t) if self.now.saturating_duration_since(t) >= TOOLTIP_DELAY => TipState::Shown,
+                Some(t) => TipState::Waiting(t + TOOLTIP_DELAY),
                 None => TipState::Hidden,
             }
         } else {
             TipState::Hidden
         }
+    }
+
+    /// 今の時刻（試験台が進めた分を足す）
+    pub fn clock(&self) -> Instant {
+        Instant::now() + self.skew
+    }
+
+    /// t までに起こしてもらう（早い方を残す）
+    pub fn wake_by(&mut self, t: Instant) {
+        self.wake_at = Some(self.wake_at.map_or(t, |w| w.min(t)));
     }
 
     /// 一番上の、外を押すと閉じる浮き出し（その上にダイアログがあれば無し）
@@ -480,13 +506,21 @@ impl Context {
                         self.preedit_clauses = Some(Clauses { bounds, target, cursor });
                     }
                 }
-                e @ (Event::Key { .. } | Event::Char(_) | Event::ImeCommit(_) | Event::ImeSelect { .. }) => {
+                // キーは、焦点のある部品が使う物ならその部品へ、使わない物はアプリへ（Ui::shortcut）
+                Event::Key { key, mods } => {
+                    let text = self.focus.is_some_and(|f| self.is_text_input(f));
+                    let arrows = self.focus.is_some_and(|f| self.prev.hits.iter().any(|h| h.id == f && h.arrows));
+                    if (text && text_input_takes(key, mods)) || (arrows && arrows_take(key, mods)) {
+                        self.keys.push(Event::Key { key, mods });
+                    } else {
+                        self.app_keys.push((key, mods));
+                    }
+                }
+                e @ (Event::Char(_) | Event::ImeCommit(_) | Event::ImeSelect { .. }) => {
                     if self.focus.is_some_and(|f| self.is_text_input(f)) {
                         if matches!(e, Event::ImeCommit(_)) {
                             self.preedit.clear();
                         }
-                        self.keys.push(e);
-                    } else if matches!(e, Event::Key { .. }) && self.focus.is_some_and(|f| self.prev.hits.iter().any(|h| h.id == f && h.arrows)) {
                         self.keys.push(e);
                     }
                 }
@@ -529,8 +563,48 @@ impl Context {
         self.pending_commit = None;
         self.clicked = None;
         self.closing.clear();
+        self.app_keys.clear();
         self.keys.clear();
         self.pointer_text = None;
         self.released = None;
+    }
+}
+
+/// 1 行の入力欄が使うキー。Alt の組み合わせ・F キー・PageUp/PageDown・Insert・上下の矢印は使わないのでアプリへ。
+/// Ctrl は、全部を選ぶ・写す・貼る・切る・やり直す・元に戻すと、単語ごとの移動と消去だけ
+fn text_input_takes(key: Key, m: Mods) -> bool {
+    use Key::*;
+    if m.alt {
+        return false;
+    }
+    if m.ctrl {
+        return matches!(key, A | C | V | X | Y | Z | Left | Right | Home | End | Backspace | Delete);
+    }
+    !matches!(key, F1 | F2 | F3 | F4 | F5 | F6 | F7 | F8 | F9 | F10 | F11 | F12 | PageUp | PageDown | Insert | Escape | Up | Down)
+}
+
+/// 矢印で動かす部品（スライダー・選べる一覧の行）が使うキー
+fn arrows_take(key: Key, m: Mods) -> bool {
+    !m.ctrl && !m.alt && matches!(key, Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_fields_keep_editing_keys_and_pass_the_rest() {
+        assert!(text_input_takes(Key::A, Mods::NONE));
+        assert!(text_input_takes(Key::A, Mods::SHIFT));
+        assert!(text_input_takes(Key::A, Mods::CTRL));
+        assert!(text_input_takes(Key::Left, Mods::CTRL | Mods::SHIFT));
+        assert!(text_input_takes(Key::Enter, Mods::NONE));
+        assert!(!text_input_takes(Key::S, Mods::CTRL));
+        assert!(!text_input_takes(Key::A, Mods::ALT));
+        assert!(!text_input_takes(Key::F5, Mods::NONE));
+        assert!(!text_input_takes(Key::Down, Mods::NONE));
+        assert!(arrows_take(Key::Right, Mods::SHIFT));
+        assert!(!arrows_take(Key::Right, Mods::CTRL));
+        assert!(!arrows_take(Key::Enter, Mods::NONE));
     }
 }

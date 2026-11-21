@@ -36,6 +36,7 @@ pub mod test;
 mod text;
 mod theme;
 pub mod ui;
+mod wake;
 
 pub use app::{App, Frame, Options, Renderer, run};
 pub use geom::{Color, IRect, Rect, rgb};
@@ -43,6 +44,7 @@ pub use input::{Key, Mods};
 pub use log::set_logger;
 pub use theme::Theme;
 pub use ui::{Align, Id, Size, SliderValue, Ui};
+pub use wake::Waker;
 
 /// An error from the operating system while opening or drawing the window.
 ///
@@ -101,6 +103,8 @@ mod guide {
     struct Ja08Accessibility;
     #[doc = include_str!("../../../docs/guide/ja/09-testing.md")]
     struct Ja09Testing;
+    #[doc = include_str!("../../../docs/guide/ja/10-keys-time-threads.md")]
+    struct Ja10KeysTimeThreads;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -121,6 +125,8 @@ mod guide {
     struct En08Accessibility;
     #[doc = include_str!("../../../docs/guide/en/09-testing.md")]
     struct En09Testing;
+    #[doc = include_str!("../../../docs/guide/en/10-keys-time-threads.md")]
+    struct En10KeysTimeThreads;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]

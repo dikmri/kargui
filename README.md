@@ -116,9 +116,9 @@ Not there yet:
   context menu), open and save file dialogs, tabs, tree view, tables with column headers, progress
   bar, images, a free drawing surface and links (disabled widgets, popups, in-window dialogs and
   tooltips were added after 0.1).
-- **App mechanisms:** multiple windows, updating the screen from other threads or timers, receiving
-  keys in the app (shortcuts), drag and drop, choosing fonts, window icon, minimum window size,
-  confirming before close, and animations.
+- **App mechanisms:** multiple windows, drag and drop, choosing fonts, window icon, minimum window
+  size, confirming before close, and animation helpers (shortcuts, timers and waking from other
+  threads were added after 0.1).
 - **Platforms:** windows open on Windows 10/11 only. The Direct3D 11 renderer (not the default)
   occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
   NVDA. Apps cannot start a reconversion themselves.

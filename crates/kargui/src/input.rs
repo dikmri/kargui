@@ -4,7 +4,8 @@
 
 use crate::ui::Id;
 
-/// A key that widgets react to. Letters are only listed when they are used as shortcuts.
+/// A key on the keyboard. Widgets use some keys themselves (text fields take letters and
+/// Ctrl+A/C/V/X/Y/Z, sliders take the arrows); the rest reach the app through [`Ui::shortcut`](crate::Ui::shortcut).
 ///
 /// ```
 /// # use kargui::{App, Ui, Key, Mods};
@@ -32,7 +33,8 @@ use crate::ui::Id;
 /// h.click("New note").type_text("milk").press(Key::Enter);
 /// assert_eq!(h.app().notes, ["milk"]);
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Key {
     /// Enter / Return.
     Enter,
@@ -58,18 +60,108 @@ pub enum Key {
     Home,
     /// End.
     End,
-    /// The A key (select all with Ctrl).
+    /// The A key (select all with Ctrl in text fields).
     A,
-    /// The C key (copy with Ctrl).
+    /// The B key.
+    B,
+    /// The C key (copy with Ctrl in text fields).
     C,
-    /// The V key (paste with Ctrl).
+    /// The D key.
+    D,
+    /// The E key.
+    E,
+    /// The F key.
+    F,
+    /// The G key.
+    G,
+    /// The H key.
+    H,
+    /// The I key.
+    I,
+    /// The J key.
+    J,
+    /// The K key.
+    K,
+    /// The L key.
+    L,
+    /// The M key.
+    M,
+    /// The N key.
+    N,
+    /// The O key.
+    O,
+    /// The P key.
+    P,
+    /// The Q key.
+    Q,
+    /// The R key.
+    R,
+    /// The S key.
+    S,
+    /// The T key.
+    T,
+    /// The U key.
+    U,
+    /// The V key (paste with Ctrl in text fields).
     V,
-    /// The X key (cut with Ctrl).
+    /// The W key.
+    W,
+    /// The X key (cut with Ctrl in text fields).
     X,
-    /// The Y key (redo with Ctrl).
+    /// The Y key (redo with Ctrl in text fields).
     Y,
-    /// The Z key (undo with Ctrl).
+    /// The Z key (undo with Ctrl in text fields).
     Z,
+    /// The 0 key on the main keyboard.
+    Num0,
+    /// The 1 key on the main keyboard.
+    Num1,
+    /// The 2 key on the main keyboard.
+    Num2,
+    /// The 3 key on the main keyboard.
+    Num3,
+    /// The 4 key on the main keyboard.
+    Num4,
+    /// The 5 key on the main keyboard.
+    Num5,
+    /// The 6 key on the main keyboard.
+    Num6,
+    /// The 7 key on the main keyboard.
+    Num7,
+    /// The 8 key on the main keyboard.
+    Num8,
+    /// The 9 key on the main keyboard.
+    Num9,
+    /// F1.
+    F1,
+    /// F2.
+    F2,
+    /// F3.
+    F3,
+    /// F4.
+    F4,
+    /// F5.
+    F5,
+    /// F6.
+    F6,
+    /// F7.
+    F7,
+    /// F8.
+    F8,
+    /// F9.
+    F9,
+    /// F10.
+    F10,
+    /// F11.
+    F11,
+    /// F12.
+    F12,
+    /// Page Up.
+    PageUp,
+    /// Page Down.
+    PageDown,
+    /// Insert.
+    Insert,
 }
 
 /// Modifier keys held during a key press.
@@ -82,7 +174,7 @@ pub enum Key {
 /// // Ctrl+Z, as sent to `Harness::press_with`.
 /// let _ = (Key::Z, ctrl);
 /// ```
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Mods {
     /// Shift.
     pub shift: bool,
@@ -90,6 +182,49 @@ pub struct Mods {
     pub ctrl: bool,
     /// Alt.
     pub alt: bool,
+}
+
+impl Mods {
+    /// No modifier keys.
+    ///
+    /// ```
+    /// assert_eq!(kargui::Mods::NONE, kargui::Mods::default());
+    /// ```
+    pub const NONE: Mods = Mods { shift: false, ctrl: false, alt: false };
+    /// Shift. Combine with `|`: `Mods::CTRL | Mods::SHIFT`.
+    ///
+    /// ```
+    /// assert!(kargui::Mods::SHIFT.shift);
+    /// ```
+    pub const SHIFT: Mods = Mods { shift: true, ctrl: false, alt: false };
+    /// Ctrl. Combine with `|`: `Mods::CTRL | Mods::SHIFT`.
+    ///
+    /// ```
+    /// use kargui::Mods;
+    /// let m = Mods::CTRL | Mods::SHIFT;
+    /// assert!(m.ctrl && m.shift && !m.alt);
+    /// ```
+    pub const CTRL: Mods = Mods { shift: false, ctrl: true, alt: false };
+    /// Alt. Combine with `|`: `Mods::ALT | Mods::SHIFT`.
+    ///
+    /// ```
+    /// assert!(kargui::Mods::ALT.alt);
+    /// ```
+    pub const ALT: Mods = Mods { shift: false, ctrl: false, alt: true };
+}
+
+impl std::ops::BitOr for Mods {
+    type Output = Mods;
+
+    /// Both sets of modifier keys.
+    ///
+    /// ```
+    /// use kargui::Mods;
+    /// assert_eq!(Mods::CTRL | Mods::ALT, Mods { shift: false, ctrl: true, alt: true });
+    /// ```
+    fn bitor(self, other: Mods) -> Mods {
+        Mods { shift: self.shift || other.shift, ctrl: self.ctrl || other.ctrl, alt: self.alt || other.alt }
+    }
 }
 
 /// 読み上げソフトなどから届いた操作
