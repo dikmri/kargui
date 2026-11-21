@@ -1,53 +1,88 @@
 # kargui
 
-Rust で書く、軽いネイティブ GUI フレームワーク（作成中、Windows 10/11）。名前は「軽い」「Rust」「GUI」から。
+A light native GUI framework for Rust (Windows 10/11, work in progress). The name comes from the
+Japanese word *karui* (light), Rust and GUI. [日本語の README](README.ja.md) (the original; this is a translation).
 
-Tauri・egui・GPUI を同じアプリ（タスク帳）で比べた実験（[AI コーディングノートの実験レポート番外編](https://dikmri.github.io/ai-coding-notes/reports/rust-gui/)）を受けて、3 つの長所を残し、短所をなくすことを目指す。性能は前回と同じ道具・同じ条件で測り、各項目で前回の最良より 3 割良いことを目標にする。
+kargui started from an experiment that built the same app (a task book) with Tauri, egui and GPUI and
+measured them ([report, in Japanese](https://dikmri.github.io/ai-coding-notes/reports/rust-gui/)). It aims
+to keep their strengths and drop their weaknesses, and it is measured with the same tools and
+conditions, aiming to be 30% better than the best of the three on every axis.
 
-## 特徴
+## Features
 
-- **即時モードの書き方。** 状態は自分の構造体に持ち、`view` で毎回画面全体を書く（egui と同じ書きやすさ）。
-- **変わった所だけ描く。** 中で前の画面と比べ、既定の CPU の道で変わった所だけを描き直す。待機中は CPU を使わない。GPU の無い PC でも速い。
-- **日本語入力。** 変換を確定する Enter で送信しない、変換中は値を変えない、文節ごとの下線、候補の窓を文字の真下に出す、焦点を移しても変換中の文字を失わない。
-- **読み上げとキーボード。** AccessKit で全部の部品を UI オートメーションに渡す。名前の無い部品は記録で警告する。Tab で全部に届く。
-- **説明が古くならない。** 公開項目すべてに説明と動く例があり、ガイドのコードも試験で動かす。API が変わったのにガイドを直していないと、検査で落ちる。
+- **Immediate-mode code.** Keep your state in your own struct and describe the whole screen in
+  `view` every time (as easy to write as egui).
+- **Redraws only what changed.** kargui compares with the previous screen and, on the default CPU
+  renderer, redraws only the changed parts. It uses no CPU while idle and is fast without a GPU.
+- **Input methods (IME).** The Enter that commits a composition does not submit, the value does not
+  change while composing, each clause is underlined, the candidate window appears right below the
+  text, and moving focus never loses the composed text.
+- **Screen readers and the keyboard.** Every widget is given to UI Automation through AccessKit;
+  widgets without a name are reported in the log; Tab reaches everything.
+- **Documentation that stays current.** Every public item has a doc comment and a runnable example,
+  the guide's code runs as tests, and the checks fail when the API changes without the guide being
+  updated.
 
-## 部品
+## Widgets
 
-見出し・ラベル（折り返し、大きさ、右寄せ）・ボタン・チェック・スイッチ・選択（segmented）・入力欄・スライダー・一覧（見えている行だけ作る、行の選択、行を id で区別）・スクロールの入れ物。並べ方は行・列・重ね・残りを分ける（2 回で決める配置）。写真は [docs/widgets.md](docs/widgets.md)。
+Heading, label (wrapping, size, right alignment), button, check box, switch, dark mode switch,
+segmented choice, text input, slider, list (builds only the visible rows, row selection, rows keyed by
+your ids) and scroll container. Layout: row, column, stack, and sharing the remaining space (two-pass
+layout). Pictures: [docs/widgets.md](docs/widgets.md).
 
-## 動かし方
+```rust,no_run
+use kargui::{App, Options, Ui};
+
+struct Counter {
+    count: u32,
+}
+
+impl App for Counter {
+    fn view(&mut self, ui: &mut Ui) {
+        ui.row(|ui| {
+            ui.label(format!("Count: {}", self.count));
+            if ui.button("Add 1").clicked() {
+                self.count += 1;
+            }
+        });
+    }
+}
+
+fn main() {
+    kargui::run(Options::new("Counter"), Counter { count: 0 }).unwrap();
+}
+```
+
+## Measured (task book, same tools and PC as the earlier comparison)
+
+| Axis | kargui (CPU renderer) | Best of Tauri, egui, GPUI | Target |
+|---|---|---|---|
+| Startup (empty list) | 42 ms | 344 ms (egui, glow) | 330 ms |
+| Memory (10,000 items, idle) | 5.4 MB | 17.9 MB (GPUI) | 12.5 MB |
+| CPU per frame while scrolling (measuring tool) | 0.36 ms | 1.97 ms (egui) | 1.2 ms |
+| Idle CPU | 0 | 0 (egui) | 0.16% |
+| Executable size | 1.0 MB | 6.7 MB (egui) | 4.5 MB |
+| Task book UI code | 198 lines | 316 lines (egui) | 220 lines |
+
+The measuring tool counts CPU time in 15.6 ms ticks, so per-frame values of about 1 ms vary between
+runs; kargui's own timer reports about 0.58 ms of work per scrolling frame.
+
+## Run the examples
 
 ```powershell
-cargo run --release -p taskbook-kargui -- --items 10000   # タスク帳（前回の比べと同じアプリ）
-cargo run --release -p settings-kargui                    # 設定画面
-cargo run --release -p reader-kargui                      # 長い文を読む画面
-cargo run --release -p table-kargui                       # 1 万件の表
+cargo run --release -p taskbook-kargui -- --items 10000
+cargo run --release -p settings-kargui
+cargo run --release -p reader-kargui
+cargo run --release -p table-kargui
 ```
 
-記録は `logs/<アプリ>.log` に 1 行ずつ書く（時刻・出来事・引数・結果）。
+## Documentation
 
-```
-2026-11-21T12:17:48.204Z t_ms=1795263468204 app=kargui-table event=ready args="app=table items=10000" result="since_main_ms=34"
-```
-
-## 説明
-
-- ガイド: [日本語](docs/guide/ja/README.md)（元）・[English](docs/guide/en/README.md)（訳）
+- Guide: [English](docs/guide/en/README.md) (translation), [日本語](docs/guide/ja/README.md) (original)
 - API: `cargo doc -p kargui --open`
-- AI 向けの索引: [docs/llms.txt](docs/llms.txt)
+- For AI: [docs/llms.txt](docs/llms.txt)
+- Working on kargui: [AGENTS.md](AGENTS.md)
 
-## 検査
+## License
 
-```powershell
-cargo test --workspace --exclude kargui-spike   # 単体の試験・説明とガイドの例
-cargo run -p xtask -- check                      # 説明と例の割合・部品の写真・AI 向けの索引・ガイドの古さ
-```
-
-日本語入力の確かめは前面の窓へキー入力をまねるので、作者が席を外している間だけ走らせる（`tools/away-run.ps1`）。
-
-## 今の状態
-
-段階 3（書きやすさと説明）を進めている。計画と測った数字は作者の MyWiki（rust-gui-framework）にある。GitHub への公開は段階 4。
-
-ライセンスは MIT OR Apache-2.0（公開の時に決める予定）。
+MIT OR Apache-2.0 ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
