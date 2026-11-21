@@ -122,6 +122,8 @@ pub(crate) struct Context {
     pub pointer_text: Option<(Id, f32, f32, bool)>,
     /// 押している部品の上のポインターの位置（押した・動かした・離した時に入れる）
     pub pointer: Option<(f32, f32)>,
+    /// 配置の後に、いちばん近いスクロールの入れ物の上端へ持ってくる部品（Handle::scroll_into_view）
+    pub scroll_into_view: Option<Id>,
     /// このフレームでポインターを離した部品（押した部品の上で離した時。スライダーが押した位置を読む）
     pub released: Option<Id>,
     /// 変換中の文字（焦点のある入力欄の中に描く）
@@ -167,6 +169,7 @@ impl Context {
             pointer_text: None,
             pointer: None,
             released: None,
+            scroll_into_view: None,
             preedit: String::new(),
             preedit_clauses: None,
             pending_commit: None,

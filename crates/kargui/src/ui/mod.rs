@@ -198,7 +198,7 @@ impl<'a> Ui<'a> {
 
     fn handle(&mut self, idx: usize, id: Id) -> Handle<'_> {
         let parent_dir = self.parent_dir();
-        Handle { tree: &mut *self.tree, idx, id, scale: self.cx.scale, parent_dir }
+        Handle { cx_scroll: &mut self.cx.scroll_into_view, tree: &mut *self.tree, idx, id, scale: self.cx.scale, parent_dir }
     }
 
     // ---- 入れ物 ----
@@ -761,6 +761,7 @@ impl<'a> Ui<'a> {
 
 /// Settings shared by all widgets: size, spacing and accessibility name.
 pub struct Handle<'t> {
+    cx_scroll: &'t mut Option<Id>,
     tree: &'t mut Tree,
     idx: usize,
     id: Id,
@@ -828,6 +829,30 @@ impl Handle<'_> {
         self.id
     }
 
+    /// Scrolls the nearest [`Ui::scroll`] container that holds this widget so that the widget is at
+    /// the top (or as close as the content allows), after this frame is laid out. Use it to jump to
+    /// a chapter from a table of contents.
+    ///
+    /// ```
+    /// # let mut jump_to: Option<usize> = Some(2);
+    /// # kargui::test::example(|ui| {
+    /// ui.scroll(|ui| {
+    ///     for chapter in 0..5 {
+    ///         let heading = ui.heading(format!("Chapter {chapter}"));
+    ///         if jump_to == Some(chapter) {
+    ///             heading.scroll_into_view();
+    ///         }
+    ///         ui.label("...").wrap();
+    ///     }
+    /// });
+    /// jump_to = None;
+    /// # });
+    /// ```
+    pub fn scroll_into_view(self) -> Self {
+        *self.cx_scroll = Some(self.id);
+        self
+    }
+
     fn kind(&mut self) -> &mut Kind {
         &mut self.tree.info[self.idx].kind
     }
@@ -851,6 +876,10 @@ macro_rules! common {
             /// The widget's identity.
             pub fn id(&self) -> Id {
                 self.h.id
+            }
+            /// Scrolls the nearest scroll container so this widget is at its top. See [`Handle::scroll_into_view`].
+            pub fn scroll_into_view(self) -> Self {
+                Self { h: self.h.scroll_into_view(), ..self }
             }
         }
     };
@@ -913,6 +942,10 @@ impl Label<'_> {
     /// Sets the width. See [`Handle::width`].
     pub fn width(self, size: Size) -> Self {
         Label(self.0.width(size))
+    }
+    /// Scrolls the nearest scroll container so this text is at its top. See [`Handle::scroll_into_view`].
+    pub fn scroll_into_view(self) -> Self {
+        Label(self.0.scroll_into_view())
     }
 }
 

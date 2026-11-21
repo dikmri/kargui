@@ -668,6 +668,47 @@ mod tests {
         }
     }
 
+    /// 目次から章へ飛ぶ読み物
+    struct Reader {
+        jump: Option<usize>,
+    }
+
+    impl App for Reader {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.scroll(|ui| {
+                for ch in 0..8 {
+                    let heading = ui.heading(format!("Chapter {ch}"));
+                    if self.jump == Some(ch) {
+                        heading.scroll_into_view();
+                    }
+                    for p in 0..6 {
+                        ui.label(format!("Paragraph {ch}.{p}"));
+                    }
+                }
+            });
+            self.jump = None;
+        }
+    }
+
+    #[test]
+    fn scroll_into_view_puts_the_widget_at_the_top() {
+        let mut h = Harness::with_size(Reader { jump: None }, 400.0, 300.0, 1.0);
+        h.frame();
+        let area = h.rt.cx.prev.lists[0].rect;
+        h.app_mut().jump = Some(3);
+        h.frame();
+        assert_eq!(h.find("Chapter 3").unwrap().y, area.y, "3 章の見出しが入れ物の上端に来る");
+        // 最後の章は中身の端で止まる（上端までは来ない）
+        h.app_mut().jump = Some(7);
+        h.frame();
+        let end = h.find("Paragraph 7.5").unwrap();
+        assert!((end.bottom() - area.bottom()).abs() <= 1.0, "最後の段落 {end:?} が下端 {area:?}");
+        // 1 章に戻る
+        h.app_mut().jump = Some(1);
+        h.frame();
+        assert_eq!(h.find("Chapter 1").unwrap().y, area.y);
+    }
+
     fn settings() -> Harness<Settings> {
         let mut h = Harness::with_size(Settings { options: vec![false; 30] }, 400.0, 300.0, 1.0);
         h.frame();

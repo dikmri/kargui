@@ -125,6 +125,27 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
     if clamped {
         layout::layout(&mut tree.layout, 0, window);
     }
+    // 頼まれた部品を、いちばん近いスクロールの入れ物の上端へ持ってくる
+    if let Some(target) = cx.scroll_into_view.take() {
+        if let Some(t) = tree.info.iter().position(|n| n.id == target) {
+            let scroller = (0..tree.info.len()).rev().find(|&s| matches!(tree.info[s].kind, Kind::Scroll) && contains(tree, s, t));
+            if let Some(s) = scroller {
+                let l = &tree.layout[s];
+                let max = (l.content - l.rect.h).max(0.0).round();
+                let want = (l.offset + tree.layout[t].rect.y - (l.rect.y + l.pad.1)).clamp(0.0, max).round();
+                if (want - l.offset).abs() > 0.5 {
+                    tree.layout[s].offset = want;
+                    cx.scrolls.insert(tree.info[s].id, want / cx.scale);
+                    layout::layout(&mut tree.layout, 0, window);
+                }
+            }
+        }
+    }
+}
+
+/// a の下に t があるか（a 自身を含まない）
+fn contains(tree: &Tree, a: usize, t: usize) -> bool {
+    tree.layout[a].children.iter().any(|&c| c == t || contains(tree, c, t))
 }
 
 fn put(d: &mut DrawList, laid: &Laid, x: f32, y: f32, color: Color) {
