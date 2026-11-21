@@ -249,6 +249,8 @@ struct State {
     t_draw: f64,
     t_wait: f64,
     slow_frames: u32,
+    /// アニメーション 1 回分の、作る・描くの時間の合計（終わった時に anim.summary として記録する）
+    anim: AnimStats,
 }
 
 thread_local! {
@@ -441,6 +443,33 @@ impl State {
         }
         self.last_tick = Some(now);
         self.frame("animation");
+        let work = self.t_build + self.t_draw;
+        let a = &mut self.anim;
+        a.frames += 1;
+        a.build_ms += self.t_build;
+        a.draw_ms += self.t_draw;
+        a.max_ms = a.max_ms.max(work);
+    }
+
+    /// アニメーションが止まったら、その間の作る・描くの時間をまとめて記録する。
+    /// 待ちを含まない、このスレッドの仕事の時間（測定の道具の CPU の時間は 15.6 ms 単位で粗いため）
+    fn end_animation(&mut self) {
+        let a = std::mem::take(&mut self.anim);
+        if a.frames == 0 {
+            return;
+        }
+        let n = a.frames as f64;
+        log::event(
+            "anim.summary",
+            &format!("frames={}", a.frames),
+            &format!(
+                "build_ms_per_frame={:.3} draw_ms_per_frame={:.3} work_ms_per_frame={:.3} work_ms_max={:.2}",
+                a.build_ms / n,
+                a.draw_ms / n,
+                (a.build_ms + a.draw_ms) / n,
+                a.max_ms
+            ),
+        );
     }
 
     fn wait_vblank(&mut self) {
@@ -961,6 +990,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             t_draw: 0.0,
             t_wait: 0.0,
             slow_frames: 0,
+            anim: AnimStats::default(),
         })
     });
 
@@ -993,7 +1023,10 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             drain_post();
             with_state(|st| st.wait_vblank());
         } else {
-            with_state(|st| st.last_tick = None);
+            with_state(|st| {
+                st.last_tick = None;
+                st.end_animation();
+            });
             let r = unsafe { GetMessageW(&mut msg, None, 0, 0) };
             if r.0 == 0 || r.0 == -1 {
                 break;
@@ -1079,4 +1112,13 @@ unsafe fn write_reconvert(rs: *mut RECONVERTSTRING, r: &ime::Reconvert) -> bool 
         *text.add(r.text.len()) = 0;
     }
     true
+}
+
+/// アニメーション 1 回分の時間の合計
+#[derive(Default)]
+struct AnimStats {
+    frames: u32,
+    build_ms: f64,
+    draw_ms: f64,
+    max_ms: f64,
 }
