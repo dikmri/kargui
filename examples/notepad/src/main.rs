@@ -220,8 +220,9 @@ impl App for Notepad {
                     }
                 }
                 Some(1) => {
+                    // dirty はここで消さない。開くを取り消すと書きかけが残るので、変更なしに戻すのは
+                    // 実際に置き換えた時（新規・読み込み）だけ。終了は ui.quit で、もう聞かずに閉じる
                     self.asking = None;
-                    self.dirty = false;
                     self.go(ui, then);
                 }
                 // キャンセルか Esc
@@ -378,5 +379,20 @@ mod tests {
         let mut h = app();
         h.press_with(Key::Q, Mods::CTRL);
         assert!(h.is_closed(), "変更が無ければすぐ閉じる");
+    }
+
+    #[test]
+    fn dont_save_then_cancelling_open_keeps_the_changes() {
+        // 作者の記録（2026-11-22 01:07）: 書きかけ → Ctrl+O →「保存しない」→ 開くを取り消し → 閉じると、聞かずに閉じた
+        let mut h = app();
+        h.click("ここに書きます").type_text("さしす");
+        h.press_with(Key::O, Mods::CTRL).click("保存しない");
+        assert_eq!(h.file_dialog_key().as_deref(), Some("open"));
+        h.cancel_file_dialog();
+        assert_eq!(h.app().text, "さしす");
+        assert!(h.app().dirty, "開いていないので、変更は残る");
+        h.request_close();
+        assert!(!h.is_closed(), "閉じる前にもう一度聞く");
+        assert!(h.find("変更を保存しますか？").is_some());
     }
 }
