@@ -667,6 +667,44 @@ impl<A: App> Harness<A> {
         self
     }
 
+    /// Drops files from another app (for example Explorer) on the widget named `target`: the files
+    /// enter the window, move over the middle of `target` (one frame each) and are released there.
+    /// The widget that takes `Vec<PathBuf>` with [`Handle::dropped`](crate::ui::Handle::dropped)
+    /// receives them.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// use std::path::PathBuf;
+    ///
+    /// struct Viewer {
+    ///     opened: Vec<PathBuf>,
+    /// }
+    ///
+    /// impl App for Viewer {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         let mut area = ui.column(|ui| {
+    ///             ui.heading("Drop pictures here");
+    ///         });
+    ///         if let Some(paths) = area.dropped::<Vec<PathBuf>>() {
+    ///             self.opened.extend(paths);
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Viewer { opened: vec![] });
+    /// h.drop_files("Drop pictures here", &["C:\\photos\\cat.png"]);
+    /// assert_eq!(h.app().opened, [PathBuf::from("C:\\photos\\cat.png")]);
+    /// ```
+    pub fn drop_files(&mut self, target: &str, paths: &[&str]) -> &mut Self {
+        let (x, y) = self.center(target);
+        let paths = paths.iter().map(std::path::PathBuf::from).collect();
+        // 窓の端から入って、先の部品の上まで動かす
+        self.send(vec![Event::FileDragEnter { x: 1.0, y: 1.0, paths }]);
+        self.send(vec![Event::FileDragOver { x, y }]);
+        self.send(vec![Event::FileDrop { x, y }])
+    }
+
     /// Releases the pointer button where [`Harness::drag_over`] left it. Does nothing if the button
     /// is not held.
     ///
@@ -4470,5 +4508,85 @@ mod tests {
         assert_eq!(h.cur().cx.drag_cursor(bx, by), Some(false), "受け取れない所は禁止の形");
         h.send(vec![Event::PointerUp { x: bx, y: by }]);
         assert_eq!(h.cur().cx.drag_cursor(bx, by), None);
+    }
+
+    /// ほかのアプリ（エクスプローラー）から落とすファイル: Vec<PathBuf> として届く
+    struct FileShelf {
+        opened: Vec<std::path::PathBuf>,
+        accept: bool,
+    }
+
+    impl App for FileShelf {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.row(|ui| {
+                let mut shelf = ui
+                    .column(|ui| {
+                        ui.heading("Drop files here");
+                        for p in &self.opened {
+                            ui.label(p.display().to_string());
+                        }
+                    })
+                    .width(Size::Fixed(300.0))
+                    .height(Size::Fixed(200.0));
+                if self.accept {
+                    if let Some(paths) = shelf.dropped::<Vec<std::path::PathBuf>>() {
+                        self.opened.extend(paths);
+                    }
+                }
+                ui.label("Not here");
+                // 窓の中の引っ張り（ファイルの行）も、同じ型なら同じ部品が受け取る
+                ui.label("notes.txt").drag_source(vec![std::path::PathBuf::from("notes.txt")]);
+            });
+        }
+    }
+
+    fn shelf(accept: bool) -> Harness<FileShelf> {
+        Harness::with_size(FileShelf { opened: vec![], accept }, 640.0, 240.0, 1.0)
+    }
+
+    #[test]
+    fn files_dropped_from_another_app_arrive_as_paths() {
+        let mut h = shelf(true);
+        assert!(h.cur().cx.wants_files, "ファイルを受け取る部品があれば、窓が OS に届け出る印を立てる");
+        h.drop_files("Drop files here", &["C:\\docs\\a.txt", "C:\\docs\\b.md"]);
+        assert_eq!(h.app().opened, [std::path::PathBuf::from("C:\\docs\\a.txt"), std::path::PathBuf::from("C:\\docs\\b.md")]);
+        assert!(h.cur().cx.dnd.is_none() && h.cur().cx.drop.is_none());
+        assert!(h.find("C:\\docs\\a.txt").is_some(), "落とした後のフレームで描いている");
+    }
+
+    #[test]
+    fn files_over_a_place_that_does_not_take_them_show_not_allowed_and_leaving_cancels() {
+        let mut h = shelf(true);
+        let (nx, ny) = mid_of(&h, "Not here");
+        let (sx, sy) = mid_of(&h, "Drop files here");
+        h.send(vec![Event::FileDragEnter { x: nx, y: ny, paths: vec!["C:\\x.txt".into()] }]);
+        assert!(h.cur().cx.dnd.as_ref().is_some_and(|d| d.external), "ほかのアプリからの引っ張り（影は描かない）");
+        assert_eq!(h.cur().cx.drag_cursor(nx, ny), Some(false));
+        assert!(!h.cur().cx.accepts_files_at(nx, ny));
+        assert!(h.cur().cx.accepts_files_at(sx, sy), "窓の処理が OS に答える（その場で前のフレームの配置から）");
+        h.send(vec![Event::FileDragOver { x: sx, y: sy }]);
+        assert!(h.cur().cx.dnd.as_ref().and_then(|d| d.over).is_some(), "受け取る部品を囲む");
+        h.send(vec![Event::FileDragLeave]);
+        assert!(h.cur().cx.dnd.is_none(), "窓の外へ出たら取り消す");
+        h.send(vec![Event::FileDragEnter { x: nx, y: ny, paths: vec!["C:\\x.txt".into()] }, Event::FileDrop { x: nx, y: ny }]);
+        assert!(h.app().opened.is_empty(), "受け取らない所に落としても何も起きない");
+    }
+
+    #[test]
+    fn a_window_without_file_targets_does_not_ask_for_files() {
+        let h = shelf(false);
+        assert!(!h.cur().cx.wants_files, "使わないアプリは OS に届け出ない（起動を遅くしない）");
+    }
+
+    #[test]
+    fn an_in_window_drag_of_paths_lands_on_the_same_target() {
+        let mut h = shelf(true);
+        h.drag_to("notes.txt", "Drop files here");
+        assert_eq!(h.app().opened, [std::path::PathBuf::from("notes.txt")]);
+    }
+
+    fn mid_of<A: App>(h: &Harness<A>, name: &str) -> (f32, f32) {
+        let r = h.find(name).unwrap_or_else(|| panic!("{name}"));
+        (r.x + r.w / 2.0, r.y + r.h / 2.0)
     }
 }

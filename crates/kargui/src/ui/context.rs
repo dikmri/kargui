@@ -137,7 +137,12 @@ pub(crate) struct Dnd {
     pub at: (f32, f32),
     /// ポインターの下の、この荷物を受け取れる部品（強調して描く）
     pub over: Option<Id>,
+    /// ほかのアプリ（エクスプローラーなど）から来た引っ張り。荷物は Vec<PathBuf>。影は描かない（OS が描く）
+    pub external: bool,
 }
+
+/// ほかのアプリからの引っ張りの、元の部品の代わりの名前
+pub(crate) const EXTERNAL_SOURCE: Id = Id(0x6669_6c65_7300); // "files"
 
 /// 離した所で受け取る物。荷物はビューで元の部品から受け取り（押す・動かす・離すが 1 回に届いた時はここで初めて
 /// 入る）、そろったら Handle::dropped が渡す。フレームの終わりまでに受け取られなければ捨てる
@@ -285,6 +290,9 @@ pub(crate) struct Context {
     pub dnd: Option<Dnd>,
     /// 離した所で受け取る物（フレームの終わりまで持つ。入力の回の後の描く回でも受け取れる）
     pub drop: Option<PendingDrop>,
+    /// ファイル（Vec<PathBuf>）を受け取る部品がある。窓の処理はこれを見て、OS にファイルを落とせる窓だと届け出る
+    /// （使わないアプリは届け出ず、OLE の準備をしない）
+    pub wants_files: bool,
     /// ポインターが乗っているスクロールの棒（一覧の id）
     pub bar_hover: Option<Id>,
     /// つかんでいるスクロールの棒のつまみ
@@ -382,6 +390,7 @@ impl Context {
             press_source: None,
             dnd: None,
             drop: None,
+            wants_files: false,
             bar_hover: None,
             drag: None,
             focus_visible: false,
@@ -648,7 +657,22 @@ impl Context {
         self.pointer = None;
         self.tooltip_hidden = self.hover;
         log::event("drag.start", &format!("source={:x} text={text:?}", source.0), &format!("at={x:.0},{y:.0}"));
-        self.dnd = Some(Dnd { source, payload: None, rect, grab: (x0 - rect.x, y0 - rect.y), text, at: (x, y), over: None });
+        self.dnd = Some(Dnd { source, payload: None, rect, grab: (x0 - rect.x, y0 - rect.y), text, at: (x, y), over: None, external: false });
+    }
+
+    /// (x, y) にファイル（Vec<PathBuf>）を受け取る部品があるか。窓の処理が OS の問い合わせ（IDropTarget）にその場で答える
+    pub fn accepts_files_at(&self, x: f32, y: f32) -> bool {
+        let ty = std::any::TypeId::of::<Vec<std::path::PathBuf>>();
+        self.targets_at(x, y).iter().any(|t| t.1 == ty)
+    }
+
+    /// ほかのアプリからファイルを引っ張って入ってきた。荷物は初めから分かっている
+    fn enter_files(&mut self, x: f32, y: f32, paths: Vec<std::path::PathBuf>) {
+        self.cancel_drag("another drag entered");
+        log::event("drag.files_enter", &format!("files={} at={x:.0},{y:.0}", paths.len()), &format!("accepts={}", self.accepts_files_at(x, y)));
+        let text = format!("{} files", paths.len());
+        self.dnd = Some(Dnd { source: EXTERNAL_SOURCE, payload: Some(Box::new(paths)), rect: Rect::new(x, y, 0.0, 0.0), grab: (0.0, 0.0), text, at: (x, y), over: None, external: true });
+        self.move_drag(x, y);
     }
 
     /// 引っ張っている物を (x, y) へ動かし、下の受け取る部品を決め直す
@@ -807,6 +831,22 @@ impl Context {
                     }
                 }
                 Event::PointerCancel => self.cancel_drag("capture lost"),
+                Event::FileDragEnter { x, y, paths } => self.enter_files(x, y, paths),
+                Event::FileDragOver { x, y } => {
+                    if self.dnd.as_ref().is_some_and(|d| d.external) {
+                        self.move_drag(x, y);
+                    }
+                }
+                Event::FileDragLeave => {
+                    if self.dnd.as_ref().is_some_and(|d| d.external) {
+                        self.cancel_drag("left the window");
+                    }
+                }
+                Event::FileDrop { x, y } => {
+                    if let Some(d) = self.dnd.take_if(|d| d.external) {
+                        self.finish_drag(d, x, y);
+                    }
+                }
                 // 引っ張っている間の Esc は、引っ張りだけをやめる
                 Event::Key { key: Key::Escape, .. } if self.dnd.is_some() => self.cancel_drag("escape"),
                 Event::Wheel { x, y, dy } => {

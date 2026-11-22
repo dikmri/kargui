@@ -96,6 +96,8 @@ enum Post {
     FileDialog(HWND, String, crate::file_dialog::FileDialog),
     /// アプリを終える（Ui::quit。主の窓を壊す）
     Quit,
+    /// ほかのアプリからファイルを落とせる窓だと OS に届け出る（OLE の準備を借りの外で行う）
+    AcceptFiles(HWND),
 }
 
 /// 読み上げの操作を、窓の持ち主のスレッドへ渡す係（AccessKit は別のスレッドから呼ぶことがある）
@@ -241,6 +243,166 @@ fn ensure_com() {
     if !DONE.with(|d| d.replace(true)) {
         let r = unsafe { windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED) };
         log::event("com.init", "apartment=sta", &format!("{r:?}"));
+    }
+}
+
+/// ほかのアプリからファイルを落とせる窓にする（OS に届け出る）。Vec<PathBuf> を受け取る部品が初めて現れた時に 1 回だけ
+/// 呼ぶ。OLE の準備はここまで遅らせ、使わないアプリの起動を遅くしない
+fn accept_files(hwnd: HWND) {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::System::Ole::{IDropTarget, OleInitialize, RegisterDragDrop};
+    use windows::Win32::UI::Shell::{CLSID_DragDropHelper, IDropTargetHelper};
+    let init = unsafe { OleInitialize(None) };
+    // 引っ張っている物の絵（エクスプローラーのファイルの絵）を、この窓の上でも OS に描いてもらう係
+    let helper: Option<IDropTargetHelper> = unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) }.ok();
+    let has_helper = helper.is_some();
+    let target: IDropTarget = DropTarget { hwnd, helper, files: std::cell::Cell::new(false) }.into();
+    let res = unsafe { RegisterDragDrop(hwnd, &target) };
+    log::event("files.accept", &format!("ole={init:?} helper={has_helper}"), &format!("{res:?}"));
+    if res.is_ok() {
+        with_window(hwnd, |st| st.file_drop = Some(target));
+    }
+}
+
+/// 落とされた物（IDataObject）の中のファイルのパス（CF_HDROP）。ファイルでなければ空
+fn dropped_paths(data: &windows::Win32::System::Com::IDataObject) -> Vec<std::path::PathBuf> {
+    use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
+    use windows::Win32::System::Ole::{CF_HDROP, ReleaseStgMedium};
+    let fmt = FORMATETC { cfFormat: CF_HDROP.0, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 };
+    let Ok(mut medium) = (unsafe { data.GetData(&fmt) }) else { return Vec::new() };
+    let hdrop = windows::Win32::UI::Shell::HDROP(unsafe { medium.u.hGlobal.0 });
+    let paths = drag_query_files(hdrop);
+    unsafe { ReleaseStgMedium(&mut medium) };
+    paths
+}
+
+/// HDROP の中のパスを全部読む。DragQueryFileW は shell32.dll にあり、ふつうに読み込むと起動が遅くなるので、使う時に探して呼ぶ
+fn drag_query_files(hdrop: windows::Win32::UI::Shell::HDROP) -> Vec<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows::core::s;
+    type Query = unsafe extern "system" fn(windows::Win32::UI::Shell::HDROP, u32, *mut u16, u32) -> u32;
+    let Some(f) = (unsafe { LoadLibraryW(w!("shell32.dll")).ok().and_then(|m| GetProcAddress(m, s!("DragQueryFileW"))) }) else {
+        return Vec::new();
+    };
+    let query: Query = unsafe { std::mem::transmute(f) };
+    let n = unsafe { query(hdrop, u32::MAX, std::ptr::null_mut(), 0) };
+    (0..n)
+        .filter_map(|i| {
+            let len = unsafe { query(hdrop, i, std::ptr::null_mut(), 0) };
+            let mut buf = vec![0u16; len as usize + 1];
+            let got = unsafe { query(hdrop, i, buf.as_mut_ptr(), buf.len() as u32) };
+            (got > 0).then(|| std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..got as usize])))
+        })
+        .collect()
+}
+
+/// OS からの「ファイルを引っ張って窓に入った・動いた・出た・落とした」を、kargui の入力に変える係（IDropTarget）。
+/// 受け取れるか（ポインターの形）は、前のフレームの配置からその場で答える
+#[windows::core::implement(windows::Win32::System::Ole::IDropTarget)]
+struct DropTarget {
+    hwnd: HWND,
+    helper: Option<windows::Win32::UI::Shell::IDropTargetHelper>,
+    /// 今の引っ張りがファイルを運んでいる（DragEnter で決め、出たか落としたら戻す）
+    files: std::cell::Cell<bool>,
+}
+
+impl DropTarget {
+    fn client(&self, pt: &windows::Win32::Foundation::POINTL) -> (f32, f32) {
+        let mut p = POINT { x: pt.x, y: pt.y };
+        unsafe {
+            let _ = ScreenToClient(self.hwnd, &mut p);
+        }
+        (p.x as f32, p.y as f32)
+    }
+
+    /// (x, y) で受け取れればコピーの形、受け取れなければ禁止の形を OS に返す
+    fn answer(&self, x: f32, y: f32, effect: *mut windows::Win32::System::Ole::DROPEFFECT) -> windows::Win32::System::Ole::DROPEFFECT {
+        use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_NONE};
+        let ok = self.files.get() && with_window(self.hwnd, |st| st.rt.cx.accepts_files_at(x, y)).unwrap_or(false);
+        let e = if ok { DROPEFFECT_COPY } else { DROPEFFECT_NONE };
+        if !effect.is_null() {
+            unsafe { *effect = e };
+        }
+        e
+    }
+
+    fn push(&self, e: Event) {
+        with_window(self.hwnd, |st| st.push(e));
+    }
+}
+
+impl windows::Win32::System::Ole::IDropTarget_Impl for DropTarget_Impl {
+    fn DragEnter(
+        &self,
+        data: windows::core::Ref<windows::Win32::System::Com::IDataObject>,
+        _keys: windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS,
+        pt: &windows::Win32::Foundation::POINTL,
+        effect: *mut windows::Win32::System::Ole::DROPEFFECT,
+    ) -> windows::core::Result<()> {
+        let paths = data.ok().map(dropped_paths).unwrap_or_default();
+        let (x, y) = self.client(pt);
+        let count = paths.len();
+        self.files.set(count > 0);
+        if count > 0 {
+            self.push(Event::FileDragEnter { x, y, paths });
+        }
+        let e = self.answer(x, y, effect);
+        log::event("files.drag_enter", &format!("files={count} x={x} y={y}"), &format!("effect={}", e.0));
+        if let (Some(h), Ok(d)) = (&self.helper, data.ok()) {
+            let p = POINT { x: pt.x, y: pt.y };
+            let _ = unsafe { h.DragEnter(self.hwnd, d, &p, e) };
+        }
+        Ok(())
+    }
+
+    fn DragOver(
+        &self,
+        _keys: windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS,
+        pt: &windows::Win32::Foundation::POINTL,
+        effect: *mut windows::Win32::System::Ole::DROPEFFECT,
+    ) -> windows::core::Result<()> {
+        let (x, y) = self.client(pt);
+        if self.files.get() {
+            self.push(Event::FileDragOver { x, y });
+        }
+        let e = self.answer(x, y, effect);
+        if let Some(h) = &self.helper {
+            let p = POINT { x: pt.x, y: pt.y };
+            let _ = unsafe { h.DragOver(&p, e) };
+        }
+        Ok(())
+    }
+
+    fn DragLeave(&self) -> windows::core::Result<()> {
+        if self.files.replace(false) {
+            self.push(Event::FileDragLeave);
+        }
+        log::event("files.drag_leave", "", "ok");
+        if let Some(h) = &self.helper {
+            let _ = unsafe { h.DragLeave() };
+        }
+        Ok(())
+    }
+
+    fn Drop(
+        &self,
+        data: windows::core::Ref<windows::Win32::System::Com::IDataObject>,
+        _keys: windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS,
+        pt: &windows::Win32::Foundation::POINTL,
+        effect: *mut windows::Win32::System::Ole::DROPEFFECT,
+    ) -> windows::core::Result<()> {
+        let (x, y) = self.client(pt);
+        let e = self.answer(x, y, effect);
+        if self.files.replace(false) {
+            self.push(Event::FileDrop { x, y });
+        }
+        log::event("files.drop", &format!("x={x} y={y}"), &format!("effect={}", e.0));
+        if let (Some(h), Ok(d)) = (&self.helper, data.ok()) {
+            let p = POINT { x: pt.x, y: pt.y };
+            let _ = unsafe { h.Drop(d, &p, e) };
+        }
+        Ok(())
     }
 }
 
@@ -446,6 +608,9 @@ struct State {
     tracking_leave: bool,
     /// 引っ張っている間に最後に決めたポインターの形（true は矢印、false は禁止の形）。変わった時だけ記録する
     drag_cursor: Option<bool>,
+    /// ほかのアプリからファイルを受け取る係（OS に届け出た物。窓を壊す時に取り消す）と、届け出を頼んだか
+    file_drop: Option<windows::Win32::System::Ole::IDropTarget>,
+    file_drop_asked: bool,
     // 遅いフレームの内訳
     last_tick: Option<Instant>,
     t_build: f64,
@@ -555,6 +720,7 @@ fn do_post(p: Post) {
                     st.need_frame = true;
                 });
             }
+            Post::AcceptFiles(hwnd) => accept_files(hwnd),
             Post::Quit => {
                 if let Some(h) = with_state(|st| st.hwnd) {
                     let res = unsafe { DestroyWindow(h) };
@@ -693,6 +859,11 @@ impl State {
         // ファイルのダイアログは、描いた後で借りの外で出す
         if let Some((key, d)) = self.rt.cx.file_dialog_request.take() {
             self.post.push(Post::FileDialog(self.hwnd, key, d));
+        }
+        // ファイルを受け取る部品が初めて現れたら、OS にファイルを落とせる窓だと届け出る（1 回だけ）
+        if self.rt.cx.wants_files && !self.file_drop_asked {
+            self.file_drop_asked = true;
+            self.post.push(Post::AcceptFiles(self.hwnd));
         }
         // 入力で描いたら、ほかの窓も描き直す（アプリを共有するため。描き直しはそれ以上広げない）
         if why == "input" {
@@ -938,7 +1109,11 @@ impl State {
                 Some(LRESULT(0))
             }
             WM_DESTROY => {
-                // 窓が残っているうちに、GPU の物と読み上げを片付ける
+                // 窓が残っているうちに、GPU の物と読み上げを片付け、ファイルを落とせる窓の届け出を取り消す
+                if self.file_drop.take().is_some() {
+                    let res = unsafe { windows::Win32::System::Ole::RevokeDragDrop(self.hwnd) };
+                    log::event("files.revoke", "", &format!("{res:?}"));
+                }
                 self.adapter = None;
                 let had = self.surface.take().is_some();
                 if let Some(i) = self.icon.take() {
@@ -1497,6 +1672,8 @@ fn create_window(
         dark_title: None,
         tracking_leave: false,
         drag_cursor: None,
+        file_drop: None,
+        file_drop_asked: false,
         last_tick: None,
         t_build: 0.0,
         t_draw: 0.0,

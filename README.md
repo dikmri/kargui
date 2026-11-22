@@ -122,10 +122,10 @@ Not there yet:
   passwords, drop-downs, menus (menu bar, menu buttons, submenus and context menus), tabs, number
   inputs, toolbars, grids, split panes, drawing surfaces, trees, tables with headings and date
   pickers were added in 0.2; images are not drawn on the Direct3D 11 renderer yet).
-- **App mechanisms:** dropping files from other apps, choosing fonts, and animation helpers
-  (shortcuts, timers, waking from other threads, multiple windows, open and save file dialogs, the
-  window icon, a minimum window size and asking before closing were added in 0.2; drag and drop
-  inside the window is on the main branch).
+- **App mechanisms:** choosing fonts, and animation helpers (shortcuts, timers, waking from other
+  threads, multiple windows, open and save file dialogs, the window icon, a minimum window size and
+  asking before closing were added in 0.2; drag and drop inside the window and dropping files from
+  other apps are on the main branch).
 - **Platforms:** windows open on Windows 10/11 only. The Direct3D 11 renderer (not the default)
   occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
   NVDA. Apps cannot start a reconversion themselves.

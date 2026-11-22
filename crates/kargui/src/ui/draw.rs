@@ -508,22 +508,22 @@ impl Painter<'_> {
         // 引っ張り出せる部品と落とせる部品は、見えている範囲と、ここまでの当たりの数を覚える（後から上に描いた物に
         // 隠れているかを見るため）
         let (source, target) = (tree.info[i].drag_source, tree.info[i].drop_type);
-        if source || target.is_some() {
-            if let Some(c) = intersect(r, self.clip) {
-                let order = self.prev.hits.len();
-                if source {
-                    self.prev.drag_sources.push((id, c, super::a11y::drag_text(tree, i), order));
-                }
-                if let Some(t) = target {
-                    self.prev.drop_targets.push((id, c, t, order));
-                }
+        if (source || target.is_some())
+            && let Some(c) = intersect(r, self.clip)
+        {
+            let order = self.prev.hits.len();
+            if source {
+                self.prev.drag_sources.push((id, c, super::a11y::drag_text(tree, i), order));
+            }
+            if let Some(t) = target {
+                self.prev.drop_targets.push((id, c, t, order));
             }
         }
         self.node_body(tree, i);
-        if self.cx.dnd.as_ref().is_some_and(|d| d.over == Some(id)) {
-            if let Some(c) = intersect(r, self.clip) {
-                self.drop_highlight(c);
-            }
+        if self.cx.dnd.as_ref().is_some_and(|d| d.over == Some(id))
+            && let Some(c) = intersect(r, self.clip)
+        {
+            self.drop_highlight(c);
         }
     }
 
@@ -540,7 +540,8 @@ impl Painter<'_> {
     /// 引っ張っている物の影: 元の部品の大きさ（大きすぎれば縮める）の箱に名前を書き、つかんだ所がポインターの下に来るように
     /// 描く。重ねて出した物よりも上
     fn drag_ghost(&mut self) {
-        let Some(d) = self.cx.dnd.as_ref() else { return };
+        // ほかのアプリからの引っ張りは、OS（IDropTargetHelper）が引っ張っている物の絵を描く
+        let Some(d) = self.cx.dnd.as_ref().filter(|d| !d.external) else { return };
         let (w, h) = (d.rect.w.min(self.px(360.0)), d.rect.h.min(self.px(120.0)));
         let (gx, gy) = (d.grab.0.min(w), d.grab.1.min(h));
         let r = Rect::new((d.at.0 - gx).round(), (d.at.1 - gy).round(), w, h);

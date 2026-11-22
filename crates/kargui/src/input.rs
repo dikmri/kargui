@@ -248,6 +248,14 @@ pub(crate) enum Event {
     PointerMove { x: f32, y: f32 },
     /// 押している途中で、マウスのつかみが外れた（別の窓へ移った）。離した知らせは来ない
     PointerCancel,
+    /// ほかのアプリ（エクスプローラーなど）から、ファイルを引っ張って窓に入った（位置は物理ピクセル）
+    FileDragEnter { x: f32, y: f32, paths: Vec<std::path::PathBuf> },
+    /// ほかのアプリからの引っ張りが、窓の中で動いた
+    FileDragOver { x: f32, y: f32 },
+    /// ほかのアプリからの引っ張りが、落とさずに窓の外へ出た（Esc で取り消した時も）
+    FileDragLeave,
+    /// ほかのアプリからのファイルを、窓の中で落とした
+    FileDrop { x: f32, y: f32 },
     /// dy は論理ピクセル（下へ回すと正）
     Wheel { x: f32, y: f32, dy: f32 },
     Key { key: Key, mods: Mods },

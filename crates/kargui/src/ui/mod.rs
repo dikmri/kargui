@@ -3237,6 +3237,10 @@ impl Handle<'_> {
         }
         let ty = TypeId::of::<T>();
         self.tree.info[self.idx].drop_type = Some(ty);
+        // ファイルを受け取る部品がある窓だけが、OS にファイルを落とせる窓だと届け出る
+        if ty == TypeId::of::<Vec<PathBuf>>() {
+            self.cx.wants_files = true;
+        }
         let id = self.id;
         let d = self.cx.drop.as_ref()?;
         // 荷物がまだ無い: 元の部品がこの後で作られる。このフレームの描く回で受け取る

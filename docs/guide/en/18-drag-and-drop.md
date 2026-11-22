@@ -1,5 +1,5 @@
-<!-- source: ja/18-drag-and-drop.md fnv=6d981a3a9ffbbe8a -->
-<!-- covers: Handle::drag_source Handle::dropped Harness::drag_to Harness::drag_over Harness::release sig=40cfeefb33560e8e -->
+<!-- source: ja/18-drag-and-drop.md fnv=4cb3ce3b0ff68e80 -->
+<!-- covers: Handle::drag_source Handle::dropped Harness::drag_to Harness::drag_over Harness::release Harness::drop_files sig=e3964f54e66f4cdf -->
 # Drag and drop
 
 ## Dragging something across
@@ -85,6 +85,38 @@ if let Some((from, before)) = moved {
 # });
 ```
 
+## Dropping files from other apps
+
+When files are dragged from Explorer (or another app) and dropped on the window, a widget that
+takes `Vec<PathBuf>` receives their paths. It is written the same way as drag and drop inside the
+window.
+
+```rust
+use std::path::PathBuf;
+
+# let mut opened: Vec<PathBuf> = Vec::new();
+# kargui::test::example(|ui| {
+let mut area = ui.column(|ui| {
+    ui.heading("Drop files here");
+    for path in &opened {
+        ui.label(path.display().to_string());
+    }
+});
+if let Some(paths) = area.dropped::<Vec<PathBuf>>() {
+    opened.extend(paths);
+}
+# });
+```
+
+- Over a widget that takes the files, the pointer shows the "copy" shape and the widget is outlined
+  in the accent color; elsewhere the pointer shows the "not allowed" shape.
+- The picture of what is being dragged (the file icons) is drawn by the system.
+- A drag inside the window that carries `Vec<PathBuf>` (`.drag_source(vec![path])`) lands on the
+  same widget.
+- kargui registers the window with the system (OLE `RegisterDragDrop` on Windows) when a widget that
+  takes `Vec<PathBuf>` first appears. Apps that never take files do not register, so their startup
+  does not slow down.
+
 ## For people who cannot drag
 
 Dragging is hard for people who cannot move their hands as they want, and impossible with a
@@ -98,6 +130,7 @@ need dragging. Always offer the same action through a menu or buttons as well. T
 few steps (one frame each) and releases it over the middle of the target. To check what is shown
 while dragging (the highlighted target, for example), `Harness::drag_over(name, target)` stops
 there with the button held, and `Harness::release()` releases it. Escape cancels in between.
+Dropping files from another app is tested with `Harness::drop_files(target, &[paths])`.
 
 ```rust
 use kargui::{App, Ui};

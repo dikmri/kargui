@@ -1,4 +1,4 @@
-<!-- covers: Handle::drag_source Handle::dropped Harness::drag_to Harness::drag_over Harness::release sig=40cfeefb33560e8e -->
+<!-- covers: Handle::drag_source Handle::dropped Harness::drag_to Harness::drag_over Harness::release Harness::drop_files sig=e3964f54e66f4cdf -->
 # ドラッグ＆ドロップ
 
 ## 引っ張って移す
@@ -75,13 +75,39 @@ if let Some((from, before)) = moved {
 # });
 ```
 
+## ほかのアプリからファイルを落とす
+
+エクスプローラーなどからファイルを引っ張ってきて窓に落とすと、`Vec<PathBuf>` を受け取る部品にパスが届きます。書き方は、窓の中のドラッグ＆ドロップと同じです。
+
+```rust
+use std::path::PathBuf;
+
+# let mut opened: Vec<PathBuf> = Vec::new();
+# kargui::test::example(|ui| {
+let mut area = ui.column(|ui| {
+    ui.heading("ここにファイルを落とす");
+    for path in &opened {
+        ui.label(path.display().to_string());
+    }
+});
+if let Some(paths) = area.dropped::<Vec<PathBuf>>() {
+    opened.extend(paths);
+}
+# });
+```
+
+- 受け取れる部品の上では、ポインターがコピーの形になり、部品を主の色で囲みます。それ以外の所では、禁止の形になります。
+- 引っ張っている物の絵（ファイルのアイコンなど）は、OS が描きます。
+- 窓の中で `Vec<PathBuf>` を運ぶ引っ張り（`.drag_source(vec![path])`）も、同じ部品が受け取ります。
+- `Vec<PathBuf>` を受け取る部品が初めて現れた時に、kargui が窓を OS に届け出ます（Windows の OLE の `RegisterDragDrop`）。使わないアプリは届け出ないので、起動は遅くなりません。
+
 ## 引っ張れない人のために
 
 引っ張る操作は、手が思うように動かない人には難しく、キーボードや読み上げソフトではできません。WCAG 2.2 の達成基準 2.5.7 も、引っ張らずにできる別のやり方を求めています。同じことができるメニューやボタンを、必ず一緒に置いてください。見本の `examples/board` は、どのカードにも「移す」メニュー（ほかの列へ・上へ・下へ）を置いています。
 
 ## 試験
 
-`Harness::drag_to(元の名前, 先の名前)` で、引っ張って落とす操作を試せます。元の部品を押し、何回かに分けて動かして（1 回ごとに 1 フレーム）、先の部品の真ん中で離します。引っ張っている途中の画面（受け取る部品の強調など）を確かめる時は、`Harness::drag_over(元の名前, 先の名前)` で押したまま止め、`Harness::release()` で離します。止めている間に Esc を押すと取り消せます。
+`Harness::drag_to(元の名前, 先の名前)` で、引っ張って落とす操作を試せます。元の部品を押し、何回かに分けて動かして（1 回ごとに 1 フレーム）、先の部品の真ん中で離します。引っ張っている途中の画面（受け取る部品の強調など）を確かめる時は、`Harness::drag_over(元の名前, 先の名前)` で押したまま止め、`Harness::release()` で離します。止めている間に Esc を押すと取り消せます。ほかのアプリからファイルを落とす操作は、`Harness::drop_files(先の名前, &[パス])` で試せます。
 
 ```rust
 use kargui::{App, Ui};

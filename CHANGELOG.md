@@ -12,6 +12,14 @@
   sliders, dividers, drawing surfaces) and disabled widgets do not start a drag. Tests:
   `Harness::drag_to`, `Harness::drag_over` and `Harness::release`. Guide page 18 and the example
   `examples/board` (cards moved between columns, with a "Move" menu for people who cannot drag).
+- Dropping files from other apps (Explorer): a widget that takes `Vec<PathBuf>` with
+  `.dropped::<Vec<PathBuf>>()` receives the paths of files dropped on it, the same way as drag and
+  drop inside the window (an in-window drag that carries `Vec<PathBuf>` lands there too). Over such
+  a widget the pointer shows "copy" and the widget is outlined; the system draws the picture of the
+  files. The window is registered with the system (OLE `RegisterDragDrop`) only when such a widget
+  first appears, and shell32 is loaded only when files arrive, so other apps start as fast as
+  before. Tests: `Harness::drop_files(target, paths)`. The notepad example opens a file dropped
+  anywhere below its menu bar (asking first about unsaved changes).
 - Layout (behaviour change): `Size::Fill` now shares the remaining length by weight whatever the
   children's content, like WinUI's star sizing and CSS `flex: 1`, and never makes a child shorter
   than its content. Before, each `Fill` child got its content length plus a share, so children with

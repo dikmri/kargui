@@ -22,11 +22,13 @@ enum Cmd {
 }
 
 /// 保存していない変更を捨ててよいかを聞いた後で、続けてする事
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 enum Then {
     Close,
     New,
     Open,
+    /// エクスプローラーから落とされたファイルを開く
+    Load(PathBuf),
 }
 
 struct Notepad {
@@ -107,6 +109,7 @@ impl Notepad {
                 self.message.clear();
             }
             Then::Open => ui.file_dialog("open", FileDialog::open().title("メモを開く").filter("テキスト", &["txt", "md"]).filter("すべてのファイル", &["*"])),
+            Then::Load(path) => self.load(path),
         }
     }
 
@@ -179,17 +182,26 @@ impl App for Notepad {
         } else if ui.file_dialog_cancelled("save") {
             self.after_save = None;
         }
-        if ui.text_area(&mut self.text).hint("ここに書きます").grow().changed() {
-            self.dirty = true;
-        }
         let name = self.name();
-        let (lines, chars) = (self.text.lines().count().max(1), self.text.chars().count());
-        ui.row(|ui| {
-            ui.label(if self.dirty { format!("{name}（変更あり）") } else { name.clone() }).weak().small();
-            ui.label(&self.message).weak().small();
-            ui.fill();
-            ui.label(format!("{lines} 行・{chars} 文字")).weak().small();
-        });
+        // 入力欄と状態の行をまとめた所に、エクスプローラーからファイルを落とせる（メニューバーの下のどこでも）
+        let mut body = ui
+            .column(|ui| {
+                if ui.text_area(&mut self.text).hint("ここに書きます").grow().changed() {
+                    self.dirty = true;
+                }
+                let (lines, chars) = (self.text.lines().count().max(1), self.text.chars().count());
+                ui.row(|ui| {
+                    ui.label(if self.dirty { format!("{name}（変更あり）") } else { name.clone() }).weak().small();
+                    ui.label(&self.message).weak().small();
+                    ui.fill();
+                    ui.label(format!("{lines} 行・{chars} 文字")).weak().small();
+                });
+            })
+            .grow();
+        if let Some(path) = body.dropped::<Vec<PathBuf>>().and_then(|paths| paths.into_iter().next()) {
+            log::event("drop", &path.display().to_string(), "open");
+            self.guard(ui, Then::Load(path));
+        }
         // 変更を保存するか
         let mut open = self.asking.is_some();
         let mut answer = None;
@@ -208,7 +220,7 @@ impl App for Notepad {
                 }
             });
         });
-        if let Some(then) = self.asking {
+        if let Some(then) = self.asking.clone() {
             match answer {
                 Some(0) => {
                     self.asking = None;
@@ -401,5 +413,21 @@ mod tests {
         h.request_close();
         assert!(!h.is_closed(), "閉じる前にもう一度聞く");
         assert!(h.find("変更を保存しますか？").is_some());
+    }
+
+    #[test]
+    fn dropping_a_file_from_explorer_opens_it_and_asks_about_changes_first() {
+        let file = temp("dropped.txt", "落とした中身");
+        let mut h = app();
+        h.drop_files("ここに書きます", &[file.to_str().unwrap()]);
+        assert_eq!(h.app().text, "落とした中身", "何も書いていなければすぐ開く");
+        assert_eq!(h.app().path.as_deref(), Some(file.as_path()));
+        h.click("ここに書きます").press_with(Key::End, Mods::CTRL).type_text("！");
+        let other = temp("other.txt", "別のファイル");
+        h.drop_files("dropped.txt（変更あり）", &[other.to_str().unwrap()]);
+        assert!(h.find("変更を保存しますか？").is_some(), "書きかけがあれば先に聞く");
+        assert_eq!(h.app().text, "落とした中身！");
+        h.click("保存しない");
+        assert_eq!(h.app().text, "別のファイル");
     }
 }
