@@ -281,7 +281,9 @@ mod tests {
     #[test]
     fn the_typeface_applies_to_the_whole_window_at_once() {
         let mut h = app();
-        let width = |h: &Harness<Settings>| h.find("システム").unwrap().w;
+        // 英字を含む表示で測る（日本語だけの「システム」は、英字だけの等幅の書体（BIZ UD ゴシックの無い CI の Windows の
+        // Consolas）では代わりの書体で出て、幅が変わらなかった）
+        let width = |h: &Harness<Settings>| h.find("14 pt").unwrap().w;
         let before = width(&h);
         h.click("等幅");
         assert_eq!(h.app().edit.typeface, Typeface::Mono);
