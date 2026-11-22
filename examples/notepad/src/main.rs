@@ -41,11 +41,13 @@ struct Notepad {
     message: String,
     started: Instant,
     ready: bool,
+    /// --light・--dark で決めた明暗（None なら OS の設定に従う。写真を撮る時に使う）
+    dark: Option<bool>,
 }
 
 impl Notepad {
     fn new(started: Instant) -> Self {
-        Self { text: String::new(), path: None, dirty: false, asking: None, after_save: None, about: false, message: String::new(), started, ready: false }
+        Self { text: String::new(), path: None, dirty: false, asking: None, after_save: None, about: false, message: String::new(), started, ready: false, dark: None }
     }
 
     fn name(&self) -> String {
@@ -132,6 +134,9 @@ impl Notepad {
 
 impl App for Notepad {
     fn view(&mut self, ui: &mut Ui) {
+        if let Some(d) = self.dark {
+            ui.set_dark(d);
+        }
         let mut cmd = None;
         ui.menu_bar(|bar| {
             bar.menu("ファイル", |m| {
@@ -287,7 +292,9 @@ fn main() {
     options.icon = Some(icon());
     options.position = a.pos;
     options.activate = !a.no_focus;
-    if let Err(e) = kargui::run(options, Notepad::new(started)) {
+    let mut app = Notepad::new(started);
+    app.dark = a.dark;
+    if let Err(e) = kargui::run(options, app) {
         log::event("error", "run", &e.to_string());
     }
     log::event("exit", "", "ok");

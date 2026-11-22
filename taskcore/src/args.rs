@@ -9,6 +9,7 @@
 //! --no-focus         窓を開いても前面に出さない（作業中の窓から入力を奪わない）
 //! --renderer NAME    描き方を選ぶ（kargui の試作: d3d11 か cpu）
 //! --full-rate        前面にない窓でもフレームを抑えない（比べるときに使う）
+//! --light / --dark   OS の設定に関わらず明るい方・暗い方で描く（写真を撮るときに使う。使える版だけ）
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
@@ -21,6 +22,8 @@ pub struct Args {
     pub no_focus: bool,
     pub renderer: Option<String>,
     pub full_rate: bool,
+    /// Some(true) は暗い方、Some(false) は明るい方。None なら OS の設定に従う
+    pub dark: Option<bool>,
 }
 
 /// プログラム名を除いた引数の並びを読む。
@@ -48,6 +51,8 @@ pub fn parse<I: IntoIterator<Item = String>>(it: I) -> Args {
             "--no-focus" => a.no_focus = true,
             "--renderer" => a.renderer = value(&mut it),
             "--full-rate" => a.full_rate = true,
+            "--light" => a.dark = Some(false),
+            "--dark" => a.dark = Some(true),
             _ => {}
         }
     }
@@ -104,6 +109,14 @@ mod tests {
         assert!(a.full_rate);
         assert_eq!(p(&["--renderer=d3d11"]).renderer.as_deref(), Some("d3d11"));
         assert_eq!(p(&["--renderer"]).renderer, None);
+    }
+
+    #[test]
+    fn reads_light_and_dark() {
+        assert_eq!(p(&[]).dark, None, "無ければ OS の設定");
+        assert_eq!(p(&["--light"]).dark, Some(false));
+        assert_eq!(p(&["--dark"]).dark, Some(true));
+        assert_eq!(p(&["--dark", "--light"]).dark, Some(false), "後の物が勝つ");
     }
 
     #[test]

@@ -23,6 +23,8 @@ struct Board {
     new_card: String,
     started: Instant,
     ready: bool,
+    /// --light・--dark で決めた明暗（None なら OS の設定に従う。写真を撮る時に使う）
+    dark: Option<bool>,
 }
 
 impl Board {
@@ -33,6 +35,7 @@ impl Board {
             new_card: String::new(),
             started,
             ready: false,
+            dark: None,
         }
     }
 
@@ -56,6 +59,9 @@ impl Board {
 
 impl App for Board {
     fn view(&mut self, ui: &mut Ui) {
+        if let Some(d) = self.dark {
+            ui.set_dark(d);
+        }
         // (動かすカード, 先の列, 前に入れるカード)
         let mut action: Option<(CardRef, usize, Option<usize>)> = None;
         let mut add = false;
@@ -144,7 +150,9 @@ fn main() {
     options.min_size = Some((480.0, 300.0));
     options.position = a.pos;
     options.activate = !a.no_focus;
-    if let Err(e) = kargui::run(options, Board::new(started)) {
+    let mut app = Board::new(started);
+    app.dark = a.dark;
+    if let Err(e) = kargui::run(options, app) {
         log::event("error", "run", &e.to_string());
     }
     log::event("exit", "", "ok");

@@ -35,6 +35,8 @@ struct Files {
     props_open: bool,
     started: Instant,
     ready: bool,
+    /// --light・--dark で決めた明暗（None なら OS の設定に従う。写真を撮る時に使う）
+    dark: Option<bool>,
 }
 
 /// 大きさを「12.3 KB」の形にする
@@ -65,6 +67,7 @@ impl Files {
             props_open: false,
             started,
             ready: false,
+            dark: None,
         }
     }
 
@@ -180,6 +183,9 @@ fn branch(t: &mut TreeBuilder<PathBuf>, app: &mut Files, dir: &Path) {
 
 impl App for Files {
     fn view(&mut self, ui: &mut Ui) {
+        if let Some(d) = self.dark {
+            ui.set_dark(d);
+        }
         let mut split = self.split;
         ui.split_left_right(&mut split, |ui, pane| {
             if pane == 0 {
@@ -197,6 +203,9 @@ impl App for Files {
     }
 
     fn window(&mut self, key: &str, ui: &mut Ui) {
+        if let Some(d) = self.dark {
+            ui.set_dark(d);
+        }
         if key != "props" {
             return;
         }
@@ -242,7 +251,9 @@ fn main() {
     options.min_size = Some((520.0, 320.0));
     options.position = a.pos;
     options.activate = !a.no_focus;
-    if let Err(e) = kargui::run(options, Files::new(root, started)) {
+    let mut app = Files::new(root, started);
+    app.dark = a.dark;
+    if let Err(e) = kargui::run(options, app) {
         log::event("error", "run", &e.to_string());
     }
     log::event("exit", "", "ok");

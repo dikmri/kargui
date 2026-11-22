@@ -42,6 +42,8 @@ struct Expenses {
     selected: Option<usize>,
     started: Instant,
     ready: bool,
+    /// --light・--dark で決めた明暗（None なら OS の設定に従う。写真を撮る時に使う）
+    dark: Option<bool>,
 }
 
 /// 金額を「12,345 円」にする
@@ -72,6 +74,7 @@ impl Expenses {
             selected: None,
             started,
             ready: false,
+            dark: None,
         }
     }
 
@@ -195,6 +198,9 @@ impl Expenses {
 
 impl App for Expenses {
     fn view(&mut self, ui: &mut Ui) {
+        if let Some(d) = self.dark {
+            ui.set_dark(d);
+        }
         ui.set_date_text(DateText::japanese());
         self.form(ui);
         let total: i64 = self.entries.iter().map(|e| e.amount).sum();
@@ -236,6 +242,7 @@ fn main() {
     log::event("startup", "app=expenses", &format!("log={path:?}"));
     let mut app = Expenses::new(started);
     samples(&mut app);
+    app.dark = a.dark;
     let mut options = Options::new("家計簿（kargui）");
     options.size = (720.0, 600.0);
     options.min_size = Some((560.0, 420.0));
