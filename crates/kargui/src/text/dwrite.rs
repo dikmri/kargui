@@ -10,7 +10,7 @@ use std::rc::Rc;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::{BOOL, ComObject, HSTRING, IUnknown, Interface, Ref, Result, implement, w};
 
-use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Slot, TextStyle, add_trailing_line};
+use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Run, Slot, TextStyle, add_trailing_line};
 use crate::log;
 
 /// 並べ終えた文字列
@@ -26,7 +26,7 @@ pub(crate) struct Laid {
 
 impl Laid {
     fn empty(height: f32) -> Self {
-        let lines = vec![Line { start: 0, end: 0, top: 0.0, height, width: 0.0 }];
+        let lines = vec![Line { start: 0, end: 0, top: 0.0, height, width: 0.0, baseline: height * 0.8 }];
         Self { glyphs: Vec::new(), width: 0.0, height, lines, layout: None }
     }
 
@@ -90,6 +90,26 @@ struct RunGlyph {
     index: u16,
     x: f32,
     y: f32,
+    /// どの文字の形か（UTF-16 の位置）
+    pos: u32,
+}
+
+/// 並びの中の形ごとの、文字の位置（UTF-16）。cluster_map[j] は j 文字目の形の番号なので、形ごとに最初に出てきた
+/// 文字の位置を入れる。文字の無い形（1 文字が何個かの形になる時の 2 つ目から）は、前の形の位置を引き継ぐ
+fn glyph_positions(text_position: u32, cluster_map: &[u16], glyphs: usize) -> Vec<u32> {
+    let mut pos: Vec<Option<u32>> = vec![None; glyphs];
+    for (j, &g) in cluster_map.iter().enumerate() {
+        if let Some(p) = pos.get_mut(g as usize).filter(|p| p.is_none()) {
+            *p = Some(text_position + j as u32);
+        }
+    }
+    let mut last = text_position;
+    pos.into_iter()
+        .map(|p| {
+            last = p.unwrap_or(last);
+            last
+        })
+        .collect()
 }
 
 /// DirectWrite が並べた結果を受け取る係。描かずに、形の番号と位置だけを集める。
@@ -119,7 +139,7 @@ impl IDWriteTextRenderer_Impl for Collector_Impl {
         origin_y: f32,
         _mode: DWRITE_MEASURING_MODE,
         run: *const DWRITE_GLYPH_RUN,
-        _description: *const DWRITE_GLYPH_RUN_DESCRIPTION,
+        description: *const DWRITE_GLYPH_RUN_DESCRIPTION,
         _effect: Ref<IUnknown>,
     ) -> Result<()> {
         let run = unsafe { &*run };
@@ -128,6 +148,14 @@ impl IDWriteTextRenderer_Impl for Collector_Impl {
         if n == 0 {
             return Ok(());
         }
+        let positions = match unsafe { description.as_ref() } {
+            Some(d) if !d.clusterMap.is_null() => {
+                let map = unsafe { std::slice::from_raw_parts(d.clusterMap, d.stringLength as usize) };
+                glyph_positions(d.textPosition, map, n)
+            }
+            Some(d) => vec![d.textPosition; n],
+            None => vec![0; n],
+        };
         let indices = unsafe { std::slice::from_raw_parts(run.glyphIndices, n) };
         let advances = (!run.glyphAdvances.is_null()).then(|| unsafe { std::slice::from_raw_parts(run.glyphAdvances, n) });
         let offsets = (!run.glyphOffsets.is_null()).then(|| unsafe { std::slice::from_raw_parts(run.glyphOffsets, n) });
@@ -140,7 +168,7 @@ impl IDWriteTextRenderer_Impl for Collector_Impl {
                 pen -= advance;
             }
             let (ox, oy) = offsets.map_or((0.0, 0.0), |o| (o[i].advanceOffset, o[i].ascenderOffset));
-            out.push(RunGlyph { face: face.clone(), size: run.fontEmSize, index: indices[i], x: pen + ox, y: origin_y - oy });
+            out.push(RunGlyph { face: face.clone(), size: run.fontEmSize, index: indices[i], x: pen + ox, y: origin_y - oy, pos: positions[i] });
             if !rtl {
                 pen += advance;
             }
@@ -363,14 +391,19 @@ impl Text {
 
     /// 文字列を並べる。max_width を渡すとその幅で折り返す。結果は覚えておき、同じ物には同じ結果を返す
     pub fn layout(&mut self, s: &str, style: TextStyle, max_width: Option<f32>) -> Rc<Laid> {
-        let key = LayoutKey::new(s, style, max_width);
+        self.layout_runs(s, style, &[], max_width)
+    }
+
+    /// 書式の範囲を混ぜて並べる（書式付きの文字）。範囲の外は style で並べる
+    pub fn layout_runs(&mut self, s: &str, style: TextStyle, runs: &[Run], max_width: Option<f32>) -> Rc<Laid> {
+        let key = LayoutKey::with_runs(s, style, runs, max_width);
         if let Some(l) = self.layouts.get(&key) {
             return l;
         }
-        let laid = match self.make_layout(s, style, max_width) {
+        let laid = match self.make_layout(s, style, runs, max_width) {
             Ok(l) => Rc::new(l),
             Err(e) => {
-                log::event("text.layout", &format!("text={s} size={}", style.size), &format!("error={e:?}"));
+                log::event("text.layout", &format!("text={s} size={} runs={}", style.size, runs.len()), &format!("error={e:?}"));
                 Rc::new(Laid::empty(style.size * 1.4))
             }
         };
@@ -378,7 +411,40 @@ impl Text {
         laid
     }
 
-    fn make_layout(&mut self, s: &str, style: TextStyle, max_width: Option<f32>) -> Result<Laid> {
+    /// 範囲ごとの書式を設定する（太字・斜体・大きさ・書体）
+    fn apply_runs(&mut self, layout: &IDWriteTextLayout, style: TextStyle, runs: &[Run]) -> Result<()> {
+        for r in runs.iter().filter(|r| r.end > r.start) {
+            let range = DWRITE_TEXT_RANGE { startPosition: r.start as u32, length: (r.end - r.start) as u32 };
+            let weight = if r.style.bold { DWRITE_FONT_WEIGHT_BOLD } else { DWRITE_FONT_WEIGHT_NORMAL };
+            let slant = if r.italic { DWRITE_FONT_STYLE_ITALIC } else { DWRITE_FONT_STYLE_NORMAL };
+            unsafe {
+                layout.SetFontWeight(weight, range)?;
+                layout.SetFontStyle(slant, range)?;
+                layout.SetFontSize(r.style.size, range)?;
+            }
+            if r.style.font != style.font {
+                let (family, collection) = self.family(r.style.font);
+                let collection = collection.or_else(|| self.system_fonts());
+                unsafe {
+                    layout.SetFontFamilyName(&family, range)?;
+                    if let Some(c) = &collection {
+                        layout.SetFontCollection(c, range)?;
+                    }
+                }
+            }
+        }
+        // 基の書式が行の間を決めている（行の詰まった書体を広げた）時、大きい範囲があると行からはみ出すので、書体どおりの行の間に戻す
+        if runs.iter().any(|r| r.style.size > style.size + 0.01) {
+            let (mut method, mut spacing, mut baseline) = (DWRITE_LINE_SPACING_METHOD_DEFAULT, 0.0f32, 0.0f32);
+            unsafe { layout.GetLineSpacing(&mut method, &mut spacing, &mut baseline)? };
+            if method != DWRITE_LINE_SPACING_METHOD_DEFAULT {
+                unsafe { layout.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_DEFAULT, 0.0, 0.0)? };
+            }
+        }
+        Ok(())
+    }
+
+    fn make_layout(&mut self, s: &str, style: TextStyle, runs: &[Run], max_width: Option<f32>) -> Result<Laid> {
         self.layouts_made += 1;
         let format = self.format(style.size, style.bold, style.font)?;
         let wide: Vec<u16> = s.encode_utf16().collect();
@@ -386,6 +452,7 @@ impl Text {
         unsafe {
             layout.SetWordWrapping(if max_width.is_some() { DWRITE_WORD_WRAPPING_WRAP } else { DWRITE_WORD_WRAPPING_NO_WRAP })?;
         }
+        self.apply_runs(&layout, style, runs)?;
         let mut m = DWRITE_TEXT_METRICS::default();
         unsafe { layout.GetMetrics(&mut m)? };
         self.collector.runs.borrow_mut().clear();
@@ -394,7 +461,7 @@ impl Text {
         let mut glyphs = Vec::with_capacity(runs.len());
         for g in runs {
             if let Some(slot) = self.glyph(&g.face, g.index, g.size) {
-                glyphs.push(Placed { x: g.x, y: g.y, slot });
+                glyphs.push(Placed { x: g.x, y: g.y, slot, pos: g.pos });
             }
         }
         let lines = line_metrics(&layout, s)?;
@@ -484,7 +551,7 @@ fn line_metrics(layout: &IDWriteTextLayout, s: &str) -> Result<Vec<Line>> {
         } else {
             0.0
         };
-        lines.push(Line { start, end, top, height: m.height, width });
+        lines.push(Line { start, end, top, height: m.height, width, baseline: top + m.baseline });
         start += m.length as usize;
         top += m.height;
     }

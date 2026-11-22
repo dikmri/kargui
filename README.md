@@ -117,11 +117,12 @@ and windows on Linux and macOS. Each addition is measured with the same tools to
 
 Not there yet:
 
-- **Widgets:** rich text (disabled widgets, popups, in-window dialogs, tooltips,
+- **Widgets:** editing rich text (disabled widgets, popups, in-window dialogs, tooltips,
   icons, images, multi-line text input, radio buttons, progress, cards and groups, expanders, links,
   passwords, drop-downs, menus (menu bar, menu buttons, submenus and context menus), tabs, number
   inputs, toolbars, grids, split panes, drawing surfaces, trees, tables with headings and date
-  pickers were added in 0.2; images are not drawn on the Direct3D 11 renderer yet).
+  pickers were added in 0.2; images are not drawn on the Direct3D 11 renderer yet; showing rich text
+  with `ui.rich_text` is on the main branch).
 - **App mechanisms:** a tray icon and system notifications (shortcuts, timers, waking from other
   threads, multiple windows, open and save file dialogs, the window icon, a minimum window size and
   asking before closing were added in 0.2; drag and drop inside the window, dropping files from

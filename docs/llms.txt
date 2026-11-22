@@ -215,6 +215,25 @@ A large, bold title. Screen readers announce it as a heading.
 ui.heading("Tasks");
 ```
 
+### `pub fn rich_text(&mut self, f: impl FnOnce(&mut RichText)) -> Handle<'_>`
+
+Text whose parts have their own style: bold, italic, colors, code and links, laid out as
+one paragraph that wraps to the width (in a row, it takes the remaining width). Add the
+parts in `f` with [`RichText::text`] and [`RichText::link`]. Screen readers read the
+parts in order and hear the links as links.
+
+```
+ui.rich_text(|t| {
+    t.text("保存すると ");
+    t.text("元に戻せません").bold();
+    t.text("。詳しくは ");
+    if t.link("ヘルプ").clicked() {
+        show_help = true;
+    }
+    t.text(" を見てください。");
+});
+```
+
 ### `pub fn radio_group<T: Copy + PartialEq>(&mut self, value: &mut T, options: &[(T, &str)]) -> bool`
 
 A group of radio buttons, one below another, of which exactly one is selected. Returns

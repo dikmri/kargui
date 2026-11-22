@@ -66,6 +66,13 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             let laid = cx.text.layout(text, st, if *wrap { max_w } else { None });
             (if *wrap { 0.0 } else { laid.width.ceil() }, laid.height.ceil())
         }
+        // 書式付きの文字は折り返すラベルと同じく、幅は置き場所で決まり、高さはその幅で並べて測る
+        Kind::RichText { text, spans } => {
+            let base = super::rich::base_style(cx);
+            let runs = super::rich::runs(spans, base, cx.scale);
+            let laid = cx.text.layout_runs(text, base, &runs, max_w);
+            (0.0, laid.height.ceil())
+        }
         Kind::Button { text, small, icon, .. } => {
             let h = p(if *small { sz::BUTTON_SMALL_H } else { sz::BUTTON_H });
             // アイコンだけのボタンは正方形
@@ -225,7 +232,7 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
     layout::layout(&mut tree.layout, 0, window);
     let mut again = false;
     for i in 0..tree.info.len() {
-        if let Kind::Label { wrap: true, .. } = tree.info[i].kind {
+        if let Kind::Label { wrap: true, .. } | Kind::RichText { .. } = tree.info[i].kind {
             let w = tree.layout[i].rect.w;
             if let Some(size) = intrinsic(cx, &tree.info[i].kind, Some(w)) {
                 if (size.1 - tree.layout[i].intrinsic.1).abs() > 0.5 {
@@ -271,6 +278,8 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
         }
     }
     place_overlays(tree, cx, window);
+    // 書式付きの文字の部分（子）の四角は、置いた後の幅で並べた結果から決める
+    super::rich::place_spans(tree, cx);
 }
 
 /// 重ねて出す物を置く（ふつうの配置の後。出す元の部品の場所が決まってから）
@@ -434,7 +443,8 @@ impl Painter<'_> {
                     | Kind::HueBar { .. }
                     | Kind::AlphaBar { .. }
             );
-        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, vertical, enabled, drags });
+        let link = matches!(tree.info[i].kind, Kind::Link { .. } | Kind::RichSpan { link: true, .. });
+        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, vertical, enabled, drags, link });
         // メニューバー・タブ・ツールバーは、まとまりの中の 1 つにだけ Tab で止まる
         if focusable && !tree.info[i].skip_tab && !matches!(tree.info[i].kind, Kind::MenuBarItem { tab_stop: false, .. }) {
             self.prev.focus_order.push(id);
@@ -597,12 +607,119 @@ impl Painter<'_> {
 
     fn focus_ring(&mut self, tree: &Tree, i: usize, radius: f32) {
         if self.cx.focus_visible && self.cx.focus == Some(tree.info[i].id) {
-            let r = tree.layout[i].rect;
-            let w = self.px(2.0);
-            let t = &self.cx.theme;
-            let (accent, bg) = (t.accent, t.background);
-            self.d.fill(r.inset(-2.0 * w), accent, radius + 2.0 * w);
-            self.d.fill(r.inset(-w), bg, radius + w);
+            self.ring(tree.layout[i].rect, radius);
+        }
+    }
+
+    /// 焦点の枠を r のまわりに描く（主の色の外枠と、背景の色の内枠）
+    fn ring(&mut self, r: Rect, radius: f32) {
+        let w = self.px(2.0);
+        let t = &self.cx.theme;
+        let (accent, bg) = (t.accent, t.background);
+        self.d.fill(r.inset(-2.0 * w), accent, radius + 2.0 * w);
+        self.d.fill(r.inset(-w), bg, radius + w);
+    }
+
+    /// 書式付きの文字: 1 つの段落に並べ、部分ごとに色・下線・取り消し線・コードの背景を付けて描く。
+    /// リンクの部分（子）には、行ごとの当たりと焦点の枠を入れる
+    fn rich_text(&mut self, tree: &Tree, i: usize, text: &str, spans: &[super::rich::SpanStyle]) {
+        use super::rich;
+        let r = tree.layout[i].rect;
+        let line = self.line();
+        let t = self.cx.theme.clone();
+        let off = tree.info[i].disabled;
+        let base = rich::base_style(self.cx);
+        let laid = self.cx.text.layout_runs(text, base, &rich::runs(spans, base, self.cx.scale), Some(r.w));
+        let children = &tree.layout[i].children;
+        let color_of = |s: &rich::SpanStyle| -> Color {
+            if off {
+                t.done_text
+            } else if s.link {
+                t.accent
+            } else if let Some(c) = s.color {
+                c
+            } else if s.weak {
+                t.weak_text
+            } else {
+                t.text
+            }
+        };
+        let text16: Vec<u16> = text.encode_utf16().collect();
+        let segs: Vec<Vec<(usize, f32, f32)>> = spans.iter().map(|s| rich::segments(&laid, &text16, s.start, s.end)).collect();
+        let place = |n: usize, x0: f32, x1: f32| {
+            let l = laid.lines[n];
+            Rect::new((r.x + x0).floor(), (r.y + l.top).floor(), (x1 - x0).ceil(), l.height.ceil())
+        };
+        // コードの背景（文字の下に、左右に少し広げて）。文字の色を薄く重ねる（テーマのボタンの色は白の上で見えないほど薄い）
+        let pad = self.px(3.0);
+        let code_bg = [t.text[0], t.text[1], t.text[2], if self.cx.dark { 0.12 } else { 0.08 }];
+        for (_, seg) in spans.iter().zip(&segs).filter(|(s, _)| s.code) {
+            for &(n, x0, x1) in seg {
+                let b = place(n, x0, x1);
+                self.d.fill(Rect::new(b.x - pad, b.y, b.w + 2.0 * pad, b.h), code_bg, self.px(3.0));
+            }
+        }
+        // 焦点のあるリンクの枠（行ごと）
+        for (k, &c) in children.iter().enumerate() {
+            if spans.get(k).is_some_and(|s| s.link) && self.cx.focus_visible && self.cx.focus == Some(tree.info[c].id) {
+                for &(n, x0, x1) in &segs[k] {
+                    self.ring(place(n, x0, x1), self.px(2.0));
+                }
+            }
+        }
+        // 文字の形（部分ごとの色）
+        for g in &laid.glyphs {
+            let color = rich::span_at(spans, g.pos as usize).map_or(if off { t.done_text } else { t.text }, |k| color_of(&spans[k]));
+            let gx = (r.x + g.x).round() + g.slot.left as f32;
+            let gy = (r.y + g.y).round() + g.slot.top as f32;
+            self.d.glyph(gx, gy, g.slot.w as f32, g.slot.h as f32, g.slot.x as f32, g.slot.y as f32, color);
+        }
+        // 下線（リンクは乗った時に太く）と取り消し線。どちらもベースラインから測る
+        for (k, s) in spans.iter().enumerate() {
+            if !(s.underline || s.strike) {
+                continue;
+            }
+            let hovered = s.link && !off && children.get(k).is_some_and(|&c| self.cx.hover == Some(tree.info[c].id));
+            let size = s.size.map_or(base.size, |kind| (kind.size() * self.cx.scale).round());
+            let color = color_of(s);
+            for &(n, x0, x1) in &segs[k] {
+                let b = place(n, x0, x1);
+                let baseline = r.y + laid.lines[n].baseline;
+                if s.underline {
+                    let thick = if hovered { 2.0 * line } else { line };
+                    let y = (baseline + (size * 0.12).max(line)).round();
+                    self.d.fill(Rect::new(b.x, y, b.w, thick), color, 0.0);
+                }
+                if s.strike {
+                    let y = (baseline - size * 0.3).round();
+                    self.d.fill(Rect::new(b.x, y, b.w, line), color, 0.0);
+                }
+            }
+        }
+        // リンクの当たり: 最初の行は子の四角（Tab の順番にも入る）、2 行目からは同じ id の四角を足す
+        for (k, &c) in children.iter().enumerate() {
+            if !spans.get(k).is_some_and(|s| s.link) {
+                continue;
+            }
+            self.hit(tree, c, true, false);
+            let enabled = !tree.info[c].disabled;
+            for &(n, x0, x1) in segs[k].iter().skip(1) {
+                if let Some(v) = intersect(place(n, x0, x1), self.clip) {
+                    let id = tree.info[c].id;
+                    self.prev.hits.push(Hit {
+                        id,
+                        rect: v,
+                        slop: v,
+                        focusable: enabled,
+                        text_input: false,
+                        arrows: false,
+                        vertical: false,
+                        enabled,
+                        drags: false,
+                        link: true,
+                    });
+                }
+            }
         }
     }
 
@@ -710,6 +827,9 @@ impl Painter<'_> {
                     self.d.fill(Rect::new(x, (y + laid.height * 0.55).round(), laid.width, line), color, 0.0);
                 }
             }
+            Kind::RichText { text, spans } => self.rich_text(tree, i, text, spans),
+            // 部分は親（RichText）が描く
+            Kind::RichSpan { .. } => {}
             Kind::Item { selected, tab_stop } => {
                 let t = self.cx.theme.clone();
                 let enabled = !tree.info[i].disabled;
@@ -728,7 +848,7 @@ impl Painter<'_> {
                     self.prev.rows.insert(id, (list, row));
                 }
                 if let Some(v) = intersect(r, self.clip) {
-                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled, drags: false });
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled, drags: false, link: false });
                 }
                 if !enabled {
                     self.prev.disabled.insert(id);
@@ -816,7 +936,7 @@ impl Painter<'_> {
                 // Tab が止まるのはグループの中の 1 つだけ（矢印で移る）
                 let enabled = !off;
                 if let Some(v) = intersect(r, self.clip) {
-                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled, drags: false });
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled, drags: false, link: false });
                 }
                 if !enabled {
                     self.prev.disabled.insert(id);
@@ -1480,7 +1600,7 @@ impl Painter<'_> {
         let window = Rect::new(0.0, 0.0, self.cx.width, self.cx.height);
         let start = self.prev.focus_order.len();
         let block = |p: &mut Self, rect: Rect| {
-            p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, vertical: false, enabled: false, drags: false })
+            p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, vertical: false, enabled: false, drags: false, link: false })
         };
         let radius = self.px(if o.kind == OverlayKind::Tooltip { 4.0 } else { 8.0 });
         if o.kind == OverlayKind::Dialog {

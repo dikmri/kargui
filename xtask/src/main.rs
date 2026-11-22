@@ -577,6 +577,28 @@ fn shots() -> Vec<Shot> {
             },
         },
         Shot {
+            name: "rich_text",
+            size: (440.0, 72.0),
+            view: |ui| {
+                ui.rich_text(|t| {
+                    t.text("Deleting cannot be ");
+                    t.text("undone").bold();
+                    t.text(". Press ");
+                    t.text("Ctrl+Z").code();
+                    t.text(" right away, or read ");
+                    t.link("how backups work");
+                    t.text(". ");
+                    t.text("Price ");
+                    t.text("1,980").strike().weak();
+                    t.text(" 1,280").bold().color(kargui::rgb(0xc42b1c));
+                    t.text(" (tax included, ").small().weak();
+                    t.text("until Sunday").small().weak().italic();
+                    t.text(")").small().weak();
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
             name: "more_widgets",
             size: (560.0, 330.0),
             view: |ui| {

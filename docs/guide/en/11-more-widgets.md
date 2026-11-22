@@ -1,4 +1,4 @@
-<!-- source: ja/11-more-widgets.md fnv=c57d8b11d5c8b064 -->
+<!-- source: ja/11-more-widgets.md fnv=7405c35a519047e6 -->
 <!-- covers: Ui::radio_group Ui::separator Ui::progress Ui::progress_busy Ui::spinner Ui::card Ui::group Ui::expander Ui::link Ui::toggle_button Ui::password Toggled::mixed Ui::dropdown Dropdown::changed sig=13e8d8bd7ca74494 -->
 # More widgets
 
@@ -99,6 +99,8 @@ ui.checkbox(&mut all, "Select all").mixed(some && !all);
 ```
 
 A check box with `.mixed(true)` draws a dash, and screen readers hear "mixed". What a click does is up to the app.
+
+A link in the middle of a sentence is written with `ui.rich_text` (chapter 22).
 
 ## Passwords
 

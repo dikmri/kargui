@@ -147,6 +147,8 @@ mod guide {
     struct Ja20Fonts;
     #[doc = include_str!("../../../docs/guide/ja/21-color-and-time.md")]
     struct Ja21ColorAndTime;
+    #[doc = include_str!("../../../docs/guide/ja/22-rich-text.md")]
+    struct Ja22RichText;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -191,6 +193,8 @@ mod guide {
     struct En20Fonts;
     #[doc = include_str!("../../../docs/guide/en/21-color-and-time.md")]
     struct En21ColorAndTime;
+    #[doc = include_str!("../../../docs/guide/en/22-rich-text.md")]
+    struct En22RichText;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]

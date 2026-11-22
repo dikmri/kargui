@@ -107,6 +107,8 @@ struct Settings {
     message: String,
     started: Instant,
     ready: bool,
+    /// 統計で送る中身の例を出している（設定ではないので保存しない）
+    show_detail: bool,
 }
 
 /// 区切りの見出し
@@ -175,6 +177,21 @@ impl App for Settings {
                     log::event("accent", "", &format!("#{r:02X}{g:02X}{b:02X}"));
                 }
             });
+            // 書式付きの文字の見本（強調の色の部分は、選んだ色で描く）
+            ui.rich_text(|t| {
+                t.text("見本: ").weak();
+                t.text("強調の色").bold().color(e.accent);
+                t.text(" の文字、");
+                t.text("斜体").italic();
+                t.text("、");
+                t.text("下線").underline();
+                t.text("、");
+                t.text("取り消し線").strike();
+                t.text("、");
+                t.text("Ctrl+S").code();
+                t.text("、");
+                t.text("小さい字").small().weak();
+            });
 
             section(ui, "編集");
             ui.toggle(&mut e.autosave, "自動で保存する");
@@ -214,6 +231,25 @@ impl App for Settings {
                 ui.segmented(&mut e.startup, &[(Startup::Blank, "空の画面"), (Startup::LastFile, "前のファイル"), (Startup::Welcome, "案内")]);
             });
             ui.checkbox(&mut e.statistics, "使い方の統計を送る（名前とメールは送らない）");
+            let detail = &mut self.show_detail;
+            ui.rich_text(|t| {
+                t.text("送るのは ");
+                t.text("起動した回数").bold();
+                t.text(" と ");
+                t.text("使った機能の名前").bold();
+                t.text(" だけで、書いた文章やファイルの名前は送りません。");
+                let label = if *detail { "送る中身の例を隠す" } else { "送る中身の例を見る" };
+                if t.link(label).clicked() {
+                    *detail = !*detail;
+                    log::event("statistics.detail", label, &format!("shown={detail}"));
+                }
+            });
+            if *detail {
+                ui.rich_text(|t| {
+                    t.text("例: ").weak();
+                    t.text(r#"{"launches": 12, "features": ["save", "search"]}"#).code();
+                });
+            }
         });
 
         ui.row(|ui| {
@@ -257,7 +293,7 @@ fn main() {
     let path = log::init("kargui-settings", Some(a.log_path.as_deref().unwrap_or(DEFAULT_LOG)));
     kargui::set_logger(log::event);
     log::event("startup", "app=settings", &format!("log={path:?}"));
-    let app = Settings { saved: Prefs::default(), edit: Prefs::default(), message: String::new(), started, ready: false };
+    let app = Settings { saved: Prefs::default(), edit: Prefs::default(), message: String::new(), started, ready: false, show_detail: false };
     let mut options = Options::new("設定（kargui）");
     options.size = (560.0, 520.0);
     options.position = a.pos;
@@ -275,7 +311,7 @@ mod tests {
     use kargui::test::Harness;
 
     fn app() -> Harness<Settings> {
-        let s = Settings { saved: Prefs::default(), edit: Prefs::default(), message: String::new(), started: Instant::now(), ready: false };
+        let s = Settings { saved: Prefs::default(), edit: Prefs::default(), message: String::new(), started: Instant::now(), ready: false, show_detail: false };
         let mut h = Harness::with_size(s, 560.0, 520.0, 1.0);
         h.frame();
         h
@@ -323,7 +359,7 @@ mod tests {
     #[test]
     fn the_accent_color_and_quiet_hours_are_picked_in_popups() {
         // 通知の節まで見える高さにする（520 では開始の欄が見える範囲の外）
-        let s = Settings { saved: Prefs::default(), edit: Prefs::default(), message: String::new(), started: Instant::now(), ready: false };
+        let s = Settings { saved: Prefs::default(), edit: Prefs::default(), message: String::new(), started: Instant::now(), ready: false, show_detail: false };
         let mut h = Harness::with_size(s, 560.0, 1100.0, 1.0);
         h.click("強調の色").click("#D93025");
         assert_eq!(h.app().edit.accent, kargui::rgb(0xd93025));
@@ -357,5 +393,20 @@ mod tests {
         }
         h.press(Key::Space);
         assert!(h.app().edit.statistics, "最後のチェックまで届く");
+        // 統計の説明のリンクは、チェックの次に Tab で届き、Enter で例を出す
+        h.press(Key::Tab).press(Key::Enter);
+        assert!(h.app().show_detail);
+    }
+
+    #[test]
+    fn the_statistics_link_shows_and_hides_an_example() {
+        let s = Settings { saved: Prefs::default(), edit: Prefs::default(), message: String::new(), started: Instant::now(), ready: false, show_detail: false };
+        let mut h = Harness::with_size(s, 560.0, 1200.0, 1.0);
+        assert!(h.find("例: ").is_none());
+        h.click("送る中身の例を見る");
+        assert!(h.app().show_detail && h.find("例: ").is_some());
+        h.click("送る中身の例を隠す");
+        assert!(!h.app().show_detail && h.find("例: ").is_none());
+        assert!(h.app().edit == h.app().saved, "例を出しても設定は変わらない");
     }
 }

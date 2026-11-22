@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Rich text: `ui.rich_text(|t| …)` lays out parts that have their own style as one paragraph that
+  wraps to the width. `t.text(…)` returns a `Span` with `.bold()`, `.italic()` (slanted where the
+  font has no italic style, as Japanese fonts), `.underline()`, `.strike()`, `.weak()`,
+  `.color(c)`, `.small()`, `.size(px)`, `.font(f)`, `.monospace()` and `.code()` (the fixed-width
+  font on a light background). `t.link(…)` returns a `RichLink` whose `.clicked()` is true after a
+  click, or Enter while it has the focus (Tab stops at links; a link that wraps onto two lines is
+  one link on both). Clicks are logged as `rich.link`. Screen readers get a paragraph whose parts
+  are text and links, and tests find and click a part by its text. Guide page 22.
+- The pointer becomes a hand over a link (`ui.link` and links in rich text).
 - Time picker: `ui.time_picker(&mut Option<Time>)` is a field that opens a grid of hours and a
   grid of minutes (picking an hour moves to the minutes, picking a minute closes; arrow keys,
   Enter or Space, Escape). `.minute_step(n)` sets the minutes offered (5 by default). `Time` is a

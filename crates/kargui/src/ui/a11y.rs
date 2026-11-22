@@ -42,6 +42,11 @@ fn row_name(tree: &Tree, i: usize) -> String {
     while let Some(k) = stack.pop() {
         match &tree.info[k].kind {
             Kind::Label { text, .. } | Kind::Checkbox { text, .. } if !text.is_empty() => parts.push(text.clone()),
+            // 書式付きの文字は、つないだ文字列を 1 つにする（部分ごとに空白を入れない）
+            Kind::RichText { text, .. } if !text.is_empty() => {
+                parts.push(text.clone());
+                continue;
+            }
             _ => {}
         }
         stack.extend(tree.layout[k].children.iter().rev());
@@ -136,6 +141,19 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                     n.set_value(text.clone());
                     n
                 }
+            }
+            // 書式付きの文字は段落。中の部分を順に読み、リンクはリンクとして伝える
+            Kind::RichText { .. } => Node::new(Role::Paragraph),
+            Kind::RichSpan { link: true, .. } => {
+                let mut n = Node::new(Role::Link);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::RichSpan { text, .. } => {
+                let mut n = Node::new(Role::Label);
+                n.set_value(text.clone());
+                n
             }
             Kind::Button { .. } => {
                 let mut n = Node::new(Role::Button);

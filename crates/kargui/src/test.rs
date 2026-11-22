@@ -5217,4 +5217,123 @@ second line".into() })
         h.type_text("#00ff00");
         assert_eq!(hex_of(&h), "#00FF00", "浮き出しの中の欄でも、引っ張って全部を選べる");
     }
+
+    /// 2 行に折り返す長さのリンク（30 字）
+    const LONG_LINK: &str = "バックアップの仕組みと、消したファイルを元に戻す方法の説明";
+
+    /// 書式付きの文字（ui.rich_text）の見本
+    #[derive(Default)]
+    struct Notice {
+        help: u32,
+        off: bool,
+        /// 2 行に折り返すリンクを出す
+        long: bool,
+    }
+
+    impl App for Notice {
+        fn view(&mut self, ui: &mut Ui) {
+            let (help, long) = (&mut self.help, self.long);
+            ui.enabled(!self.off, |ui| {
+                if long {
+                    // 短い文の後の長いリンク（どの書体でも、1 行目の途中から始まり、次の行へ折り返す）
+                    ui.rich_text(|t| {
+                        t.text("詳しくは ");
+                        if t.link(LONG_LINK).clicked() {
+                            *help += 1;
+                        }
+                    });
+                    return;
+                }
+                ui.rich_text(|t| {
+                    t.text("保存すると ");
+                    t.text("元に戻せません").bold();
+                    t.text("。詳しくは ");
+                    if t.link("ヘルプ").clicked() {
+                        *help += 1;
+                    }
+                    t.text(" を見てください。");
+                    t.text("赤い字").color(crate::rgb(0xff0000));
+                });
+            });
+            ui.button("Next");
+        }
+    }
+
+    /// 読み上げでは段落の中の部分が順に並び、リンクはリンク、ほかは文字として伝わる
+    #[test]
+    fn rich_text_parts_are_read_in_order_and_links_are_links() {
+        let h = Harness::new(Notice::default());
+        assert_eq!(a11y_node(&h, "ヘルプ").role(), accesskit::Role::Link);
+        assert_eq!(a11y_node(&h, "元に戻せません").role(), accesskit::Role::Label);
+        let paragraph = a11y_nodes(&h).into_iter().find(|n| n.role() == accesskit::Role::Paragraph).expect("段落がある");
+        let order: Vec<u64> = paragraph.children().iter().map(|c| c.0).collect();
+        let want: Vec<u64> = ["保存すると ", "元に戻せません", "。詳しくは ", "ヘルプ", " を見てください。", "赤い字"].iter().map(|n| id_named(&h, n).0).collect();
+        assert_eq!(order, want);
+        // 部分は、並べた所に四角を持つ（リンクは「。詳しくは 」の右）
+        let (before, link) = (h.find("。詳しくは ").unwrap(), h.find("ヘルプ").unwrap());
+        assert!(link.w > 10.0 && link.h > 10.0, "{link:?}");
+        assert!(link.x >= before.right() - 1.0 && (link.y - before.y).abs() < 1.0, "{before:?} {link:?}");
+    }
+
+    /// リンクは押すと 1 回だけ clicked になる。Tab で焦点が移り、Enter でも押せる。押せない時は何もしない
+    #[test]
+    fn rich_text_links_click_with_the_pointer_and_with_enter() {
+        let mut h = Harness::new(Notice::default());
+        h.click("ヘルプ");
+        assert_eq!(h.app().help, 1, "ビューを何回回しても 1 回");
+        h.rt.cx.focus = None;
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("ヘルプ"), "Tab はリンクに止まる（ほかの部分には止まらない）");
+        h.press(Key::Enter);
+        assert_eq!(h.app().help, 2);
+        h.press(Key::Tab);
+        assert_eq!(focused_name(&h).as_deref(), Some("Next"));
+        h.app_mut().off = true;
+        h.frame();
+        h.click("ヘルプ");
+        assert_eq!(h.app().help, 2, "押せない時は数えない");
+    }
+
+    /// 2 行に折り返したリンクは、2 行目を押しても clicked になる
+    #[test]
+    fn a_rich_text_link_that_wraps_can_be_clicked_on_its_second_line() {
+        let mut h = Harness::with_size(Notice { long: true, ..Default::default() }, 260.0, 300.0, 1.0);
+        let first = h.find(LONG_LINK).unwrap();
+        let start = h.find("詳しくは ").unwrap();
+        // 2 行目は段落の左端から始まる。1 行目の四角の下の行の、左端の少し右を押す
+        let (x, y) = (start.x + 4.0, first.bottom() + first.h / 2.0);
+        assert!(first.x > start.x + 20.0, "リンクは 1 行目の途中から始まる: {first:?}");
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
+        assert_eq!(h.app().help, 1);
+        // 段落の外（ボタンの下）を押しても数えない
+        let next = h.find("Next").unwrap();
+        let (x, y) = (next.x + 2.0, next.bottom() + 10.0);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
+        assert_eq!(h.app().help, 1);
+    }
+
+    /// 色を決めた部分はその色で、リンクの下には主の色の下線を描く
+    #[test]
+    fn rich_text_draws_colors_and_link_underlines() {
+        let mut h = Harness::new(Notice::default());
+        let img = h.render();
+        let rgb = |c: crate::Color| ((c[0] * 255.0).round() as u32) << 16 | ((c[1] * 255.0).round() as u32) << 8 | (c[2] * 255.0).round() as u32;
+        let red = h.find("赤い字").unwrap();
+        let reds = (red.y as u32..red.bottom() as u32)
+            .flat_map(|y| (red.x as u32..red.right() as u32).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let p = img.rgb(x, y);
+                (p >> 16) > 200 && ((p >> 8) & 0xff) < 80 && (p & 0xff) < 80
+            })
+            .count();
+        assert!(reds > 20, "赤い画素 {reds}");
+        // リンクの四角の中に、幅いっぱいの主の色の行（下線）がある
+        let accent = rgb(h.rt.cx.theme.accent);
+        let link = h.find("ヘルプ").unwrap();
+        let underline = (link.y as u32..link.bottom() as u32 + 3).any(|y| {
+            let n = (link.x as u32 + 1..link.right() as u32 - 1).filter(|&x| img.rgb(x, y) == accent).count();
+            n as f32 >= (link.w - 2.0) * 0.9
+        });
+        assert!(underline, "{link:?}");
+    }
 }

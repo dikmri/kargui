@@ -99,6 +99,8 @@ pub(crate) struct Placed {
     pub x: f32,
     pub y: f32,
     pub slot: Slot,
+    /// どの文字の形か（UTF-16 の位置。合字などで何文字かが 1 つの形になる時は、その頭の位置）
+    pub pos: u32,
 }
 
 /// 並べた文字列の 1 行。位置は UTF-16 で、end は改行の手前。改行で終わる文字列は、最後に空の行を持つ
@@ -111,6 +113,8 @@ pub(crate) struct Line {
     pub height: f32,
     /// 行の文字の幅（行末の空白を含む）
     pub width: f32,
+    /// ベースラインの位置（並べた範囲の上から）
+    pub baseline: f32,
 }
 
 /// 改行で終わる文字列の最後の空の行を足す（並べる道具が作らない時）
@@ -121,7 +125,8 @@ fn add_trailing_line(s: &str, lines: &mut Vec<Line>) {
     }
     if let Some(&last) = lines.last() {
         if last.start != len16 {
-            lines.push(Line { start: len16, end: len16, top: last.top + last.height, height: last.height, width: 0.0 });
+            let top = last.top + last.height;
+            lines.push(Line { start: len16, end: len16, top, height: last.height, width: 0.0, baseline: top + (last.baseline - last.top) });
         }
     }
 }
@@ -205,6 +210,15 @@ pub(crate) struct TextStyle {
     pub font: FontId,
 }
 
+/// 書式の範囲（書式付きの文字）。start..end は UTF-16 の位置で、範囲の外は基の書式で並べる
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Run {
+    pub start: usize,
+    pub end: usize,
+    pub style: TextStyle,
+    pub italic: bool,
+}
+
 /// 並べた結果を覚えるための鍵
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct LayoutKey {
@@ -213,6 +227,8 @@ struct LayoutKey {
     bold: bool,
     font: u16,
     max_width: u32,
+    /// 書式の範囲（start, end, 大きさ, 太字, 斜体, 書体）。ふつうの文字は空
+    runs: Vec<(u32, u32, u32, bool, bool, u16)>,
 }
 
 impl LayoutKey {
@@ -223,7 +239,16 @@ impl LayoutKey {
             bold: style.bold,
             font: style.font.0,
             max_width: max_width.map_or(u32::MAX, |w| w.max(0.0).round() as u32),
+            runs: Vec::new(),
         }
+    }
+
+    fn with_runs(s: &str, style: TextStyle, runs: &[Run], max_width: Option<f32>) -> Self {
+        let runs = runs
+            .iter()
+            .map(|r| (r.start as u32, r.end as u32, (r.style.size * 64.0) as u32, r.style.bold, r.italic, r.style.font.0))
+            .collect();
+        Self { runs, ..Self::new(s, style, max_width) }
     }
 }
 
@@ -310,8 +335,13 @@ mod tests {
 
     /// 並べた文字の形の濃さの合計（形の表の画素の和）
     fn ink(t: &Text, laid: &Laid) -> u64 {
+        ink_of(t, &laid.glyphs)
+    }
+
+    /// 形の一覧の濃さの合計
+    fn ink_of(t: &Text, glyphs: &[Placed]) -> u64 {
         let mut sum = 0u64;
-        for g in &laid.glyphs {
+        for g in glyphs {
             let s = g.slot;
             for y in 0..s.h as u32 {
                 for x in 0..s.w as u32 {
@@ -479,5 +509,91 @@ mod tests {
         let empty = t.layout("", TextStyle { size: 14.0, bold: false, font: FontId(0) }, None);
         assert_eq!(empty.width, 0.0);
         assert!(empty.height > 10.0, "{}", empty.height);
+    }
+
+    const BASE: TextStyle = TextStyle { size: 14.0, bold: false, font: FontId(0) };
+
+    fn run(start: usize, end: usize) -> Run {
+        Run { start, end, style: BASE, italic: false }
+    }
+
+    /// 並べた形は、どの文字の形か（UTF-16 の位置）を持つ。書式付きの文字は、この位置で範囲ごとの色を決める。
+    /// 行は、ベースラインの位置（並べた範囲の上から）を持つ。下線と取り消し線はこの位置から引く
+    #[test]
+    fn glyphs_know_their_text_position_and_lines_their_baseline() {
+        let mut t = Text::new().unwrap();
+        let laid = t.layout("ab牛乳😀c", BASE, None);
+        let pos: Vec<u32> = laid.glyphs.iter().map(|g| g.pos).collect();
+        assert_eq!(pos, [0, 1, 2, 3, 4, 6], "絵文字は 2 つ分");
+        let two = t.layout("ab\ncd", BASE, None);
+        assert_eq!(two.glyphs.iter().map(|g| g.pos).collect::<Vec<_>>(), [0, 1, 3, 4]);
+        for l in &two.lines {
+            assert!(l.baseline > l.top + l.height * 0.5 && l.baseline < l.top + l.height, "{l:?}");
+        }
+        // 形のペンの位置はベースラインの上にある
+        for g in &two.glyphs {
+            let line = two.lines.iter().find(|l| (g.pos as usize) >= l.start && (g.pos as usize) <= l.end).unwrap();
+            assert!((g.y - line.baseline).abs() < 0.5, "{} {}", g.y, line.baseline);
+        }
+    }
+
+    /// 範囲ごとに太字・大きさ・書体を変えて、1 つの段落に並べる（範囲の外は基の書式）
+    #[test]
+    fn runs_mix_bold_size_and_font_in_one_paragraph() {
+        let mut t = Text::new().unwrap();
+        let s = "Save 設定 now";
+        let plain = t.layout(s, BASE, None);
+        // 太字の範囲（「設定」）は濃くなり、ほかの字は同じ形
+        let bold = t.layout_runs(s, BASE, &[Run { style: TextStyle { bold: true, ..BASE }, ..run(5, 7) }], None);
+        let ink_in = |t: &Text, l: &Laid, range: std::ops::Range<u32>| {
+            let only: Vec<Placed> = l.glyphs.iter().copied().filter(|g| range.contains(&g.pos)).collect();
+            ink_of(t, &only)
+        };
+        assert!(ink_in(&t, &bold, 5..7) as f64 > ink_in(&t, &plain, 5..7) as f64 * 1.1, "太字の範囲は濃い");
+        assert_eq!(ink_in(&t, &bold, 0..4), ink_in(&t, &plain, 0..4), "範囲の外は同じ");
+        // 大きい範囲があると、行が高くなり、ベースラインも下がる
+        let big = t.layout_runs(s, BASE, &[Run { style: TextStyle { size: 28.0, ..BASE }, ..run(5, 7) }], None);
+        assert!(big.height > plain.height * 1.5, "{} {}", big.height, plain.height);
+        assert!(big.lines[0].baseline > plain.lines[0].baseline + 5.0, "{:?} {:?}", big.lines[0], plain.lines[0]);
+        // 等幅の範囲（「now」を等幅に）は、UI の書体と幅が変わる
+        let mono = t.fonts.id(&Font::Monospace);
+        let code = t.layout_runs("iii MMM", BASE, &[Run { style: TextStyle { font: mono, ..BASE }, ..run(0, 3) }], None);
+        let ui = t.layout("iii MMM", BASE, None);
+        assert!(code.x_of(3) > ui.x_of(3) + 3.0, "等幅の i は広い: {} {}", code.x_of(3), ui.x_of(3));
+        // 同じ文字列と範囲は覚えた結果を返し、範囲が違えば別に並べる
+        let again = t.layout_runs(s, BASE, &[Run { style: TextStyle { bold: true, ..BASE }, ..run(5, 7) }], None);
+        assert!(std::rc::Rc::ptr_eq(&bold, &again));
+        let other = t.layout_runs(s, BASE, &[Run { style: TextStyle { bold: true, ..BASE }, ..run(0, 4) }], None);
+        assert!(!std::rc::Rc::ptr_eq(&bold, &other));
+    }
+
+    /// 斜体の範囲は傾いた形で描く。日本語の書体には斜体の書体が無いので、形を傾けて作る
+    #[test]
+    fn italic_runs_lean_even_without_an_italic_font() {
+        let mut t = Text::new().unwrap();
+        let s = "Il 設定";
+        let plain = t.layout(s, BASE, None);
+        let italic = t.layout_runs(s, BASE, &[Run { italic: true, ..run(0, s.encode_utf16().count()) }], None);
+        assert_eq!(plain.glyphs.len(), italic.glyphs.len());
+        // 縦の棒（I と l）は、傾くと形の幅が広がる
+        for k in 0..2 {
+            let (a, b) = (plain.glyphs[k].slot, italic.glyphs[k].slot);
+            assert!(b.w > a.w, "{k}: 普通 {a:?}、斜体 {b:?}");
+        }
+    }
+
+    /// 折り返しても、形の位置は文字の順で、どの行にも入る
+    #[test]
+    fn wrapped_runs_keep_positions_in_order() {
+        let mut t = Text::new().unwrap();
+        let s = "これは書式の付いた文字を折り返して確かめるための長い文です。";
+        let laid = t.layout_runs(s, BASE, &[Run { style: TextStyle { bold: true, ..BASE }, ..run(3, 9) }], Some(120.0));
+        assert!(laid.lines.len() >= 3, "{:?}", laid.lines);
+        let pos: Vec<u32> = laid.glyphs.iter().map(|g| g.pos).collect();
+        assert!(pos.windows(2).all(|w| w[1] > w[0]), "{pos:?}");
+        assert_eq!(pos.len(), s.chars().count());
+        for l in &laid.lines {
+            assert!(l.width <= 121.0, "{l:?}");
+        }
     }
 }

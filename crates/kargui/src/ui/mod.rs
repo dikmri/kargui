@@ -50,6 +50,9 @@ pub(crate) mod context;
 pub(crate) mod draw;
 pub(crate) mod edit;
 pub(crate) mod layout;
+pub(crate) mod rich;
+
+pub use rich::{RichLink, RichText, Span};
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -135,6 +138,10 @@ pub(crate) enum Kind {
     Column,
     Stack,
     Label { text: String, size: TextKind, bold: bool, weak: bool, strike: bool, wrap: bool, right: bool, font: Option<FontId> },
+    /// 書式付きの文字（text は部分をつないだ文字列、spans は部分ごとの範囲と書式。部分は子の RichSpan にもなる）
+    RichText { text: String, spans: Vec<rich::SpanStyle> },
+    /// 書式付きの文字の 1 つの部分（読み上げ・試験台・リンクの当たりのための子。描くのは親）
+    RichSpan { text: String, link: bool },
     Button { text: String, primary: bool, small: bool, icon: Option<Icon> },
     /// アイコン（大きさは論理ピクセル）
     Icon { icon: Icon, size: u32, weak: bool },
@@ -305,6 +312,7 @@ impl Kind {
                 | Kind::Radio { .. }
                 | Kind::Expander { .. }
                 | Kind::Link { .. }
+                | Kind::RichSpan { link: true, .. }
                 | Kind::ToggleButton { .. }
                 | Kind::Dropdown { .. }
                 | Kind::ListOption { .. }
@@ -764,6 +772,34 @@ impl<'a> Ui<'a> {
         let kind = Kind::Label { text: text.into(), size: TextKind::Heading, bold: true, weak: false, strike: false, wrap: false, right: false, font: None };
         let (idx, id) = self.add(kind, Dir::Leaf);
         Label(self.handle(idx, id))
+    }
+
+    /// Text whose parts have their own style: bold, italic, colors, code and links, laid out as
+    /// one paragraph that wraps to the width (in a row, it takes the remaining width). Add the
+    /// parts in `f` with [`RichText::text`] and [`RichText::link`]. Screen readers read the
+    /// parts in order and hear the links as links.
+    ///
+    /// ```
+    /// # let mut show_help = false;
+    /// # kargui::test::example(|ui| {
+    /// ui.rich_text(|t| {
+    ///     t.text("保存すると ");
+    ///     t.text("元に戻せません").bold();
+    ///     t.text("。詳しくは ");
+    ///     if t.link("ヘルプ").clicked() {
+    ///         show_help = true;
+    ///     }
+    ///     t.text(" を見てください。");
+    /// });
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn rich_text(&mut self, f: impl FnOnce(&mut RichText)) -> Handle<'_> {
+        let (idx, id) = self.add(Kind::RichText { text: String::new(), spans: Vec::new() }, Dir::Leaf);
+        f(&mut RichText { ui: self.child(idx) });
+        let h = self.handle(idx, id);
+        // 列の中では幅いっぱいに広がるので、高さを残りいっぱいにしない（折り返すラベルと同じ）
+        if h.parent_dir == Dir::Row { h.grow() } else { h }
     }
 
     /// A group of radio buttons, one below another, of which exactly one is selected. Returns
@@ -6753,6 +6789,7 @@ pub(crate) fn visible_text(kind: &Kind) -> Option<&str> {
         Kind::Dropdown { text, .. } | Kind::ListOption { text, .. } => Some(text),
         Kind::MenuButton { text, .. } | Kind::MenuBarItem { text, .. } | Kind::MenuItem { text, .. } | Kind::Tab { text, .. } => Some(text),
         Kind::TreeItem { text, .. } | Kind::ColumnHeader { text, .. } => Some(text),
+        Kind::RichSpan { text, .. } => Some(text),
         _ => None,
     }
 }

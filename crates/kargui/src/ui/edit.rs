@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn line_of_finds_the_line_of_a_position() {
         use crate::text::Line;
-        let l = |start, end, top| Line { start, end, top, height: 10.0, width: 0.0 };
+        let l = |start, end, top| Line { start, end, top, height: 10.0, width: 0.0, baseline: top + 8.0 };
         // "ab\ncd\n" の行: [0, 2) [3, 5) [6, 6)
         let lines = [l(0, 2, 0.0), l(3, 5, 10.0), l(6, 6, 20.0)];
         assert_eq!(line_of(&lines, 0), 0);

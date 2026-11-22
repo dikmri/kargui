@@ -1306,11 +1306,12 @@ impl State {
                     let _ = ScreenToClient(self.hwnd, &mut p);
                 }
                 let hit = self.rt.cx.hit(p.x as f32, p.y as f32).cloned();
-                // 仕切りの上は左右か上下の矢印、入力欄の上は I の形
+                // 仕切りの上は左右か上下の矢印、入力欄の上は I の形、押せるリンクの上は手の形
                 let cursor = match hit.as_ref().and_then(|h| self.rt.cx.prev.split_bars.get(&h.id).copied()) {
                     Some(true) => IDC_SIZENS,
                     Some(false) => IDC_SIZEWE,
-                    None if hit.is_some_and(|h| h.text_input) => IDC_IBEAM,
+                    None if hit.as_ref().is_some_and(|h| h.text_input) => IDC_IBEAM,
+                    None if hit.as_ref().is_some_and(|h| h.link && h.enabled) => IDC_HAND,
                     None => IDC_ARROW,
                 };
                 if let Ok(c) = unsafe { LoadCursorW(None, cursor) } {

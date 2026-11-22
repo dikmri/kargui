@@ -9,13 +9,13 @@ use std::sync::Arc;
 use parley::editing::Cursor;
 use parley::fontique::{Blob, Language};
 use parley::layout::Affinity;
-use parley::style::{FontFamily, FontWeight, LineHeight, StyleProperty};
+use parley::style::{FontFamily, FontStyle, FontWeight, LineHeight, StyleProperty};
 use parley::{Alignment, AlignmentOptions, FontContext, FontData, Layout, LayoutContext, PositionedLayoutItem};
 use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
-use swash::zeno::Format;
+use swash::zeno::{Angle, Format, Transform};
 
-use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Slot, TextStyle, add_trailing_line};
+use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Run, Slot, TextStyle, add_trailing_line};
 use crate::log;
 
 /// UI の文字に使うフォント（CSS の font-family の形）。先にある物から使い、無い文字は代わりのフォントで出す
@@ -109,6 +109,8 @@ struct GlyphKey {
     glyph: u32,
     size: u32,
     embolden: bool,
+    /// 斜体の書体が無い時に傾ける角度（度、ビットの形）
+    skew: u32,
 }
 
 pub(crate) struct Text {
@@ -208,22 +210,30 @@ impl Text {
 
     /// 文字列を並べる。max_width を渡すとその幅で折り返す。結果は覚えておき、同じ物には同じ結果を返す
     pub fn layout(&mut self, s: &str, style: TextStyle, max_width: Option<f32>) -> Rc<Laid> {
-        let key = LayoutKey::new(s, style, max_width);
+        self.layout_runs(s, style, &[], max_width)
+    }
+
+    /// 書式の範囲を混ぜて並べる（書式付きの文字）。範囲の外は style で並べる
+    pub fn layout_runs(&mut self, s: &str, style: TextStyle, runs: &[Run], max_width: Option<f32>) -> Rc<Laid> {
+        let key = LayoutKey::with_runs(s, style, runs, max_width);
         if let Some(l) = self.layouts.get(&key) {
             return l;
         }
-        let laid = Rc::new(self.make_layout(s, style, max_width));
+        let laid = Rc::new(self.make_layout(s, style, runs, max_width));
         self.layouts.insert(key, laid.clone());
         laid
     }
 
-    fn make_layout(&mut self, s: &str, style: TextStyle, max_width: Option<f32>) -> Laid {
+    fn make_layout(&mut self, s: &str, style: TextStyle, runs: &[Run], max_width: Option<f32>) -> Laid {
         // 空の文字列は行が無く高さ 0 になるので、1 行分の高さだけを持つ（DirectWrite と同じ）
         if s.is_empty() {
-            let probe = self.make_layout(" ", style, None);
-            let lines = vec![Line { start: 0, end: 0, top: 0.0, height: probe.height, width: 0.0 }];
+            let probe = self.make_layout(" ", style, &[], None);
+            let baseline = probe.lines[0].baseline;
+            let lines = vec![Line { start: 0, end: 0, top: 0.0, height: probe.height, width: 0.0, baseline }];
             return Laid { glyphs: Vec::new(), width: 0.0, height: probe.height, lines, text: String::new(), layout: None };
         }
+        // 範囲の書体の名前は、借りの前に決めておく
+        let run_families: Vec<Option<String>> = runs.iter().map(|r| (r.style.font != style.font).then(|| self.family(r.style.font))).collect();
         self.layouts_made += 1;
         let family = self.family(style.font);
         // 行の間が UI の書体より狭い書体（BIZ UD ゴシックなど）は、UI の書体の行の高さに広げる（字は行の真ん中に来る）
@@ -240,24 +250,58 @@ impl Text {
         if style.bold {
             b.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
         }
-        if let Some(h) = line {
+        // 行の詰まった書体を広げた時でも、大きい範囲があれば書体どおりの行の間にする（行からはみ出さないように）
+        let bigger = runs.iter().any(|r| r.style.size > style.size + 0.01);
+        if let Some(h) = line.filter(|_| !bigger) {
             b.push_default(StyleProperty::LineHeight(LineHeight::Absolute(h)));
+        }
+        for (r, family) in runs.iter().zip(run_families) {
+            if r.end <= r.start {
+                continue;
+            }
+            let range = byte_of_utf16(s, r.start)..byte_of_utf16(s, r.end);
+            b.push(StyleProperty::FontWeight(if r.style.bold { FontWeight::BOLD } else { FontWeight::NORMAL }), range.clone());
+            b.push(StyleProperty::FontStyle(if r.italic { FontStyle::Italic } else { FontStyle::Normal }), range.clone());
+            b.push(StyleProperty::FontSize(r.style.size), range.clone());
+            if let Some(f) = family {
+                b.push(StyleProperty::FontFamily(FontFamily::Source(f.into())), range);
+            }
         }
         let mut layout: Layout<()> = b.build(s);
         layout.break_all_lines(max_width);
         layout.align(Alignment::Start, AlignmentOptions::default());
+        // バイトの位置 → UTF-16 の位置（形ごとに数え直さないように、先に表にする）
+        let mut utf16 = vec![0u32; s.len() + 1];
+        let mut n = 0u32;
+        for (b, ch) in s.char_indices() {
+            utf16[b] = n;
+            n += ch.len_utf16() as u32;
+        }
+        utf16[s.len()] = n;
         let mut glyphs = Vec::new();
         for line in layout.lines() {
+            let mid = line.metrics().baseline;
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(run) = item else { continue };
                 let r = run.run();
                 let font = r.font().clone();
                 let size = r.font_size();
                 let coords: Vec<i16> = r.normalized_coords().iter().map(|c| c.to_bits()).collect();
-                let embolden = r.synthesis().embolden();
-                for g in run.positioned_glyphs() {
-                    if let Some(slot) = self.glyph(&font, g.id, size, &coords, embolden) {
-                        glyphs.push(Placed { x: g.x, y: g.y, slot });
+                let synthesis = r.synthesis();
+                let (embolden, skew) = (synthesis.embolden(), synthesis.skew().unwrap_or(0.0));
+                // 形ごとの文字の位置: 並びのクラスターを見た目の順にたどる（数が合わない時は、形の位置から探す）
+                let from_clusters: Vec<u32> =
+                    r.visual_clusters().flat_map(|c| std::iter::repeat_n(utf16[c.text_range().start], c.glyphs().count())).collect();
+                let placed: Vec<_> = run.positioned_glyphs().collect();
+                let same = from_clusters.len() == placed.len();
+                for (k, g) in placed.iter().enumerate() {
+                    let pos = if same {
+                        from_clusters[k]
+                    } else {
+                        utf16[Cursor::from_point(&layout, g.x + g.advance * 0.25, mid).index().min(s.len())]
+                    };
+                    if let Some(slot) = self.glyph(&font, g.id, size, &coords, embolden, skew) {
+                        glyphs.push(Placed { x: g.x, y: g.y, slot, pos });
                     }
                 }
             }
@@ -269,7 +313,7 @@ impl Text {
             let m = line.metrics();
             let end = if s[r.start..r.end].ends_with('\n') { r.end - 1 } else { r.end };
             let (top, height) = (m.block_min_coord, m.block_max_coord - m.block_min_coord);
-            lines.push(Line { start: utf16_of_byte(s, r.start), end: utf16_of_byte(s, end), top, height, width: m.advance });
+            lines.push(Line { start: utf16_of_byte(s, r.start), end: utf16_of_byte(s, end), top, height, width: m.advance, baseline: m.baseline });
         }
         add_trailing_line(s, &mut lines);
         let height = lines.last().map_or(layout.height(), |l| layout.height().max(l.top + l.height));
@@ -301,17 +345,17 @@ impl Text {
         lowest
     }
 
-    fn glyph(&mut self, font: &FontData, glyph: u32, size: f32, coords: &[i16], embolden: bool) -> Option<Slot> {
-        let key = GlyphKey { font: font.data.id(), index: font.index, glyph, size: (size * 64.0) as u32, embolden };
+    fn glyph(&mut self, font: &FontData, glyph: u32, size: f32, coords: &[i16], embolden: bool, skew: f32) -> Option<Slot> {
+        let key = GlyphKey { font: font.data.id(), index: font.index, glyph, size: (size * 64.0) as u32, embolden, skew: skew.to_bits() };
         if let Some(s) = self.glyphs.get(&key) {
             return *s;
         }
-        let slot = self.rasterize(font, glyph, size, coords, embolden);
+        let slot = self.rasterize(font, glyph, size, coords, embolden, skew);
         self.glyphs.insert(key, slot);
         slot
     }
 
-    fn rasterize(&mut self, font: &FontData, glyph: u32, size: f32, coords: &[i16], embolden: bool) -> Option<Slot> {
+    fn rasterize(&mut self, font: &FontData, glyph: u32, size: f32, coords: &[i16], embolden: bool, skew: f32) -> Option<Slot> {
         self.glyphs_made += 1;
         let Some(font_ref) = FontRef::from_index(font.data.as_ref(), font.index as usize) else {
             log::event("text.raster", &format!("glyph={glyph} size={size}"), "error=font");
@@ -323,6 +367,10 @@ impl Text {
         if embolden {
             // 太字の書体が無い時は、輪郭を太らせる
             render.embolden(size / 32.0);
+        }
+        if skew != 0.0 {
+            // 斜体の書体が無い時は、輪郭を右へ傾ける（形の座標は上向きが正なので、上ほど右へずらす）
+            render.transform(Some(Transform::skew(Angle::from_degrees(skew), Angle::from_degrees(0.0))));
         }
         let image = render.render(&mut scaler, glyph as u16)?;
         let (w, h) = (image.placement.width, image.placement.height);
