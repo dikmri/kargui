@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use kargui::{App, Font, Frame, Options, Size, Ui};
+use kargui::{App, Color, ColorText, DateText, Font, Frame, Options, Size, Time, Ui};
 use taskcore::{args, log};
 
 const DEFAULT_LOG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../logs/settings.log");
@@ -57,6 +57,12 @@ struct Prefs {
     volume: f32,
     startup: Startup,
     statistics: bool,
+    /// 強調の色（保存するだけ。見本は色の選択を見せる）
+    accent: Color,
+    /// おやすみの時間（開始・終了）に通知を止める
+    quiet: bool,
+    quiet_from: Option<Time>,
+    quiet_to: Option<Time>,
 }
 
 impl Default for Prefs {
@@ -76,6 +82,10 @@ impl Default for Prefs {
             volume: 0.6,
             startup: Startup::LastFile,
             statistics: false,
+            accent: kargui::rgb(0x1a73e8),
+            quiet: false,
+            quiet_from: Time::new(22, 0),
+            quiet_to: Time::new(7, 0),
         }
     }
 }
@@ -120,6 +130,8 @@ impl App for Settings {
         }
         // 書体は選んだ時からすぐ窓全体に当てる（テーマと同じ）
         ui.set_font(self.edit.typeface.font());
+        ui.set_date_text(DateText::japanese());
+        ui.set_color_text(ColorText::japanese());
         ui.row(|ui| {
             ui.heading("設定");
             ui.fill();
@@ -157,6 +169,12 @@ impl App for Settings {
                 ui.slider(&mut e.line_height, 1.0..=2.0).label("行の高さ");
                 ui.label(format!("{:.2}", e.line_height));
             });
+            field(ui, "強調の色", |ui| {
+                if ui.color_picker(&mut e.accent).label("強調の色").changed() {
+                    let [r, g, b, _] = e.accent.map(|c| (c * 255.0).round() as u8);
+                    log::event("accent", "", &format!("#{r:02X}{g:02X}{b:02X}"));
+                }
+            });
 
             section(ui, "編集");
             ui.toggle(&mut e.autosave, "自動で保存する");
@@ -179,6 +197,16 @@ impl App for Settings {
             field(ui, "音量", |ui| {
                 ui.slider(&mut e.volume, 0.0..=1.0).label("音量");
                 ui.label(format!("{:.0}%", e.volume * 100.0));
+            });
+            ui.toggle(&mut e.quiet, "おやすみの時間に通知を止める");
+            field(ui, "おやすみの時間", |ui| {
+                let from = ui.time_picker(&mut e.quiet_from).label("開始").changed();
+                ui.label("から");
+                let to = ui.time_picker(&mut e.quiet_to).label("終了").changed();
+                if from || to {
+                    let show = |t: Option<Time>| t.map_or("-".to_string(), |t| t.to_string());
+                    log::event("quiet", &show(e.quiet_from), &show(e.quiet_to));
+                }
             });
 
             section(ui, "起動");
@@ -293,6 +321,19 @@ mod tests {
     }
 
     #[test]
+    fn the_accent_color_and_quiet_hours_are_picked_in_popups() {
+        // 通知の節まで見える高さにする（520 では開始の欄が見える範囲の外）
+        let s = Settings { saved: Prefs::default(), edit: Prefs::default(), message: String::new(), started: Instant::now(), ready: false };
+        let mut h = Harness::with_size(s, 560.0, 1100.0, 1.0);
+        h.click("強調の色").click("#D93025");
+        assert_eq!(h.app().edit.accent, kargui::rgb(0xd93025));
+        h.press(kargui::Key::Escape);
+        h.click("開始").click("23 時").click("30 分");
+        assert_eq!(h.app().edit.quiet_from, Time::new(23, 30));
+        assert!(h.names().contains(&"変えた所があります".to_string()));
+    }
+
+    #[test]
     fn a_wrong_email_is_not_saved() {
         let mut h = app();
         h.click("name@example.com").type_text("abc").click("保存");
@@ -309,9 +350,9 @@ mod tests {
         }
         h.press(Key::Right).press(Key::Right);
         assert_eq!(h.app().edit.font_size, 16);
-        // 下の方の設定にも Tab で届き、見えるようにスクロールする（行の高さ・自動保存・間隔・つづり・通知・音・音量・
-        // 起動 3 つ・統計の 11 回）
-        for _ in 0..11 {
+        // 下の方の設定にも Tab で届き、見えるようにスクロールする（行の高さ・強調の色・自動保存・間隔・つづり・通知・音・
+        // 音量・おやすみ・開始・終了・起動 3 つ・統計の 15 回）
+        for _ in 0..15 {
             h.press(Key::Tab);
         }
         h.press(Key::Space);

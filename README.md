@@ -117,7 +117,7 @@ and windows on Linux and macOS. Each addition is measured with the same tools to
 
 Not there yet:
 
-- **Widgets:** color picker, rich text (disabled widgets, popups, in-window dialogs, tooltips,
+- **Widgets:** rich text (disabled widgets, popups, in-window dialogs, tooltips,
   icons, images, multi-line text input, radio buttons, progress, cards and groups, expanders, links,
   passwords, drop-downs, menus (menu bar, menu buttons, submenus and context menus), tabs, number
   inputs, toolbars, grids, split panes, drawing surfaces, trees, tables with headings and date
@@ -125,7 +125,7 @@ Not there yet:
 - **App mechanisms:** a tray icon and system notifications (shortcuts, timers, waking from other
   threads, multiple windows, open and save file dialogs, the window icon, a minimum window size and
   asking before closing were added in 0.2; drag and drop inside the window, dropping files from
-  other apps, animation helpers and choosing fonts are on the main branch).
+  other apps, animation helpers, choosing fonts, and color and time pickers are on the main branch).
 - **Platforms:** windows open on Windows 10/11 only. The Direct3D 11 renderer (not the default)
   occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
   NVDA. Apps cannot start a reconversion themselves.

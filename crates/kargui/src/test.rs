@@ -4877,4 +4877,174 @@ mod tests {
         h.press(Key::Down);
         assert_eq!(cursor(&h), 9);
     }
+
+    struct Clock {
+        start: Option<crate::Time>,
+        step: u32,
+    }
+
+    impl App for Clock {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.time_picker(&mut self.start).label("Start").minute_step(self.step);
+            ui.button("Other");
+        }
+    }
+
+    fn clock(step: u32) -> Harness<Clock> {
+        Harness::new(Clock { start: None, step })
+    }
+
+    fn time(h: u32, m: u32) -> Option<crate::Time> {
+        crate::Time::new(h, m)
+    }
+
+    #[test]
+    fn picking_an_hour_then_a_minute_sets_the_time_and_closes() {
+        let mut h = clock(5);
+        assert!(h.find("09 Hours").is_none(), "閉じている");
+        h.click("Start");
+        assert!(h.find("09 Hours").is_some() && h.find("55 Minutes").is_some(), "時と分のます目が出る");
+        h.click("09 Hours");
+        assert_eq!(h.app().start, time(9, 0), "時を選ぶと、分は今の時刻（試験台では 12:00）の分");
+        assert_eq!(focused_name(&h).as_deref(), Some("00 Minutes"), "時を選ぶと分へ移る");
+        assert!(h.find("30 Minutes").is_some(), "まだ開いている");
+        h.click("30 Minutes");
+        assert_eq!(h.app().start, time(9, 30));
+        assert!(h.find("30 Minutes").is_none(), "分を選ぶと閉じる");
+        assert_eq!(focused_name(&h).as_deref(), Some("Start"), "閉じると欄に戻る");
+        assert_eq!(a11y_node(&h, "Start").value(), Some("09:30"));
+        assert_eq!(a11y_node(&h, "Start").role(), accesskit::Role::TimeInput);
+    }
+
+    #[test]
+    fn the_time_grids_follow_the_arrow_keys_and_escape_keeps_the_time() {
+        let mut h = clock(5);
+        // キーボードだけで: Other から Shift+Tab で欄へ
+        h.click("Other").press_with(Key::Tab, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("Start"));
+        h.press(Key::Enter);
+        assert_eq!(focused_name(&h).as_deref(), Some("12 Hours"), "時刻が無ければ今の時（試験台では 12 時）から");
+        h.press(Key::Down).press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("19 Hours"), "下は 6 時あと、右は 1 時あと");
+        h.press(Key::Enter);
+        assert_eq!(h.app().start, time(19, 0));
+        h.press(Key::Right).press(Key::Right).press(Key::Space);
+        assert_eq!(h.app().start, time(19, 10), "分は 5 分ずつ");
+        assert!(h.find("10 Minutes").is_none(), "閉じた");
+        // 開いて Esc なら、時刻は変わらない
+        h.press(Key::Enter);
+        assert_eq!(focused_name(&h).as_deref(), Some("19 Hours"), "開くと今の時刻の時に焦点");
+        h.press(Key::Left).press(Key::Escape);
+        assert!(h.find("19 Hours").is_none());
+        assert_eq!(h.app().start, time(19, 10));
+    }
+
+    #[test]
+    fn minute_steps_decide_the_minutes_offered() {
+        let mut h = clock(15);
+        h.click("Start");
+        let offered: Vec<u32> = (0..60).filter(|m| h.find(&format!("{m:02} Minutes")).is_some()).collect();
+        assert_eq!(offered, [0, 15, 30, 45]);
+        let mut h = clock(1);
+        h.click("Start");
+        assert_eq!((0..60).filter(|m| h.find(&format!("{m:02} Minutes")).is_some()).count(), 60, "1 分ずつなら 60 個");
+    }
+
+    struct Paint {
+        color: crate::Color,
+        alpha: bool,
+    }
+
+    impl App for Paint {
+        fn view(&mut self, ui: &mut Ui) {
+            let picker = ui.color_picker(&mut self.color).label("Fill");
+            if self.alpha {
+                picker.alpha();
+            }
+            ui.button("Other");
+        }
+    }
+
+    fn paint(color: u32) -> Harness<Paint> {
+        Harness::new(Paint { color: crate::rgb(color), alpha: false })
+    }
+
+    fn hex_of(h: &Harness<Paint>) -> String {
+        crate::color::hex(h.app().color, true)
+    }
+
+    #[test]
+    fn a_ready_made_color_or_a_typed_code_sets_the_color() {
+        let mut h = paint(0x1a73e8);
+        assert_eq!(a11y_node(&h, "Fill").value(), Some("#1A73E8"));
+        assert_eq!(a11y_node(&h, "Fill").role(), accesskit::Role::ColorWell);
+        h.click("Fill");
+        assert!(h.find("Hue").is_some() && h.find("Opacity").is_none(), "不透明度の帯は .alpha() の時だけ");
+        h.click("#D93025");
+        assert_eq!(hex_of(&h), "#D93025");
+        assert_eq!(a11y_node(&h, "Fill").value(), Some("#D93025"));
+        assert!(h.find("Hue").is_some(), "見本を選んでも開いたまま");
+        // 番号を打つと、読める番号になった時に色が変わる
+        h.click("Color code").press_with(Key::A, Mods::CTRL).type_text("#00ff0");
+        assert_eq!(hex_of(&h), "#D93025", "途中（5 桁）では変えない");
+        h.type_text("0");
+        assert_eq!(hex_of(&h), "#00FF00");
+        h.press(Key::Escape);
+        assert!(h.find("Hue").is_none(), "Esc で閉じる");
+        assert_eq!(hex_of(&h), "#00FF00", "閉じても選んだ色のまま");
+    }
+
+    #[test]
+    fn the_square_and_the_hue_bar_follow_the_pointer_and_the_keys() {
+        let mut h = paint(0x808080);
+        h.click("Fill");
+        // 右上の画素を押すと、彩度と明るさが最大（灰色の色相は 0 = 赤）
+        let r = h.find("Saturation and brightness").unwrap();
+        h.click_at(r.right() - 1.0, r.y);
+        assert_eq!(hex_of(&h), "#FF0000");
+        // 色相の帯の真ん中は 180 度（シアン）
+        let b = h.find("Hue").unwrap();
+        h.click_at(b.x + b.w / 2.0, b.y + b.h / 2.0);
+        let c = h.app().color;
+        assert!(c[0] < 0.05 && c[1] > 0.95 && c[2] > 0.95, "{}", hex_of(&h));
+        // キー: 色相の帯で Shift+左 を 3 回（-30 度）、面で下を 50 回（明るさ -50%）
+        h.press_with(Key::Left, Mods::SHIFT).press_with(Key::Left, Mods::SHIFT).press_with(Key::Left, Mods::SHIFT);
+        let [hue, _, _] = crate::color::rgb_to_hsv([h.app().color[0], h.app().color[1], h.app().color[2]]);
+        assert!((hue - 150.0).abs() < 1.5, "{hue}");
+        h.press_with(Key::Tab, Mods::SHIFT);
+        assert_eq!(focused_name(&h).as_deref(), Some("Saturation and brightness"));
+        for _ in 0..50 {
+            h.press(Key::Down);
+        }
+        let [_, _, v] = crate::color::rgb_to_hsv([h.app().color[0], h.app().color[1], h.app().color[2]]);
+        assert!((v - 0.5).abs() < 0.02, "{v}");
+    }
+
+    #[test]
+    fn a_grey_keeps_its_hue_while_the_picker_is_open() {
+        let mut h = paint(0xff8000);
+        h.click("Fill");
+        // 彩度を 0（灰色）まで下げてから戻しても、橙のまま
+        for _ in 0..100 {
+            h.press(Key::Left);
+        }
+        assert_eq!(hex_of(&h), "#FFFFFF");
+        for _ in 0..100 {
+            h.press(Key::Right);
+        }
+        assert_eq!(hex_of(&h), "#FF8000", "灰色を通っても色相を忘れない");
+    }
+
+    #[test]
+    fn alpha_adds_an_opacity_bar_and_eight_digit_codes() {
+        let mut h = Harness::new(Paint { color: crate::rgb(0x000000), alpha: true });
+        h.click("Fill");
+        let b = h.find("Opacity").expect("不透明度の帯");
+        h.click_at(b.x + b.w / 2.0, b.y + b.h / 2.0);
+        assert!((h.app().color[3] - 0.5).abs() < 0.01, "{}", h.app().color[3]);
+        assert_eq!(a11y_node(&h, "Fill").value(), Some(hex_of(&h).as_str()), "欄は 8 桁");
+        assert_eq!(hex_of(&h).len(), 9);
+        h.click("Color code").press_with(Key::A, Mods::CTRL).type_text("#11223344");
+        assert_eq!(hex_of(&h), "#11223344");
+    }
 }

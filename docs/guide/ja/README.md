@@ -26,5 +26,6 @@ API が変わったのにガイドを直していないと、検査（`cargo run
 18. [ドラッグ＆ドロップ](18-drag-and-drop.md)
 19. [動き](19-animation.md)
 20. [書体](20-fonts.md)
+21. [色と時刻の選択](21-color-and-time.md)
 
 API の一つ一つの説明は、`cargo doc -p kargui --open` で読めます。AI に書かせる時は `docs/llms.txt` を渡してください。

@@ -20,6 +20,7 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod app;
+mod color;
 mod cpu_frame;
 mod date;
 mod file_dialog;
@@ -52,7 +53,8 @@ pub mod ui;
 mod wake;
 
 pub use app::{App, Frame, Options, Renderer, run};
-pub use date::{Date, DateText};
+pub use color::ColorText;
+pub use date::{Date, DateText, Time};
 pub use file_dialog::FileDialog;
 pub use geom::{Color, IRect, Rect, rgb};
 pub use icon::Icon;
@@ -143,6 +145,8 @@ mod guide {
     struct Ja19Animation;
     #[doc = include_str!("../../../docs/guide/ja/20-fonts.md")]
     struct Ja20Fonts;
+    #[doc = include_str!("../../../docs/guide/ja/21-color-and-time.md")]
+    struct Ja21ColorAndTime;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -185,6 +189,8 @@ mod guide {
     struct En19Animation;
     #[doc = include_str!("../../../docs/guide/en/20-fonts.md")]
     struct En20Fonts;
+    #[doc = include_str!("../../../docs/guide/en/21-color-and-time.md")]
+    struct En21ColorAndTime;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]

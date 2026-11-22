@@ -555,6 +555,28 @@ fn shots() -> Vec<Shot> {
             },
         },
         Shot {
+            name: "time_picker",
+            size: (580.0, 250.0),
+            view: |ui| {
+                let mut start = kargui::Time::new(9, 30);
+                ui.time_picker(&mut start).label("Start");
+            },
+            setup: |h| {
+                h.click("Start");
+            },
+        },
+        Shot {
+            name: "color_picker",
+            size: (300.0, 360.0),
+            view: |ui| {
+                let mut fill = kargui::rgb(0x1a73e8);
+                ui.color_picker(&mut fill).label("Fill");
+            },
+            setup: |h| {
+                h.click("Fill");
+            },
+        },
+        Shot {
             name: "more_widgets",
             size: (560.0, 330.0),
             view: |ui| {

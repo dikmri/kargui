@@ -60,7 +60,8 @@ use context::{Context, TipState};
 pub use layout::{Align, Size};
 use layout::{Dir, LayoutNode};
 
-use crate::date::{Date, DateText};
+use crate::color::ColorText;
+use crate::date::{Date, DateText, Time};
 use crate::file_dialog::FileDialog;
 use std::path::PathBuf;
 use crate::geom::{Color, Rect};
@@ -193,6 +194,20 @@ pub(crate) enum Kind {
     ColumnGrip,
     /// 日付の欄（text は出す文字、empty は日付が無い）
     DateField { text: String, empty: bool, open: bool },
+    /// 時刻の欄（押すと時と分のます目を出す）
+    TimeField { text: String, empty: bool, open: bool },
+    /// 時刻の選択の、時か分の 1 つのます目
+    ClockCell { text: String, selected: bool },
+    /// 色の欄（押すと色の選択を出す）
+    ColorField { color: Color, text: String, open: bool },
+    /// 色の選択の、彩度（横）と明るさ（縦）の面
+    ColorArea { hue: f32, sat: f32, val: f32 },
+    /// 色の選択の、色相の帯（0〜360）
+    HueBar { hue: f32 },
+    /// 色の選択の、不透明度の帯
+    AlphaBar { rgb: [f32; 3], alpha: f32 },
+    /// 色の選択の、見本の色 1 つ
+    Swatch { color: Color, selected: bool },
     /// 月の暦の日のます目の入れ物（格子。読み上げは grid）
     DayGrid,
     /// 暦の 1 日（in_month はその月の日、today は今日、selected は選んでいる日）
@@ -303,6 +318,13 @@ impl Kind {
                 | Kind::ColumnHeader { .. }
                 | Kind::DateField { .. }
                 | Kind::CalendarDay { .. }
+                | Kind::TimeField { .. }
+                | Kind::ClockCell { .. }
+                | Kind::ColorField { .. }
+                | Kind::ColorArea { .. }
+                | Kind::HueBar { .. }
+                | Kind::AlphaBar { .. }
+                | Kind::Swatch { .. }
         )
     }
 }
@@ -2119,8 +2141,388 @@ impl<'a> Ui<'a> {
         DatePicker { h: self.handle(idx, id), changed }
     }
 
-    /// Sets the words date pickers show (names of days and months, the text of an empty field)
-    /// for this frame and the following ones. English by default.
+    /// A field for a time of day that opens a grid of hours and a grid of minutes below it when
+    /// clicked (or with Enter, Space, Alt+Down or F4). `*value` is `None` until a time is picked.
+    /// Picking an hour (a click, or Enter or Space on it) keeps the minute and moves to the
+    /// minutes; picking a minute closes the grids. The arrow keys move within a grid, and Escape
+    /// or a click outside closes without picking. Minutes go in steps of 5 unless
+    /// [`TimePicker::minute_step`] says otherwise. The field shows the time as `09:30`; its words
+    /// come from [`Ui::set_date_text`]. Screen readers hear a time input with its value, and two
+    /// grids named for hours and minutes.
+    ///
+    /// ```
+    /// # let mut start: Option<kargui::Time> = None;
+    /// # kargui::test::example(|ui| {
+    /// if ui.time_picker(&mut start).label("Start").changed() {
+    ///     // save the new time
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn time_picker(&mut self, value: &mut Option<Time>) -> TimePicker<'_> {
+        let words = self.cx.date_text.clone();
+        let text = value.map_or_else(|| words.time_empty.to_string(), |t| t.to_string());
+        let (idx, id) = self.add(Kind::TimeField { text, empty: value.is_none(), open: false }, Dir::Leaf);
+        let pop = Id(hash_of((id.0, "clock")));
+        // 分の刻みは前のフレームの .minute_step()（ます目を作るのは、その前のこの呼び出しの中）
+        let step = self.cx.minute_steps.remove(&id).unwrap_or(5).clamp(1, 60);
+        let minutes: Vec<u32> = (0..60).step_by(step as usize).collect();
+        let hour_cell = |h: u32| Id(hash_of((pop.0, "hour", h)));
+        let minute_cell = |m: u32| Id(hash_of((pop.0, "minute", m)));
+        let mut open = self.cx.open.contains(&id) && !self.cx.closing.contains(&pop);
+        let mut picked: Option<Time> = None;
+        if self.disabled {
+            open = false;
+        } else {
+            if self.cx.clicked == Some(id) {
+                open = !open;
+            }
+            if self.cx.focus == Some(id) && (self.cx.app_keys.contains(&(Key::Down, Mods::ALT)) || self.cx.app_keys.contains(&(Key::F4, Mods::NONE))) {
+                open = true;
+            }
+        }
+        if open {
+            // 時刻が無い時は、今の時刻の近くから始める（試験台では 12:00）
+            let near = value.unwrap_or_else(|| self.time_now());
+            let near_minute = minutes.iter().rev().find(|&&m| m <= near.minute()).copied().unwrap_or(0);
+            let hour_cols = 6usize;
+            let minute_cols = if minutes.len() > 12 { 10 } else { 6 };
+            // ます目に焦点がある時の矢印（作る前に動かす）
+            let focus = self.cx.focus;
+            let in_hours = (0..24u32).find(|&h| focus == Some(hour_cell(h)));
+            let in_minutes = minutes.iter().position(|&m| focus == Some(minute_cell(m)));
+            if in_hours.is_some() || in_minutes.is_some() {
+                let cx = &mut *self.cx;
+                let (len, cols, at) = match (in_hours, in_minutes) {
+                    (Some(h), _) => (24usize, hour_cols, h as usize),
+                    (_, Some(k)) => (minutes.len(), minute_cols, k),
+                    _ => unreachable!(),
+                };
+                let mut to = at as isize;
+                for e in std::mem::take(&mut cx.keys) {
+                    let Event::Key { key, mods } = e else { continue };
+                    if mods.ctrl || mods.alt {
+                        continue;
+                    }
+                    to = match key {
+                        Key::Left => to - 1,
+                        Key::Right => to + 1,
+                        Key::Up => to - cols as isize,
+                        Key::Down => to + cols as isize,
+                        Key::Home => 0,
+                        Key::End => len as isize - 1,
+                        _ => continue,
+                    }
+                    .clamp(0, len as isize - 1);
+                }
+                if to as usize != at {
+                    cx.focus = Some(if in_hours.is_some() { hour_cell(to as u32) } else { minute_cell(minutes[to as usize]) });
+                    cx.focus_visible = true;
+                }
+            }
+            let o = self.push_overlay(pop, OverlayKind::Popup, String::new(), Some(id));
+            let pad = self.px(8.0);
+            self.tree.layout[o].pad = (pad, pad);
+            let mut to_minutes = false;
+            {
+                let mut ui = self.child(o);
+                ui.row(|ui| {
+                    // 時: 6 列 × 4 行
+                    ui.column(|ui| {
+                        ui.label(words.hours).weak().small();
+                        let (g, _) = ui.add(Kind::DayGrid, Dir::Grid);
+                        ui.tree.info[g].label = Some(words.hours.to_string());
+                        ui.tree.layout[g].columns = vec![Size::Fixed(ui.px(40.0)); hour_cols];
+                        let mut cells = ui.child(g);
+                        for h in 0..24u32 {
+                            let selected = value.is_some_and(|t| t.hour() == h);
+                            let (c, cid) = cells.push(hour_cell(h), Kind::ClockCell { text: format!("{h:02}"), selected }, Dir::Leaf);
+                            // 時と分のます目を名前で見分ける（読み上げは「09 時」）
+                            cells.tree.info[c].label = Some(format!("{h:02} {}", words.hours));
+                            cells.tree.info[c].skip_tab = h != near.hour();
+                            if !cells.disabled && cells.cx.clicked == Some(cid) {
+                                let minute = value.map_or(near_minute, |t| t.minute());
+                                picked = Time::new(h, minute);
+                                to_minutes = true;
+                            }
+                        }
+                    })
+                    .align(Align::Start);
+                    // 分: 刻みで並べる（12 個までは 6 列、それより多ければ 10 列）
+                    ui.column(|ui| {
+                        ui.label(words.minutes).weak().small();
+                        let (g, _) = ui.add(Kind::DayGrid, Dir::Grid);
+                        ui.tree.info[g].label = Some(words.minutes.to_string());
+                        ui.tree.layout[g].columns = vec![Size::Fixed(ui.px(40.0)); minute_cols];
+                        let mut cells = ui.child(g);
+                        for &m in &minutes {
+                            let selected = value.is_some_and(|t| t.minute() == m);
+                            let (c, cid) = cells.push(minute_cell(m), Kind::ClockCell { text: format!("{m:02}"), selected }, Dir::Leaf);
+                            cells.tree.info[c].label = Some(format!("{m:02} {}", words.minutes));
+                            cells.tree.info[c].skip_tab = m != near_minute;
+                            if !cells.disabled && cells.cx.clicked == Some(cid) {
+                                let hour = picked.or(*value).map_or(near.hour(), |t| t.hour());
+                                picked = Time::new(hour, m);
+                                open = false;
+                            }
+                        }
+                    })
+                    .align(Align::Start);
+                })
+                // 時と分の見出しを上でそろえる
+                .align(Align::Start);
+            }
+            // 開いた時は、焦点を今の時に置く。時を選んだら分へ移る
+            self.cx.overlay_focus_hint.insert(pop, hour_cell(near.hour()));
+            if to_minutes {
+                let m = picked.map_or(near_minute, |t| t.minute());
+                let target = minutes.iter().rev().find(|&&x| x <= m).copied().unwrap_or(0);
+                self.cx.focus = Some(minute_cell(target));
+            }
+        }
+        if let Some(t) = picked {
+            crate::log::event("time.pick", &format!("time={t}"), &format!("close={}", !open));
+        }
+        let changed = picked.is_some_and(|t| Some(t) != *value);
+        if let Some(t) = picked {
+            *value = Some(t);
+        }
+        if open {
+            self.cx.open.insert(id);
+        } else {
+            self.cx.open.remove(&id);
+        }
+        if let Kind::TimeField { text, empty, open: o } = &mut self.tree.info[idx].kind {
+            *o = open;
+            *empty = value.is_none();
+            *text = value.map_or_else(|| words.time_empty.to_string(), |t| t.to_string());
+        }
+        TimePicker { h: self.handle(idx, id), changed }
+    }
+
+    /// A field showing a color that opens a color picker below it when clicked (or with Enter,
+    /// Space, Alt+Down or F4): a square for saturation (left to right) and brightness (bottom to
+    /// top), a hue bar, a field for the color code (`#RRGGBB`) and ready-made colors. `*color`
+    /// changes as soon as the user moves something (dragging, the arrow keys, typing a code that
+    /// can be read, clicking a ready-made color); Escape or a click outside closes. In the square
+    /// and the bars the arrow keys move by 1% or 1° (10 with Shift). Opacity is kept as it is
+    /// unless [`ColorPicker::alpha`] adds an opacity bar. The words come from
+    /// [`Ui::set_color_text`]. The square and bars are drawn as pictures, which the Direct3D 11
+    /// renderer does not draw yet.
+    ///
+    /// ```
+    /// # let mut accent = kargui::rgb(0x1a73e8);
+    /// # kargui::test::example(|ui| {
+    /// if ui.color_picker(&mut accent).label("Accent color").changed() {
+    ///     // use the new color
+    /// }
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn color_picker(&mut self, color: &mut Color) -> ColorPicker<'_> {
+        use crate::color::{PickerState, hex, parse_hex, rgb_to_hsv, same_bytes};
+        let words = self.cx.color_text.clone();
+        let (idx, id) = self.add(Kind::ColorField { color: *color, text: String::new(), open: false }, Dir::Leaf);
+        // .alpha() と .swatches() は前のフレームの物（作り手の関数は、この呼び出しの後に付く）
+        let opts = self.cx.color_options.remove(&id).unwrap_or_default();
+        let pop = Id(hash_of((id.0, "colors")));
+        let mut open = self.cx.open.contains(&id) && !self.cx.closing.contains(&pop);
+        if self.disabled {
+            open = false;
+        } else {
+            if self.cx.clicked == Some(id) {
+                open = !open;
+            }
+            if self.cx.focus == Some(id) && (self.cx.app_keys.contains(&(Key::Down, Mods::ALT)) || self.cx.app_keys.contains(&(Key::F4, Mods::NONE))) {
+                open = true;
+            }
+        }
+        let mut changed = false;
+        if open {
+            let mut st = self.cx.color_state.remove(&id).unwrap_or_else(|| PickerState::of(*color, opts.alpha));
+            // アプリが色を変えた時は、状態を作り直す（同じ色の時は色相を保つ）
+            if !same_bytes(st.color(), *color) {
+                st = PickerState::of(*color, opts.alpha);
+            }
+            let area_id = Id(hash_of((pop.0, "area")));
+            let o = self.push_overlay(pop, OverlayKind::Popup, String::new(), Some(id));
+            let (pad, gap) = (self.px(10.0), self.px(8.0));
+            self.tree.layout[o].pad = (pad, pad);
+            self.tree.layout[o].gap = gap;
+            // 押している間の位置（前のフレームの配置で、部品の中の 0〜1）
+            let drag = |cx: &Context, wid: Id| -> Option<(f32, f32)> {
+                if cx.pressed != Some(wid) && cx.released != Some(wid) {
+                    return None;
+                }
+                let r = cx.prev.hits.iter().find(|h| h.id == wid).map(|h| h.rect)?;
+                let (x, y) = cx.pointer?;
+                // 端の画素で 0 と 1 になる（濃淡の絵と同じ決まり）
+                Some((((x - r.x) / (r.w - 1.0).max(1.0)).clamp(0.0, 1.0), ((y - r.y) / (r.h - 1.0).max(1.0)).clamp(0.0, 1.0)))
+            };
+            // 焦点のある部品に来た矢印（Shift で 10 倍）
+            let arrows = |cx: &mut Context, wid: Id| -> Vec<(Key, bool)> {
+                if cx.focus != Some(wid) {
+                    return Vec::new();
+                }
+                std::mem::take(&mut cx.keys).into_iter().filter_map(|e| if let Event::Key { key, mods } = e { (!mods.ctrl && !mods.alt).then_some((key, mods.shift)) } else { None }).collect()
+            };
+            let mut moved = false;
+            let mut picked: Option<Color> = None;
+            {
+                let mut ui = self.child(o);
+                // 彩度と明るさの面
+                let (ai, aid) = ui.push(area_id, Kind::ColorArea { hue: st.hsv[0], sat: st.hsv[1], val: st.hsv[2] }, Dir::Leaf);
+                ui.tree.info[ai].label = Some(words.area.to_string());
+                if !ui.disabled {
+                    if let Some((fx, fy)) = drag(ui.cx, aid) {
+                        (st.hsv[1], st.hsv[2]) = (fx, 1.0 - fy);
+                        moved = true;
+                    }
+                    for (key, shift) in arrows(ui.cx, aid) {
+                        let d = if shift { 0.1 } else { 0.01 };
+                        let [_, s, v] = &mut st.hsv;
+                        match key {
+                            Key::Left => *s -= d,
+                            Key::Right => *s += d,
+                            Key::Up => *v += d,
+                            Key::Down => *v -= d,
+                            _ => continue,
+                        }
+                        (*s, *v) = (s.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+                        moved = true;
+                    }
+                }
+                // 色相の帯
+                let (hi, hid) = ui.push(Id(hash_of((pop.0, "hue"))), Kind::HueBar { hue: st.hsv[0] }, Dir::Leaf);
+                ui.tree.info[hi].label = Some(words.hue.to_string());
+                if !ui.disabled {
+                    if let Some((fx, _)) = drag(ui.cx, hid) {
+                        st.hsv[0] = (fx * 360.0).min(359.9);
+                        moved = true;
+                    }
+                    for (key, shift) in arrows(ui.cx, hid) {
+                        let d = if shift { 10.0 } else { 1.0 };
+                        st.hsv[0] = match key {
+                            Key::Left | Key::Down => st.hsv[0] - d,
+                            Key::Right | Key::Up => st.hsv[0] + d,
+                            Key::Home => 0.0,
+                            Key::End => 359.0,
+                            _ => continue,
+                        }
+                        .clamp(0.0, 359.9);
+                        moved = true;
+                    }
+                }
+                // 不透明度の帯（.alpha() の時だけ）
+                if opts.alpha {
+                    let rgb = { let c = st.color(); [c[0], c[1], c[2]] };
+                    let (bi, bid) = ui.push(Id(hash_of((pop.0, "alpha"))), Kind::AlphaBar { rgb, alpha: st.alpha }, Dir::Leaf);
+                    ui.tree.info[bi].label = Some(words.opacity.to_string());
+                    if !ui.disabled {
+                        if let Some((fx, _)) = drag(ui.cx, bid) {
+                            st.alpha = fx;
+                            moved = true;
+                        }
+                        for (key, shift) in arrows(ui.cx, bid) {
+                            let d = if shift { 0.1 } else { 0.01 };
+                            st.alpha = match key {
+                                Key::Left | Key::Down => st.alpha - d,
+                                Key::Right | Key::Up => st.alpha + d,
+                                Key::Home => 0.0,
+                                Key::End => 1.0,
+                                _ => continue,
+                            }
+                            .clamp(0.0, 1.0);
+                            moved = true;
+                        }
+                    }
+                }
+                // 色の番号（読める番号になった時だけ色を変える）
+                let mut code = st.code.clone();
+                let field = ui.text_input(&mut code).hint(if opts.alpha { "#RRGGBBAA" } else { "#RRGGBB" }).label(words.code).monospace();
+                if field.changed()
+                    && let Some(c) = parse_hex(&code)
+                {
+                    picked = Some(if opts.alpha { c } else { [c[0], c[1], c[2], st.alpha] });
+                }
+                st.code = code;
+                // 見本の色
+                let swatches: Vec<Color> = opts.swatches.clone().unwrap_or_else(|| crate::color::SWATCHES.iter().map(|&x| crate::geom::rgb(x)).collect());
+                let current = st.color();
+                let mut g = ui.grid(&[Size::Fixed(24.0); 8], |ui| {
+                    for (k, &c) in swatches.iter().enumerate() {
+                        ui.salt = hash_of(k);
+                        let selected = same_bytes([c[0], c[1], c[2], 1.0], [current[0], current[1], current[2], 1.0]);
+                        let (si, sid) = ui.add(Kind::Swatch { color: c, selected }, Dir::Leaf);
+                        ui.tree.info[si].label = Some(hex(c, opts.alpha));
+                        if !ui.disabled && ui.cx.clicked == Some(sid) {
+                            picked = Some(if opts.alpha { c } else { [c[0], c[1], c[2], st.alpha] });
+                        }
+                    }
+                })
+                .gap(4.0);
+                g = g.label(words.swatches);
+                let _ = g;
+            }
+            if let Some(c) = picked {
+                let hsv = rgb_to_hsv([c[0], c[1], c[2]]);
+                // 灰色（彩度 0）を選んだ時は、色相を保つ
+                st.hsv = if hsv[1] > 0.0 { hsv } else { [st.hsv[0], hsv[1], hsv[2]] };
+                st.alpha = c[3];
+                moved = true;
+            }
+            if moved {
+                // 見本と番号で選んだ色は、そのまま返す（HSV を通すと値がわずかにずれ、アプリの == で同じにならない）
+                let new = picked.unwrap_or_else(|| st.color());
+                // 番号の欄に打っている時は、打った文字をそのまま残す
+                if picked.is_none() || parse_hex(&st.code).is_none_or(|c| !same_bytes(c, new)) {
+                    st.code = hex(new, opts.alpha);
+                }
+                changed = !same_bytes(new, *color);
+                *color = new;
+                crate::log::event("color.pick", &format!("color={}", hex(new, true)), &format!("by={}", if picked.is_some() { "code_or_swatch" } else { "drag_or_keys" }));
+            }
+            self.cx.color_state.insert(id, st);
+            // 開いた時は、面に焦点を置く
+            self.cx.overlay_focus_hint.insert(pop, area_id);
+        } else {
+            self.cx.color_state.remove(&id);
+        }
+        if open {
+            self.cx.open.insert(id);
+        } else {
+            self.cx.open.remove(&id);
+        }
+        // 設定は次のフレームの作り手が入れ直すまで残す（閉じている間も、作り手が毎フレーム入れる）
+        self.cx.color_options.insert(id, crate::color::PickerOptions { alpha: opts.alpha, swatches: opts.swatches.clone() });
+        if let Kind::ColorField { color: c, text, open: o } = &mut self.tree.info[idx].kind {
+            *c = *color;
+            *text = hex(*color, opts.alpha);
+            *o = open;
+        }
+        ColorPicker { h: self.handle(idx, id), changed }
+    }
+
+    /// Sets the words color pickers show and screen readers hear, for this frame and the
+    /// following ones. English by default.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.set_color_text(kargui::ColorText::japanese());
+    /// # });
+    /// ```
+    pub fn set_color_text(&mut self, text: ColorText) {
+        self.cx.color_text = text;
+    }
+
+    /// 今の時刻（試験台では 12:00。写真と試験の結果を、動かす時刻で変えない）
+    fn time_now(&self) -> Time {
+        if self.cx.frozen.is_some() { Time::new(12, 0).unwrap_or_default() } else { Time::now() }
+    }
+
+    /// Sets the words date and time pickers show (names of days and months, the text of an empty
+    /// field, the names of the hour and minute grids) for this frame and the following ones.
+    /// English by default.
     ///
     /// ```
     /// # let mut due = None;
@@ -5930,6 +6332,115 @@ impl DatePicker<'_> {
     /// ```
     pub fn changed(&self) -> bool {
         self.changed
+    }
+}
+
+/// A color field. See [`Ui::color_picker`].
+///
+/// ```
+/// # let mut fill = kargui::rgb(0x188038);
+/// # kargui::test::example(|ui| {
+/// if ui.color_picker(&mut fill).label("Fill").changed() {
+///     // use the new color
+/// }
+/// # });
+/// ```
+pub struct ColorPicker<'t> {
+    h: Handle<'t>,
+    changed: bool,
+}
+
+common!(ColorPicker, " # let mut color = kargui::rgb(0x1a73e8);", "color_picker(&mut color)");
+
+impl ColorPicker<'_> {
+    /// Whether the color changed in this frame.
+    ///
+    /// ```
+    /// # let mut color = kargui::rgb(0x1a73e8);
+    /// # kargui::test::example(|ui| {
+    /// if ui.color_picker(&mut color).changed() {
+    ///     // redraw with the new color
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// Adds an opacity bar, and lets the color code have opacity (`#RRGGBBAA`).
+    ///
+    /// ```
+    /// # let mut shade = [0.0, 0.0, 0.0, 0.4];
+    /// # kargui::test::example(|ui| {
+    /// ui.color_picker(&mut shade).alpha();
+    /// # });
+    /// ```
+    pub fn alpha(self) -> Self {
+        // 色の選択は color_picker の中で作るので、次のフレームから効く（開くのは押した後）
+        self.h.cx.color_options.entry(self.h.id).or_default().alpha = true;
+        self
+    }
+
+    /// Offers these ready-made colors instead of the default 16 (8 per row).
+    ///
+    /// ```
+    /// # let mut label = kargui::rgb(0xd93025);
+    /// # kargui::test::example(|ui| {
+    /// let brand = [kargui::rgb(0xd93025), kargui::rgb(0x188038), kargui::rgb(0x1a73e8)];
+    /// ui.color_picker(&mut label).swatches(&brand);
+    /// # });
+    /// ```
+    pub fn swatches(self, colors: &[Color]) -> Self {
+        self.h.cx.color_options.entry(self.h.id).or_default().swatches = Some(colors.to_vec());
+        self
+    }
+}
+
+/// A time field. See [`Ui::time_picker`].
+///
+/// ```
+/// # let mut start = None;
+/// # kargui::test::example(|ui| {
+/// if ui.time_picker(&mut start).label("Start").changed() {
+///     // react to the new time
+/// }
+/// # });
+/// ```
+pub struct TimePicker<'t> {
+    h: Handle<'t>,
+    changed: bool,
+}
+
+common!(TimePicker, " # let mut start = None;", "time_picker(&mut start)");
+
+impl TimePicker<'_> {
+    /// Whether a time was picked in this frame.
+    ///
+    /// ```
+    /// # let mut start = None;
+    /// # kargui::test::example(|ui| {
+    /// if ui.time_picker(&mut start).changed() {
+    ///     // react to the new time
+    /// }
+    /// # });
+    /// ```
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// Offers minutes in steps of `minutes` (1 to 60; 5 by default): 15 gives 00, 15, 30 and 45,
+    /// 1 gives every minute. A time already set keeps its minute even if it is not on a step.
+    ///
+    /// ```
+    /// # let mut meeting = None;
+    /// # kargui::test::example(|ui| {
+    /// ui.time_picker(&mut meeting).minute_step(15);
+    /// # });
+    /// ```
+    pub fn minute_step(self, minutes: u32) -> Self {
+        // ます目は time_picker の中で作るので、次のフレームから効く（開くのは押した後なので、開いた時には効いている）
+        self.h.cx.minute_steps.insert(self.h.id, minutes.clamp(1, 60));
+        self
     }
 }
 

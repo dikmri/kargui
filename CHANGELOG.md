@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Time picker: `ui.time_picker(&mut Option<Time>)` is a field that opens a grid of hours and a
+  grid of minutes (picking an hour moves to the minutes, picking a minute closes; arrow keys,
+  Enter or Space, Escape). `.minute_step(n)` sets the minutes offered (5 by default). `Time` is a
+  new type for a time of day (`Time::new`, `now`, `parse`, `hour`, `minute`, `minutes`,
+  `from_minutes`, `add_minutes`, shown as `09:30`). `DateText` has new fields `time_empty`,
+  `hours` and `minutes` (code that builds a `DateText` with a struct expression must add them).
+  Screen readers hear a time input and grids named for hours and minutes.
+- Color picker: `ui.color_picker(&mut Color)` is a field that opens a square for saturation and
+  brightness, a hue bar, a color code field (`#RRGGBB`) and 16 ready-made colors. `.alpha()` adds
+  an opacity bar and `#RRGGBBAA` codes; `.swatches(&colors)` replaces the ready-made colors. The
+  hue is kept while the saturation passes through grey, and a ready-made color or a typed code is
+  returned exactly. The words come from `ColorText` (`english`, `japanese`) through
+  `ui.set_color_text`. The square and the bars are drawn as images, which the Direct3D 11 renderer
+  does not draw yet.
+- `Icon::Clock`. Guide page 21. The settings example picks an accent color and quiet hours.
 - Fonts: `Font` is `Font::Ui` (the system's UI font, the default), `Font::Monospace` (a
   fixed-width font; on Windows BIZ UDGothic, where a Japanese character is exactly two Latin
   letters wide, then Consolas, then MS Gothic) or `Font::family(name)`. `Options::font` sets the

@@ -53,6 +53,8 @@ pub enum Icon {
     ArrowRight,
     /// A calendar page.
     Calendar,
+    /// A clock face.
+    Clock,
 }
 
 impl Icon {
@@ -67,7 +69,7 @@ impl Icon {
     /// });
     /// # });
     /// ```
-    pub const ALL: [Icon; 18] = [
+    pub const ALL: [Icon; 19] = [
         Icon::Check,
         Icon::Close,
         Icon::ChevronDown,
@@ -86,6 +88,7 @@ impl Icon {
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::Calendar,
+        Icon::Clock,
     ];
 }
 
@@ -125,6 +128,7 @@ fn shapes(icon: Icon) -> Vec<Vec<Pt>> {
             line(&[(8.0, 3.5), (8.0, 7.0)]),
             line(&[(16.0, 3.5), (16.0, 7.0)]),
         ]),
+        Icon::Clock => join(vec![ring((12.0, 12.0), 8.5), line(&[(12.0, 7.5), (12.0, 12.0), (15.0, 14.0)])]),
     }
 }
 

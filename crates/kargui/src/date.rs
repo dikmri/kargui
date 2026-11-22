@@ -1,8 +1,130 @@
-//! 日付（年・月・日）と、その計算。依存を増やさないため、暦の計算は自分で持つ。
+//! 日付（年・月・日）と時刻（時・分）、その計算。依存を増やさないため、暦の計算は自分で持つ。
 //! 年月日と 1970-01-01 からの日数の変換は、Howard Hinnant の days_from_civil / civil_from_days
 //! （グレゴリオ暦を過去にも延ばした暦）と同じ考え方で書いた。
 
 use std::fmt;
+
+/// A time of day, hours (0 to 23) and minutes (0 to 59), shown as `09:30`.
+///
+/// ```
+/// use kargui::Time;
+///
+/// let t = Time::new(9, 30).unwrap();
+/// assert_eq!(t.to_string(), "09:30");
+/// assert_eq!(t.add_minutes(45), Time::new(10, 15).unwrap());
+/// assert_eq!(Time::new(23, 50).unwrap().add_minutes(20), Time::new(0, 10).unwrap()); // past midnight
+/// assert_eq!(Time::parse("7:05"), Time::new(7, 5));
+/// assert!(Time::new(24, 0).is_none());
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Time {
+    hour: u8,
+    minute: u8,
+}
+
+impl Time {
+    /// The time, or `None` if the hour is not 0 to 23 or the minute not 0 to 59.
+    ///
+    /// ```
+    /// assert!(kargui::Time::new(23, 59).is_some());
+    /// assert!(kargui::Time::new(12, 60).is_none());
+    /// ```
+    pub fn new(hour: u32, minute: u32) -> Option<Time> {
+        (hour < 24 && minute < 60).then_some(Time { hour: hour as u8, minute: minute as u8 })
+    }
+
+    /// The time now in the local time zone (on Windows; on other systems, in UTC for now).
+    ///
+    /// ```
+    /// let now = kargui::Time::now();
+    /// assert!(now.hour() < 24);
+    /// ```
+    pub fn now() -> Time {
+        #[cfg(windows)]
+        if let Some(t) = crate::platform::local_time().and_then(|(h, m)| Time::new(h, m)) {
+            return t;
+        }
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        Time::from_minutes(secs.div_euclid(60))
+    }
+
+    /// Reads `9:30` or `09:30` (24-hour). `None` if the text is not a time.
+    ///
+    /// ```
+    /// use kargui::Time;
+    ///
+    /// assert_eq!(Time::parse("18:45"), Time::new(18, 45));
+    /// assert_eq!(Time::parse(" 9:05 "), Time::new(9, 5));
+    /// assert_eq!(Time::parse("9:5"), None);
+    /// assert_eq!(Time::parse("25:00"), None);
+    /// ```
+    pub fn parse(text: &str) -> Option<Time> {
+        let (h, m) = text.trim().split_once(':')?;
+        let digits = |s: &str, max_len: usize| (!s.is_empty() && s.len() <= max_len && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse::<u32>().ok()).flatten();
+        if m.len() != 2 {
+            return None;
+        }
+        Time::new(digits(h, 2)?, digits(m, 2)?)
+    }
+
+    /// The hour, 0 to 23.
+    ///
+    /// ```
+    /// assert_eq!(kargui::Time::new(18, 45).unwrap().hour(), 18);
+    /// ```
+    pub fn hour(self) -> u32 {
+        self.hour as u32
+    }
+
+    /// The minute, 0 to 59.
+    ///
+    /// ```
+    /// assert_eq!(kargui::Time::new(18, 45).unwrap().minute(), 45);
+    /// ```
+    pub fn minute(self) -> u32 {
+        self.minute as u32
+    }
+
+    /// Minutes since midnight, 0 to 1439.
+    ///
+    /// ```
+    /// assert_eq!(kargui::Time::new(1, 30).unwrap().minutes(), 90);
+    /// ```
+    pub fn minutes(self) -> u32 {
+        self.hour as u32 * 60 + self.minute as u32
+    }
+
+    /// The time `minutes` after midnight, going round the clock (1440 is midnight again, -10 is
+    /// 23:50).
+    ///
+    /// ```
+    /// use kargui::Time;
+    ///
+    /// assert_eq!(Time::from_minutes(90), Time::new(1, 30).unwrap());
+    /// assert_eq!(Time::from_minutes(-10), Time::new(23, 50).unwrap());
+    /// ```
+    pub fn from_minutes(minutes: i64) -> Time {
+        let m = minutes.rem_euclid(24 * 60) as u32;
+        Time { hour: (m / 60) as u8, minute: (m % 60) as u8 }
+    }
+
+    /// The time `minutes` later (earlier if negative), going round the clock.
+    ///
+    /// ```
+    /// use kargui::Time;
+    ///
+    /// assert_eq!(Time::new(0, 5).unwrap().add_minutes(-10), Time::new(23, 55).unwrap());
+    /// ```
+    pub fn add_minutes(self, minutes: i64) -> Time {
+        Time::from_minutes(self.minutes() as i64 + minutes)
+    }
+}
+
+impl fmt::Display for Time {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02}:{:02}", self.hour, self.minute)
+    }
+}
 
 /// A calendar date (the Gregorian calendar), shown as `2026-11-22`.
 ///
@@ -185,8 +307,9 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
-/// The words a date picker shows: names of the days and months, the order of the month title,
-/// and the text of an empty field. Set them for the whole window with
+/// The words date and time pickers show: names of the days and months, the order of the month
+/// title, the text of an empty field, and the names of the hour and minute grids. Set them for
+/// the whole window with
 /// [`Ui::set_date_text`](crate::Ui::set_date_text).
 ///
 /// ```
@@ -211,6 +334,12 @@ pub struct DateText {
     pub previous: &'static str,
     /// See `previous`.
     pub next: &'static str,
+    /// The text of a time field with no time ([`Ui::time_picker`](crate::Ui::time_picker)).
+    pub time_empty: &'static str,
+    /// The names of the grids of hours and minutes in a time picker.
+    pub hours: &'static str,
+    /// See `hours`.
+    pub minutes: &'static str,
 }
 
 impl DateText {
@@ -227,6 +356,9 @@ impl DateText {
             empty: "Pick a date",
             previous: "Previous month",
             next: "Next month",
+            time_empty: "Pick a time",
+            hours: "Hours",
+            minutes: "Minutes",
         }
     }
 
@@ -243,6 +375,9 @@ impl DateText {
             empty: "日付を選ぶ",
             previous: "前の月",
             next: "次の月",
+            time_empty: "時刻を選ぶ",
+            hours: "時",
+            minutes: "分",
         }
     }
 
@@ -290,6 +425,21 @@ mod tests {
         assert_eq!(Date::new(2026, 3, 31).unwrap().add_months(-1), Date::new(2026, 2, 28).unwrap());
         assert_eq!(Date::new(2026, 1, 15).unwrap().add_months(-13), Date::new(2024, 12, 15).unwrap());
         assert_eq!(Date::new(2027, 1, 1).unwrap().add_days(-1), Date::new(2026, 12, 31).unwrap());
+    }
+
+    #[test]
+    fn times_wrap_round_the_clock_and_parse_24_hour_text() {
+        assert_eq!(Time::new(0, 0).unwrap().minutes(), 0);
+        assert_eq!(Time::new(23, 59).unwrap().minutes(), 1439);
+        assert_eq!(Time::from_minutes(1440), Time::new(0, 0).unwrap());
+        assert_eq!(Time::from_minutes(-1), Time::new(23, 59).unwrap());
+        assert_eq!(Time::new(9, 30).unwrap().add_minutes(-600), Time::new(23, 30).unwrap());
+        assert_eq!(Time::new(7, 5).unwrap().to_string(), "07:05");
+        for bad in ["", "930", "9:", ":30", "9:3", "9:300", "a9:30", "09:3x", "24:00", "12:60", "123:00"] {
+            assert_eq!(Time::parse(bad), None, "{bad:?}");
+        }
+        assert_eq!(Time::parse("00:00"), Time::new(0, 0));
+        assert!(Time::new(12, 0).unwrap() < Time::new(12, 1).unwrap(), "時刻は早い順に並ぶ");
     }
 
     #[test]

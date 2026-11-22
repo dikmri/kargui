@@ -144,7 +144,13 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
         // 大きさは作る時に決める
         Kind::Splitter { .. } | Kind::Canvas { .. } | Kind::ColumnGrip => (0.0, 0.0),
         Kind::DateField { .. } => (p(160.0), p(sz::INPUT_H)),
+        Kind::TimeField { .. } => (p(120.0), p(sz::INPUT_H)),
         Kind::CalendarDay { .. } => (p(36.0), p(32.0)),
+        Kind::ClockCell { .. } => (p(40.0), p(32.0)),
+        Kind::ColorField { .. } => (p(150.0), p(sz::INPUT_H)),
+        Kind::ColorArea { .. } => (p(232.0), p(150.0)),
+        Kind::HueBar { .. } | Kind::AlphaBar { .. } => (p(232.0), p(16.0)),
+        Kind::Swatch { .. } => (p(24.0), p(24.0)),
         Kind::ColumnHeader { text, .. } => {
             let laid = cx.text.layout(text, style(cx, TextKind::Small, true), None);
             (laid.width.ceil() + p(28.0), p(32.0))
@@ -407,12 +413,27 @@ impl Painter<'_> {
                     | Kind::TreeItem { .. }
                     | Kind::ColumnHeader { .. }
                     | Kind::CalendarDay { .. }
+                    | Kind::ClockCell { .. }
+                    | Kind::ColorArea { .. }
+                    | Kind::HueBar { .. }
+                    | Kind::AlphaBar { .. }
             )
             || (enabled && focusable && self.toolbar);
         let vertical = matches!(tree.info[i].kind, Kind::TextArea { .. } | Kind::NumberInput { .. });
         // 引っ張りを自分で使う部品（この上からはドラッグ＆ドロップを始めない）
         let drags = text_input
-            || matches!(tree.info[i].kind, Kind::Slider { .. } | Kind::Splitter { .. } | Kind::Canvas { .. } | Kind::ColumnGrip | Kind::TextArea { .. } | Kind::NumberInput { .. });
+            || matches!(
+                tree.info[i].kind,
+                Kind::Slider { .. }
+                    | Kind::Splitter { .. }
+                    | Kind::Canvas { .. }
+                    | Kind::ColumnGrip
+                    | Kind::TextArea { .. }
+                    | Kind::NumberInput { .. }
+                    | Kind::ColorArea { .. }
+                    | Kind::HueBar { .. }
+                    | Kind::AlphaBar { .. }
+            );
         self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, vertical, enabled, drags });
         // メニューバー・タブ・ツールバーは、まとまりの中の 1 つにだけ Tab で止まる
         if focusable && !tree.info[i].skip_tab && !matches!(tree.info[i].kind, Kind::MenuBarItem { tab_stop: false, .. }) {
@@ -429,6 +450,80 @@ impl Painter<'_> {
 
     /// 一覧やメニューの項目の背景（bg が無ければ塗らない）と、キーボードの焦点の枠（内側に 2 本分）。
     /// 枠の内側は背景の色で塗り直す（boxed は外側を枠の色で塗るので、透明は渡せない）
+    /// 色の選択の濃淡の絵（同じ鍵の絵は作り直さず、最近の 8 枚を覚える）
+    fn color_image(&mut self, key: String, w: u32, h: u32, make: impl FnOnce() -> Vec<u8>) -> Option<crate::image::Image> {
+        let cache = &mut self.cx.color_images;
+        if let Some(k) = cache.iter().position(|(c, _)| *c == key) {
+            let hit = cache.remove(k);
+            let img = hit.1.clone();
+            cache.push(hit);
+            return Some(img);
+        }
+        let img = crate::image::Image::from_rgba(w, h, make()).ok()?;
+        if cache.len() >= 8 {
+            cache.remove(0);
+        }
+        cache.push((key, img.clone()));
+        Some(img)
+    }
+
+    /// 四角の縁（中は塗らない）
+    fn outline(&mut self, r: Rect, color: Color, w: f32) {
+        for e in [Rect::new(r.x, r.y, r.w, w), Rect::new(r.x, r.bottom() - w, r.w, w), Rect::new(r.x, r.y, w, r.h), Rect::new(r.right() - w, r.y, w, r.h)] {
+            self.d.fill(e, color, 0.0);
+        }
+    }
+
+    /// 色の見本の四角。透けている色は、市松模様の上に重ねて見せる
+    fn swatch_box(&mut self, r: Rect, color: Color, border: Color, radius: f32) {
+        let line = self.line();
+        self.d.fill(r, border, radius);
+        let inner = r.inset(line);
+        if color[3] < 1.0 {
+            self.d.fill(inner, [1.0, 1.0, 1.0, 1.0], (radius - line).max(0.0));
+            let cell = (inner.w / 4.0).max(1.0).round();
+            let mut y = inner.y;
+            let mut row = 0;
+            while y < inner.bottom() {
+                let mut x = inner.x + if row % 2 == 0 { 0.0 } else { cell };
+                while x < inner.right() {
+                    let c = Rect::new(x, y, cell.min(inner.right() - x), cell.min(inner.bottom() - y));
+                    self.d.fill(c, [0.8, 0.8, 0.8, 1.0], 0.0);
+                    x += 2.0 * cell;
+                }
+                y += cell;
+                row += 1;
+            }
+        }
+        self.d.fill(inner, color, (radius - line).max(0.0));
+    }
+
+    /// 色の選択のつまみ（白い輪と暗い縁。どの色の上でも見える）
+    fn color_knob(&mut self, x: f32, y: f32, color: Color) {
+        let (o, m, n) = (self.px(9.0), self.px(8.0), self.px(5.5));
+        let at = |rad: f32| Rect::new((x - rad).round(), (y - rad).round(), (2.0 * rad).round(), (2.0 * rad).round());
+        self.d.fill(at(o), [0.0, 0.0, 0.0, 0.45], o);
+        self.d.fill(at(m), [1.0, 1.0, 1.0, 1.0], m);
+        self.d.fill(at(n), color, n);
+    }
+
+    /// 色相と不透明度の帯: 絵と、位置 f（0〜1）の縦のつまみ
+    fn bar_with_knob(&mut self, tree: &Tree, i: usize, r: Rect, img: Option<crate::image::Image>, f: f32) {
+        let radius = self.px(4.0);
+        self.focus_ring(tree, i, radius);
+        if let Some(img) = img {
+            self.d.image(r, &img);
+        }
+        let t = self.cx.theme.clone();
+        let line = self.line();
+        self.outline(r, t.border, line);
+        let (w, over) = (self.px(6.0), self.px(3.0));
+        let x = (r.x + f.clamp(0.0, 1.0) * (r.w - 1.0) - w / 2.0).round();
+        let knob = Rect::new(x, r.y - over, w, r.h + 2.0 * over);
+        self.d.boxed(knob, [1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.55], line, self.px(2.0));
+        self.hit(tree, i, true, false);
+    }
+
     fn item_bg(&mut self, r: Rect, bg: Option<Color>, focused: bool, radius: f32) {
         let line = self.line();
         let (accent, base) = (self.cx.theme.accent, self.cx.theme.background);
@@ -888,7 +983,8 @@ impl Painter<'_> {
                 self.d.fill(bar, if hot { t.accent } else { t.border }, 0.0);
                 self.hit(tree, i, true, false);
             }
-            Kind::DateField { text, empty, open } => {
+            Kind::DateField { text, empty, open } | Kind::TimeField { text, empty, open } => {
+                let picture = if matches!(tree.info[i].kind, Kind::TimeField { .. }) { Icon::Clock } else { Icon::Calendar };
                 let t = self.cx.theme.clone();
                 let off = tree.info[i].disabled;
                 let radius = self.px(sz::RADIUS);
@@ -905,7 +1001,91 @@ impl Painter<'_> {
                 let pad = self.px(sz::INPUT_PAD);
                 text_mid(self.d, self.cx, text, style(self.cx, TextKind::Body, false), r.x + pad, r, color);
                 let s = self.px(16.0);
-                self.icon(Icon::Calendar, r.right() - pad - s, (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                self.icon(picture, r.right() - pad - s, (r.y + (r.h - s) / 2.0).round(), s, if off { t.done_text } else { t.weak_text });
+                self.hit(tree, i, true, false);
+            }
+            Kind::ColorField { color, text, open } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(sz::RADIUS);
+                self.focus_ring(tree, i, radius);
+                let bg = if off {
+                    t.button
+                } else if self.cx.hover == Some(id) {
+                    t.button_hover
+                } else {
+                    t.field
+                };
+                self.d.boxed(r, bg, if *open { t.accent } else { t.border }, line, radius);
+                let pad = self.px(sz::INPUT_PAD);
+                let s = self.px(18.0);
+                let sw = Rect::new(r.x + pad, (r.y + (r.h - s) / 2.0).round(), s, s);
+                self.swatch_box(sw, *color, t.border, self.px(3.0));
+                let st = style(self.cx, TextKind::Body, false);
+                text_mid(self.d, self.cx, text, st, sw.right() + self.px(8.0), r, if off { t.done_text } else { t.text });
+                let k = self.px(16.0);
+                self.icon(Icon::ChevronDown, r.right() - pad - k, (r.y + (r.h - k) / 2.0).round(), k, if off { t.done_text } else { t.weak_text });
+                self.hit(tree, i, true, false);
+            }
+            Kind::ColorArea { hue, sat, val } => {
+                let key = format!("sv:{:.1}:{}x{}", hue, r.w as u32, r.h as u32);
+                let (hue, w, h) = (*hue, r.w.max(1.0) as u32, r.h.max(1.0) as u32);
+                let img = self.color_image(key, w, h, || crate::color::sv_pixels(hue, w, h));
+                let radius = self.px(4.0);
+                self.focus_ring(tree, i, radius);
+                if let Some(img) = img {
+                    self.d.image(r, &img);
+                }
+                let t = self.cx.theme.clone();
+                self.outline(r, t.border, line);
+                let (x, y) = (r.x + sat * (r.w - 1.0), r.y + (1.0 - val) * (r.h - 1.0));
+                let [cr, cg, cb] = crate::color::hsv_to_rgb(hue, *sat, *val);
+                self.color_knob(x, y, [cr, cg, cb, 1.0]);
+                self.hit(tree, i, true, false);
+            }
+            Kind::HueBar { hue } => {
+                let key = format!("hue:{}x{}", r.w as u32, r.h as u32);
+                let (w, h) = (r.w.max(1.0) as u32, r.h.max(1.0) as u32);
+                let img = self.color_image(key, w, h, || crate::color::hue_pixels(w, h));
+                self.bar_with_knob(tree, i, r, img, hue / 360.0);
+            }
+            Kind::AlphaBar { rgb, alpha } => {
+                let b = rgb.map(|c| (c * 255.0).round() as u32);
+                let key = format!("alpha:{}:{}:{}:{}x{}", b[0], b[1], b[2], r.w as u32, r.h as u32);
+                let (w, h, rgb, cell) = (r.w.max(1.0) as u32, r.h.max(1.0) as u32, *rgb, self.px(4.0) as u32);
+                let img = self.color_image(key, w, h, || crate::color::alpha_pixels(rgb, w, h, cell));
+                self.bar_with_knob(tree, i, r, img, *alpha);
+            }
+            Kind::Swatch { color, selected } => {
+                let t = self.cx.theme.clone();
+                let radius = self.px(4.0);
+                let focused = self.cx.focus_visible && self.cx.focus == Some(id);
+                if *selected || focused || self.cx.hover == Some(id) {
+                    // 選んでいる色は主の色の輪で囲む（輪と色の間に背景の色のすき間）
+                    let ring = if *selected || focused { t.accent } else { t.border };
+                    let w = self.px(2.0);
+                    self.d.boxed(Rect::new(r.x - w, r.y - w, r.w + 2.0 * w, r.h + 2.0 * w), t.background, ring, w, radius + w);
+                }
+                self.swatch_box(r.inset(if *selected { self.px(2.0) } else { 0.0 }), *color, t.border, radius);
+                self.hit(tree, i, true, false);
+            }
+            Kind::ClockCell { text, selected } => {
+                let t = self.cx.theme.clone();
+                let off = tree.info[i].disabled;
+                let radius = self.px(sz::RADIUS);
+                let hot = !off && (self.cx.pressed == Some(id) || self.cx.hover == Some(id));
+                let focused = self.cx.focus_visible && self.cx.focus == Some(id);
+                let base = if *selected {
+                    Some(t.accent)
+                } else if hot {
+                    Some(t.button_hover)
+                } else {
+                    None
+                };
+                self.item_bg(r, base, focused, radius);
+                let color = if *selected { t.on_accent } else if off { t.done_text } else { t.text };
+                let laid = self.cx.text.layout(text, style(self.cx, TextKind::Body, *selected), None);
+                put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
                 self.hit(tree, i, true, false);
             }
             Kind::CalendarDay { day, in_month, today, selected } => {

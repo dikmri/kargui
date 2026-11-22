@@ -573,10 +573,55 @@ if ui.date_picker(&mut due).label("Due date").changed() {
 }
 ```
 
+### `pub fn time_picker(&mut self, value: &mut Option<Time>) -> TimePicker<'_>`
+
+A field for a time of day that opens a grid of hours and a grid of minutes below it when
+clicked (or with Enter, Space, Alt+Down or F4). `*value` is `None` until a time is picked.
+Picking an hour (a click, or Enter or Space on it) keeps the minute and moves to the
+minutes; picking a minute closes the grids. The arrow keys move within a grid, and Escape
+or a click outside closes without picking. Minutes go in steps of 5 unless
+[`TimePicker::minute_step`] says otherwise. The field shows the time as `09:30`; its words
+come from [`Ui::set_date_text`]. Screen readers hear a time input with its value, and two
+grids named for hours and minutes.
+
+```
+if ui.time_picker(&mut start).label("Start").changed() {
+    // save the new time
+}
+```
+
+### `pub fn color_picker(&mut self, color: &mut Color) -> ColorPicker<'_>`
+
+A field showing a color that opens a color picker below it when clicked (or with Enter,
+Space, Alt+Down or F4): a square for saturation (left to right) and brightness (bottom to
+top), a hue bar, a field for the color code (`#RRGGBB`) and ready-made colors. `*color`
+changes as soon as the user moves something (dragging, the arrow keys, typing a code that
+can be read, clicking a ready-made color); Escape or a click outside closes. In the square
+and the bars the arrow keys move by 1% or 1° (10 with Shift). Opacity is kept as it is
+unless [`ColorPicker::alpha`] adds an opacity bar. The words come from
+[`Ui::set_color_text`]. The square and bars are drawn as pictures, which the Direct3D 11
+renderer does not draw yet.
+
+```
+if ui.color_picker(&mut accent).label("Accent color").changed() {
+    // use the new color
+}
+```
+
+### `pub fn set_color_text(&mut self, text: ColorText)`
+
+Sets the words color pickers show and screen readers hear, for this frame and the
+following ones. English by default.
+
+```
+ui.set_color_text(kargui::ColorText::japanese());
+```
+
 ### `pub fn set_date_text(&mut self, text: DateText)`
 
-Sets the words date pickers show (names of days and months, the text of an empty field)
-for this frame and the following ones. English by default.
+Sets the words date and time pickers show (names of days and months, the text of an empty
+field, the names of the hour and minute grids) for this frame and the following ones.
+English by default.
 
 ```
 ui.set_date_text(kargui::DateText::japanese());

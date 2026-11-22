@@ -241,6 +241,63 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 }
                 n
             }
+            Kind::TimeField { text, open, .. } => {
+                let mut n = Node::new(Role::TimeInput);
+                n.set_value(text.clone());
+                n.set_has_popup(accesskit::HasPopup::Dialog);
+                n.set_expanded(*open);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::ColorField { text, open, .. } => {
+                let mut n = Node::new(Role::ColorWell);
+                n.set_value(text.clone());
+                n.set_has_popup(accesskit::HasPopup::Dialog);
+                n.set_expanded(*open);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::ColorArea { sat, val, .. } => {
+                let w = &cx.color_text;
+                let mut n = Node::new(Role::Slider);
+                n.set_value(format!("{} {:.0}%, {} {:.0}%", w.saturation, sat * 100.0, w.brightness, val * 100.0));
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::HueBar { hue } => {
+                let mut n = Node::new(Role::Slider);
+                n.set_numeric_value(hue.round() as f64);
+                n.set_min_numeric_value(0.0);
+                n.set_max_numeric_value(360.0);
+                n.set_value(format!("{:.0}°", hue));
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::AlphaBar { alpha, .. } => {
+                let mut n = Node::new(Role::Slider);
+                n.set_numeric_value((alpha * 100.0).round() as f64);
+                n.set_min_numeric_value(0.0);
+                n.set_max_numeric_value(100.0);
+                n.set_value(format!("{:.0}%", alpha * 100.0));
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::Swatch { selected, .. } => {
+                let mut n = Node::new(Role::Button);
+                n.set_selected(*selected);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
+            Kind::ClockCell { selected, .. } => {
+                let mut n = Node::new(Role::GridCell);
+                n.set_selected(*selected);
+                n.add_action(Action::Click);
+                n.add_action(Action::Focus);
+                n
+            }
             Kind::CalendarDay { selected, .. } => {
                 let mut n = Node::new(Role::GridCell);
                 n.set_selected(*selected);

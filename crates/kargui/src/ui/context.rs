@@ -286,6 +286,16 @@ pub(crate) struct Context {
     pub today: Option<crate::date::Date>,
     /// 開いている暦の、焦点のある日（日付の欄 → 日付）
     pub calendar_cursor: HashMap<Id, crate::date::Date>,
+    /// 時刻の欄の分の刻み（前のフレームで .minute_step() が決めた物。時刻の欄 → 分）
+    pub minute_steps: HashMap<Id, u32>,
+    /// 色の選択の言葉
+    pub color_text: crate::color::ColorText,
+    /// 開いている色の選択の状態（色の欄 → 状態）
+    pub color_state: HashMap<Id, crate::color::PickerState>,
+    /// 色の選択の設定（前のフレームの .alpha() と .swatches()。色の欄 → 設定）
+    pub color_options: HashMap<Id, crate::color::PickerOptions>,
+    /// 色の選択の濃淡の絵（作り直さないよう、最近の 8 枚を覚える）
+    pub color_images: Vec<(String, crate::image::Image)>,
     /// この回のビューで開くように頼まれた窓（Ui::window。窓の処理と試験台がそろえる）
     pub windows: Vec<WindowRequest>,
     /// 利用者が閉じた窓のキー（次のビューの Ui::window が open を false にする）
@@ -409,6 +419,11 @@ impl Context {
             date_text: crate::date::DateText::english(),
             today: None,
             calendar_cursor: HashMap::new(),
+            minute_steps: HashMap::new(),
+            color_text: crate::color::ColorText::english(),
+            color_state: HashMap::new(),
+            color_options: HashMap::new(),
+            color_images: Vec::new(),
             windows: Vec::new(),
             closed_windows: HashSet::new(),
             file_dialog_request: None,
