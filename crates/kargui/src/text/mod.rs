@@ -386,7 +386,15 @@ mod tests {
         let ui = styled(&mut t, Font::Ui);
         let step = |l: &Laid| l.lines[1].top - l.lines[0].top;
         let ui_step = step(&t.layout("a\n漢", ui, None));
-        for font in [Font::Monospace, Font::family("BIZ UDPGothic")] {
+        // 英字だけの等幅の書体（BIZ UD ゴシックの無い CI の Windows では、等幅がこれになった。2026-11-22 の CI）
+        let latin_mono = if cfg!(windows) {
+            "Consolas"
+        } else if cfg!(target_os = "macos") {
+            "Menlo"
+        } else {
+            "DejaVu Sans Mono"
+        };
+        for font in [Font::Monospace, Font::family("BIZ UDPGothic"), Font::family(latin_mono)] {
             let st = styled(&mut t, font.clone());
             let laid = t.layout("a\n漢", st, None);
             assert!(step(&laid) >= ui_step - 0.5, "{font:?}: 行の間 {} < UI の書体の {ui_step}", step(&laid));

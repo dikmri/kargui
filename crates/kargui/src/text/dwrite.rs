@@ -343,14 +343,22 @@ impl Text {
         Ok(format)
     }
 
-    /// その書式の 1 行の、書体どおりの高さとベースラインの位置
+    /// その書式の 1 行の、書体どおりの高さとベースラインの位置。英字と日本語で測って低い方を使う
+    /// （書体に無い字は代わりの書体で並び、その行は代わりの書体の高さになる。英字だけの Consolas を「あ」で測ると、
+    /// 代わりの書体の高い行を測ってしまい、英字の行が詰まったままになった。2026-11-22 の CI）
     fn natural_line(&self, format: &IDWriteTextFormat) -> Result<(f32, f32)> {
-        let wide: Vec<u16> = "あ".encode_utf16().collect();
-        let layout = unsafe { self.factory.CreateTextLayout(&wide, format, 1.0e6, 1.0e6)? };
-        let mut lm = [DWRITE_LINE_METRICS::default()];
-        let mut count = 0u32;
-        unsafe { layout.GetLineMetrics(Some(&mut lm), &mut count)? };
-        Ok((lm[0].height, lm[0].baseline))
+        let mut best: Option<(f32, f32)> = None;
+        for sample in ["Ag", "あ"] {
+            let wide: Vec<u16> = sample.encode_utf16().collect();
+            let layout = unsafe { self.factory.CreateTextLayout(&wide, format, 1.0e6, 1.0e6)? };
+            let mut lm = [DWRITE_LINE_METRICS::default()];
+            let mut count = 0u32;
+            unsafe { layout.GetLineMetrics(Some(&mut lm), &mut count)? };
+            if best.is_none_or(|(h, _)| lm[0].height < h) {
+                best = Some((lm[0].height, lm[0].baseline));
+            }
+        }
+        Ok(best.unwrap_or((0.0, 0.0)))
     }
 
     /// 文字列を並べる。max_width を渡すとその幅で折り返す。結果は覚えておき、同じ物には同じ結果を返す

@@ -270,24 +270,28 @@ impl Text {
         Laid { glyphs, width: layout.full_width(), height, lines, text: s.to_string(), layout: Some(layout) }
     }
 
-    /// そのファミリーの並びの、1 行の書体どおりの高さ（覚えておく）
+    /// そのファミリーの並びの、1 行の書体どおりの高さ（覚えておく）。英字と日本語で測って低い方を使う
+    /// （書体に無い字は代わりの書体で並び、その行は代わりの書体の高さになるため）
     fn natural_line(&mut self, family: &str, size: f32, bold: bool) -> f32 {
         let key = (family.to_string(), (size * 64.0) as u32, bold);
         if let Some(h) = self.natural_lines.get(&key) {
             return *h;
         }
-        let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, "あ", 1.0, true);
-        b.push_default(StyleProperty::FontFamily(FontFamily::Source(family.to_string().into())));
-        b.push_default(StyleProperty::FontSize(size));
-        b.push_default(StyleProperty::Locale(Language::parse("ja-JP").ok()));
-        if bold {
-            b.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
+        let mut lowest = f32::MAX;
+        for sample in ["Ag", "あ"] {
+            let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, sample, 1.0, true);
+            b.push_default(StyleProperty::FontFamily(FontFamily::Source(family.to_string().into())));
+            b.push_default(StyleProperty::FontSize(size));
+            b.push_default(StyleProperty::Locale(Language::parse("ja-JP").ok()));
+            if bold {
+                b.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
+            }
+            let mut layout: Layout<()> = b.build(sample);
+            layout.break_all_lines(None);
+            lowest = lowest.min(layout.height());
         }
-        let mut layout: Layout<()> = b.build("あ");
-        layout.break_all_lines(None);
-        let h = layout.height();
-        self.natural_lines.insert(key, h);
-        h
+        self.natural_lines.insert(key, lowest);
+        lowest
     }
 
     fn glyph(&mut self, font: &FontData, glyph: u32, size: f32, coords: &[i16], embolden: bool) -> Option<Slot> {
