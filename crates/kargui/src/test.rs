@@ -4447,6 +4447,12 @@ mod tests {
         h.drag("Tap", 3.0, 0.0);
         assert_eq!(h.app().taps, 1, "4 ピクセル未満はクリック");
         assert!(h.cur().cx.dnd.is_none());
+        // 作者が本物の窓で「移す」を押した時、横 2・縦 4 ずれて引っ張りになった（2026-11-22 の記録）。Windows の
+        // SM_CXDRAG・SM_CYDRAG と同じく、横か縦のどちらかが 4 を超えるまではクリック
+        h.drag("Tap", 2.0, 4.0);
+        assert_eq!(h.app().taps, 2, "横 2・縦 4 はクリック");
+        h.drag("Tap", 0.0, 5.0);
+        assert_eq!(h.app().taps, 2, "縦 5 は引っ張り");
     }
 
     #[test]

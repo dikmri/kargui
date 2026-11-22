@@ -148,7 +148,8 @@ pub(crate) struct PendingDrop {
     pub payload: Option<Box<dyn std::any::Any>>,
 }
 
-/// 押してからこれだけ（論理ピクセル）動かしたら引っ張り始める。それまではクリック（Windows の SM_CXDRAG と同じ 4）
+/// 押してから横か縦にこれより（論理ピクセル）動かしたら引っ張り始める。それまではクリック（Windows の SM_CXDRAG・
+/// SM_CYDRAG と同じ 4）
 pub(crate) const DRAG_START: f32 = 4.0;
 
 /// 前のフレームの配置
@@ -795,7 +796,10 @@ impl Context {
                         self.drag_scrollbar(d, y);
                     } else if self.dnd.is_some() {
                         self.move_drag(x, y);
-                    } else if let Some((src, x0, y0)) = self.press_source.filter(|&(_, x0, y0)| (x - x0).hypot(y - y0) > DRAG_START * self.scale) {
+                    } else if let Some((src, x0, y0)) =
+                        // Windows の SM_CXDRAG・SM_CYDRAG と同じく、横か縦のどちらかが超えたら（押した点からの距離ではない）
+                        self.press_source.filter(|&(_, x0, y0)| (x - x0).abs().max((y - y0).abs()) > DRAG_START * self.scale)
+                    {
                         self.start_drag(src, x0, y0, x, y);
                         self.move_drag(x, y);
                     } else if self.pressed.is_some() {

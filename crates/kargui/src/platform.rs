@@ -444,6 +444,8 @@ struct State {
     background: Color,
     dark_title: Option<bool>,
     tracking_leave: bool,
+    /// 引っ張っている間に最後に決めたポインターの形（true は矢印、false は禁止の形）。変わった時だけ記録する
+    drag_cursor: Option<bool>,
     // 遅いフレームの内訳
     last_tick: Option<Instant>,
     t_build: f64,
@@ -1017,6 +1019,12 @@ impl State {
                         TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
                     self.tracking_leave = unsafe { TrackMouseEvent(&mut t) }.is_ok();
                 }
+                // Esc で引っ張りをやめた後もボタンを押したままなら、つかんだままで WM_SETCURSOR が来ないので、ここで矢印に戻す
+                if self.drag_cursor.is_some() && self.rt.cx.dnd.is_none() {
+                    set_cursor(IDC_ARROW);
+                    log::event("drag.cursor", &format!("x={x} y={y}"), "arrow (drag ended)");
+                    self.drag_cursor = None;
+                }
                 let cx = &self.rt.cx;
                 if cx.drag.is_some() || cx.pressed.is_some() || cx.press_source.is_some() || cx.dnd.is_some() {
                     // つまみをつかんでいる間・部品を押している間・引っ張り出せる部品を押している間と引っ張っている間は、
@@ -1025,13 +1033,23 @@ impl State {
                     if wp.0 & MK_LBUTTON != 0 {
                         self.push(Event::PointerMove { x, y });
                         // つかんでいる間は WM_SETCURSOR が来ないので、ここで形を決める（受け取れない所は禁止の形）
-                        if let Some(ok) = self.rt.cx.drag_cursor(x, y) {
+                        let shape = self.rt.cx.drag_cursor(x, y);
+                        if let Some(ok) = shape {
                             set_cursor(if ok { IDC_ARROW } else { IDC_NO });
+                        }
+                        if shape != self.drag_cursor {
+                            log::event("drag.cursor", &format!("x={x} y={y}"), match shape {
+                                Some(true) => "arrow",
+                                Some(false) => "not-allowed",
+                                None => "none",
+                            });
+                            self.drag_cursor = shape;
                         }
                     } else if self.rt.cx.dnd.is_some() || self.rt.cx.press_source.is_some() {
                         log::event("drag.lost", &format!("x={x} y={y}"), "cancel");
                         self.push(Event::PointerCancel);
                         set_cursor(IDC_ARROW);
+                        self.drag_cursor = None;
                     } else {
                         let what = if self.rt.cx.drag.is_some() { "scrollbar.lost" } else { "pointer.lost" };
                         log::event(what, &format!("x={x} y={y}"), "released");
@@ -1100,9 +1118,10 @@ impl State {
                 let (x, y) = (lo(lp.0) as f32, hi(lp.0) as f32);
                 self.post.push(Post::Capture(self.hwnd, false));
                 // 引っ張りの禁止の形を戻す（離した後、ポインターを動かすまで WM_SETCURSOR が来ない）
-                if self.rt.cx.dnd.is_some() {
+                if self.rt.cx.dnd.is_some() || self.drag_cursor.is_some() {
                     set_cursor(IDC_ARROW);
                 }
+                self.drag_cursor = None;
                 self.push(Event::PointerUp { x, y });
                 Some(LRESULT(0))
             }
@@ -1477,6 +1496,7 @@ fn create_window(
         background: [0.0; 4],
         dark_title: None,
         tracking_leave: false,
+        drag_cursor: None,
         last_tick: None,
         t_build: 0.0,
         t_draw: 0.0,
