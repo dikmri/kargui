@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-22)
+
+Everyday desktop apps can now be written with kargui alone: menus, tabs, number inputs, toolbars,
+grids, split panes, drawing surfaces, trees, tables, date pickers, more windows, open and save file
+dialogs, asking before closing, and more. As a check, three ordinary apps were written with kargui
+only (`examples/notepad`, `examples/expenses`, `examples/files`), and the real file dialogs were
+tried by hand.
+
+Upgrading from 0.1 (compared with the published 0.1.0; nothing was removed):
+
+- `Key` is now `#[non_exhaustive]` and has many more keys, so a `match` that lists every key needs
+  a `_ =>` arm.
+- `Options` has two new fields, `icon` and `min_size`. Code that builds it by listing every field
+  must add them, or use `..Options::new(title)`.
+- Ctrl+Tab no longer moves the focus like Tab. Inside tabs it switches tabs; elsewhere the app
+  receives it, for example as a shortcut.
+- `App` has two new methods, `window` and `close_requested`. Both have default bodies, so existing
+  apps keep compiling.
 
 - The crate now states its minimum Rust version (1.95, `rust-version`). Building on Linux needs the
   fontconfig development files (`libfontconfig1-dev` and `pkg-config` on Debian and Ubuntu); the

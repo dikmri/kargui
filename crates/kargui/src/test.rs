@@ -383,7 +383,7 @@ impl<A: App> Harness<A> {
     }
 
     /// Whether the widget with this name can be used (`Some(false)` inside [`Ui::enabled`]`(false, ..)`
-    /// or after [`Button::enabled`](crate::Button::enabled)`(false)`), or `None` if there is no such widget.
+    /// or after [`Button::enabled`](crate::ui::Button::enabled)`(false)`), or `None` if there is no such widget.
     ///
     /// ```
     /// # use kargui::{App, Ui};
@@ -843,7 +843,7 @@ impl<A: App> Harness<A> {
     }
 
     /// Asks the app to close as if the user clicked the main window's close button: calls
-    /// [`App::close_requested`](crate::App::close_requested), and draws a frame.
+    /// [`App::close_requested`], and draws a frame.
     ///
     /// ```
     /// # use kargui::{App, Ui};

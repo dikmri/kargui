@@ -27,6 +27,11 @@ jobs:
         run: cargo test --locked -p kargui --features portable-text --lib
       - name: Documentation checks
         run: cargo run --locked -p xtask -- check
+      # docs.rs に載る説明を、注意（壊れたリンクなど）なしで作れるか
+      - name: API docs without warnings
+        run: cargo doc --locked -p kargui --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   linux:
     runs-on: ubuntu-latest

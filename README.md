@@ -1,6 +1,6 @@
 # kargui
 
-A light native GUI framework for Rust (Windows 10/11; 0.1 is the first release). The name comes from
+A light native GUI framework for Rust (Windows 10/11; version 0.2). The name comes from
 the Japanese word *karui* (light), Rust and GUI. [日本語の README](README.ja.md) (the original; this is
 a translation).
 
@@ -108,11 +108,11 @@ The input method checks type into the foreground window, so they run only while 
 
 ## Status and next steps
 
-0.1 was the first release. Since then, the main branch (not released yet) has gained the widgets and
-mechanisms most everyday desktop apps need. As a check, three ordinary apps were written with kargui
-alone: a text editor, a household budget and a file browser (`examples/notepad`, `examples/expenses`,
-`examples/files`); what they showed was fixed in kargui. Next: the items below, and windows on Linux
-and macOS. Each addition is measured with the same tools to keep kargui light.
+0.1 was the first release. 0.2 adds the widgets and mechanisms most everyday desktop apps need
+(changes and how to upgrade: [CHANGELOG.md](CHANGELOG.md)). As a check, three ordinary apps were
+written with kargui alone: a text editor, a household budget and a file browser (`examples/notepad`,
+`examples/expenses`, `examples/files`); what they showed was fixed in kargui. Next: the items below,
+and windows on Linux and macOS. Each addition is measured with the same tools to keep kargui light.
 
 Not there yet:
 
@@ -120,10 +120,10 @@ Not there yet:
   icons, images, multi-line text input, radio buttons, progress, cards and groups, expanders, links,
   passwords, drop-downs, menus (menu bar, menu buttons, submenus and context menus), tabs, number
   inputs, toolbars, grids, split panes, drawing surfaces, trees, tables with headings and date
-  pickers were added after 0.1; images are not drawn on the Direct3D 11 renderer yet).
+  pickers were added in 0.2; images are not drawn on the Direct3D 11 renderer yet).
 - **App mechanisms:** drag and drop, choosing fonts, and animation helpers (shortcuts, timers,
   waking from other threads, multiple windows, open and save file dialogs, the window icon, a
-  minimum window size and asking before closing were added after 0.1).
+  minimum window size and asking before closing were added in 0.2).
 - **Platforms:** windows open on Windows 10/11 only. The Direct3D 11 renderer (not the default)
   occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
   NVDA. Apps cannot start a reconversion themselves.

@@ -4,7 +4,7 @@
 use crate::vector::{Pt, Raster, circle, hole, stroke};
 
 /// A built-in icon, drawn as a simple vector shape at any size and in any color. Show one with
-/// [`Ui::icon`](crate::Ui::icon) or put one on a button with [`Button::icon`](crate::Button::icon).
+/// [`Ui::icon`](crate::Ui::icon) or put one on a button with [`Button::icon`](crate::ui::Button::icon).
 /// For other pictures, use an [`Image`](crate::Image).
 ///
 /// ```
