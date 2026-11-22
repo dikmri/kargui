@@ -816,7 +816,8 @@ ui.segmented(&mut show, &[(Show::All, "All"), (Show::Open, "Open"), (Show::Done,
 ### `pub fn text_input(&mut self, text: &mut String) -> TextInput<'_>`
 
 A one-line text field. Typing, the input method (IME), selection, copy and paste, undo and
-redo edit `text` directly.
+redo edit `text` directly. Dragging or Shift+click selects; a double-click selects a word and
+a triple-click (or Ctrl+A) all of it.
 
 While the input method is composing (for example kana before conversion), `text` does not
 change; it changes when the conversion is committed. The Enter key that commits a conversion

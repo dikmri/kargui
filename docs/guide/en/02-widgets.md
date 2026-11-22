@@ -1,4 +1,4 @@
-<!-- source: ja/02-widgets.md fnv=ad000fa0b2b2d8eb -->
+<!-- source: ja/02-widgets.md fnv=e585deb90c7d2997 -->
 <!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::text_area TextArea::hint TextArea::rows Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Ui::icon Ui::icon_button Button::icon Ui::image Image::from_rgba Image::open Toggled::changed Toggled::strike Slider::changed sig=a0f2ab3741c86140 -->
 # Widgets
 
@@ -76,6 +76,8 @@ if field.submitted() {
 }
 # });
 ```
+
+To select text, drag across it or click with Shift held. A double-click selects a word and a triple-click all of it (one line in a multi-line field); Ctrl+A also selects all.
 
 For several lines, use `ui.text_area(..)`. Enter starts a new line, long lines wrap, and what does not fit scrolls. The arrows, Home/End (start and end of the line), Ctrl+Home/End (start and end of the text) and Page Up/Down move the caret. Since Enter makes a new line, use a shortcut such as Ctrl+Enter for sending.
 

@@ -2885,7 +2885,8 @@ impl<'a> Ui<'a> {
     // ---- 入力欄 ----
 
     /// A one-line text field. Typing, the input method (IME), selection, copy and paste, undo and
-    /// redo edit `text` directly.
+    /// redo edit `text` directly. Dragging or Shift+click selects; a double-click selects a word and
+    /// a triple-click (or Ctrl+A) all of it.
     ///
     /// While the input method is composing (for example kana before conversion), `text` does not
     /// change; it changes when the conversion is committed. The Enter key that commits a conversion
@@ -2947,6 +2948,28 @@ impl<'a> Ui<'a> {
         }
     }
 
+    /// 入力欄の中の点 (x, y) に一番近い文字の境目（UTF-8 の位置）。前のフレームの文字の置き場所で並べ直して探す。
+    /// 欄がまだ描かれていなければ None
+    #[allow(clippy::too_many_arguments)]
+    fn text_index_at(&mut self, id: Id, s: &str, style: crate::text::TextStyle, multiline: bool, password: bool, x: f32, y: f32) -> Option<usize> {
+        if multiline {
+            // 複数行: 押した点の行と位置（文字の左上と折り返しの幅）
+            let &(ox, oy, w, _) = self.cx.prev.areas.get(&id)?;
+            let laid = self.cx.text.layout(s, style, Some(w));
+            return Some(edit::byte_of(s, laid.index_at_point(x - ox, y - oy)));
+        }
+        let &(_, text_x) = self.cx.prev.inputs.get(&id)?;
+        let scroll = self.cx.edit_scroll.get(&id).copied().unwrap_or(0.0);
+        Some(if password {
+            // 画面の ● の何個目か → 元の文字の何文字目か
+            let laid = self.cx.text.layout(&edit::mask(s), style, None);
+            edit::byte_of_char(s, laid.index_at(x - text_x + scroll))
+        } else {
+            let laid = self.cx.text.layout(s, style, None);
+            edit::byte_of(s, laid.index_at(x - text_x + scroll))
+        })
+    }
+
     /// 焦点のある入力欄に、この回の入力を当てる。(変わったか, 送信したか)
     fn edit(&mut self, id: Id, s: &mut String, field: Field) -> (bool, bool) {
         let multiline = field == Field::Area;
@@ -2965,28 +2988,34 @@ impl<'a> Ui<'a> {
             let (_, t) = self.cx.pending_commit.take().unwrap();
             self.cx.edits.get_mut(&id).unwrap().insert(s, &t, false);
         }
-        if let Some((pid, x, y, shift)) = self.cx.pointer_text {
-            if pid == id {
-                self.cx.pointer_text = None;
-                // 複数行: 押した点の行と位置（前のフレームの、文字の左上と折り返しの幅で並べ直して探す）
-                if let (true, Some(&(ox, oy, w, _))) = (multiline, self.cx.prev.areas.get(&id)) {
-                    let laid = self.cx.text.layout(s, style, Some(w));
-                    let at = edit::byte_of(s, laid.index_at_point(x - ox, y - oy));
-                    let st = self.cx.edits.get_mut(&id).unwrap();
-                    st.move_to(at, shift);
-                    st.goal_x = None;
+        // 押した所（1 回目はキャレット、2 回押しは単語、3 回押しは全部か 1 行）
+        if let Some((pid, x, y, shift, count)) = self.cx.pointer_text.filter(|p| p.0 == id) {
+            let _ = pid;
+            self.cx.pointer_text = None;
+            if let Some(at) = self.text_index_at(id, s, style, multiline, password, x, y) {
+                let st = self.cx.edits.get_mut(&id).unwrap();
+                match count {
+                    // パスワードは単語を見せないので、2 回押しでも全部を選ぶ
+                    2 if !password => st.select_word(s, at),
+                    2.. if multiline => st.select_line(s, at),
+                    2.. => st.select_all(s),
+                    _ => st.move_to(at, shift),
+                }
+                st.goal_x = None;
+                if multiline {
                     self.cx.reveal = Some(id);
-                } else if let Some(&(_, text_x)) = self.cx.prev.inputs.get(&id) {
-                    let scroll = self.cx.edit_scroll.get(&id).copied().unwrap_or(0.0);
-                    let at = if password {
-                        // 画面の ● の何個目か → 元の文字の何文字目か
-                        let laid = self.cx.text.layout(&edit::mask(s), style, None);
-                        edit::byte_of_char(s, laid.index_at(x - text_x + scroll))
-                    } else {
-                        let laid = self.cx.text.layout(s, style, None);
-                        edit::byte_of(s, laid.index_at(x - text_x + scroll))
-                    };
-                    self.cx.edits.get_mut(&id).unwrap().move_to(at, shift);
+                }
+            }
+        }
+        // 押したまま動かした所: 押した所から、ここまでを選ぶ
+        if let Some((_, x, y)) = self.cx.pointer_text_drag.filter(|p| p.0 == id) {
+            self.cx.pointer_text_drag = None;
+            if let Some(at) = self.text_index_at(id, s, style, multiline, password, x, y) {
+                let st = self.cx.edits.get_mut(&id).unwrap();
+                st.move_to(at, true);
+                st.goal_x = None;
+                if multiline {
+                    self.cx.reveal = Some(id);
                 }
             }
         }

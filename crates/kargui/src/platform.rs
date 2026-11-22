@@ -628,6 +628,8 @@ struct State {
     background: Color,
     dark_title: Option<bool>,
     tracking_leave: bool,
+    /// 前に押した時（メッセージの時刻 ms, x, y, 何回目か）。2 回押し・3 回押しを数える
+    last_press: Option<(u32, f32, f32, u8)>,
     /// 引っ張っている間に最後に決めたポインターの形（true は矢印、false は禁止の形）。変わった時だけ記録する
     drag_cursor: Option<bool>,
     /// ほかのアプリからファイルを受け取る係（OS に届け出た物。窓を壊す時に取り消す）と、届け出を頼んだか
@@ -1321,8 +1323,16 @@ impl State {
                 // マウスの捕まえは WM_CAPTURECHANGED を送り返すので、借りの外で行う
                 self.post.push(Post::Capture(self.hwnd, true));
                 let target = self.rt.cx.hit(x, y).map(|h| h.id);
-                log::event("click", &format!("x={x} y={y}"), &format!("target={target:?}"));
-                self.push(Event::PointerDown { x, y, shift: mods_now().shift });
+                // 続けて押した何回目か（OS の 2 回押しの時間の中で、OS の 2 回押しの距離の中を押したら続き。3 回で止める）
+                let t = unsafe { GetMessageTime() } as u32;
+                let (dx, dy) = unsafe { (GetSystemMetrics(SM_CXDOUBLECLK) as f32 / 2.0, GetSystemMetrics(SM_CYDOUBLECLK) as f32 / 2.0) };
+                let count = match self.last_press {
+                    Some((t0, x0, y0, n)) if t.wrapping_sub(t0) <= unsafe { GetDoubleClickTime() } && (x - x0).abs() <= dx && (y - y0).abs() <= dy => (n % 3) + 1,
+                    _ => 1,
+                };
+                self.last_press = Some((t, x, y, count));
+                log::event("click", &format!("x={x} y={y} count={count}"), &format!("target={target:?}"));
+                self.push(Event::PointerDown { x, y, shift: mods_now().shift, count });
                 Some(LRESULT(0))
             }
             WM_LBUTTONUP => {
@@ -1715,6 +1725,7 @@ fn create_window(
         background: [0.0; 4],
         dark_title: None,
         tracking_leave: false,
+        last_press: None,
         drag_cursor: None,
         file_drop: None,
         file_drop_asked: false,

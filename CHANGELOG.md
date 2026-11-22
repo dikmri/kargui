@@ -17,6 +17,10 @@
   Enter for a 3-digit code. The words come from `ColorText` (`english`, `japanese`) through
   `ui.set_color_text`. The square and the bars are drawn as images, which the Direct3D 11 renderer
   does not draw yet.
+- Text fields: dragging with the mouse selects text (before, only the caret moved to the
+  press), a double-click selects a word, and a triple-click selects all of a one-line field or
+  one line of a multi-line field. Double- and triple-clicks follow the system's double-click time
+  and distance. Tests: `Harness::double_click` and `Harness::triple_click`.
 - `Icon::Clock`. Guide page 21. The settings example picks an accent color and quiet hours.
 - Fonts: `Font` is `Font::Ui` (the system's UI font, the default), `Font::Monospace` (a
   fixed-width font; on Windows BIZ UDGothic, where a Japanese character is exactly two Latin

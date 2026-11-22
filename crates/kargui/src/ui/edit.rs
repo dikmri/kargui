@@ -272,6 +272,40 @@ impl EditState {
         self.cursor = s.len();
     }
 
+    /// i の所の単語を選ぶ（同じ種類の文字が続く所。2 回押し）。i が終わりなら手前の単語
+    pub fn select_word(&mut self, s: &str, i: usize) {
+        self.last_was_typing = false;
+        let i = i.min(s.len());
+        let (next, prev) = (s[i..].chars().next().map(class), s[..i].chars().next_back().map(class));
+        // 押した所が単語の後ろの端（次が空白か終わりで、手前が空白でない）なら、手前の単語を選ぶ
+        let k = match (next, prev) {
+            (Some(Class::Space) | None, Some(p)) if p != Class::Space => p,
+            (Some(n), _) => n,
+            (None, Some(p)) => p,
+            (None, None) => {
+                self.move_to(i, false);
+                return;
+            }
+        };
+        let (mut a, mut b) = (i, i);
+        while a > 0 && class(s[..a].chars().next_back().unwrap()) == k {
+            a = prev_boundary(s, a);
+        }
+        while b < s.len() && class(s[b..].chars().next().unwrap()) == k {
+            b = next_boundary(s, b);
+        }
+        self.anchor = a;
+        self.cursor = b;
+    }
+
+    /// i のある行を選ぶ（改行は含めない。複数行の欄の 3 回押し）
+    pub fn select_line(&mut self, s: &str, i: usize) {
+        self.last_was_typing = false;
+        let i = i.min(s.len());
+        self.anchor = s[..i].rfind('\n').map_or(0, |p| p + 1);
+        self.cursor = s[i..].find('\n').map_or(s.len(), |p| i + p);
+    }
+
     pub fn selected_text<'a>(&self, s: &'a str) -> &'a str {
         let (a, b) = self.selection();
         &s[a..b]
@@ -306,6 +340,31 @@ mod tests {
 
     fn at(_s: &str, i: usize) -> EditState {
         EditState { cursor: i, anchor: i, ..Default::default() }
+    }
+
+    #[test]
+    fn double_click_selects_a_word_and_triple_click_a_line() {
+        let s = "#FF8800 と 牛乳を買う";
+        let mut e = EditState::default();
+        let sel = |e: &EditState| &s[e.selection().0..e.selection().1];
+        e.select_word(s, 3);
+        assert_eq!(sel(&e), "FF8800", "# は単語に入らない");
+        e.select_word(s, 0);
+        assert_eq!(sel(&e), "#");
+        e.select_word(s, "#FF8800".len());
+        assert_eq!(sel(&e), "FF8800", "単語の後ろの端を押すと、手前の単語");
+        e.select_word(s, "#FF8800 と ".len() + 3);
+        assert_eq!(sel(&e), "牛乳", "漢字の続く所");
+        e.select_word(s, s.len());
+        assert_eq!(sel(&e), "う", "終わりなら手前の、同じ種類の文字が続く所（Ctrl+左右と同じ区切り。送り仮名と漢字は分かれる）");
+        let t = "first line\nsecond line\nthird";
+        let mut e = EditState::default();
+        e.select_line(t, 14);
+        assert_eq!(&t[e.selection().0..e.selection().1], "second line", "改行は含めない");
+        e.select_line(t, t.len());
+        assert_eq!(&t[e.selection().0..e.selection().1], "third");
+        e.select_word("", 0);
+        assert_eq!(e.selection(), (0, 0), "空の欄でも落ちない");
     }
 
     #[test]

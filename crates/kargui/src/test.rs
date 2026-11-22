@@ -567,7 +567,7 @@ impl<A: App> Harness<A> {
     /// assert!(h.app().second);
     /// ```
     pub fn click_at(&mut self, x: f32, y: f32) -> &mut Self {
-        self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }])
+        self.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }])
     }
 
     /// Clicks the widget with this name (and focuses it if it can take focus).
@@ -600,7 +600,7 @@ impl<A: App> Harness<A> {
     /// ```
     pub fn click(&mut self, name: &str) -> &mut Self {
         let (x, y) = self.center(name);
-        self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }])
+        self.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }])
     }
 
     /// Presses the widget with this name, moves the pointer by `dx`, `dy` (physical pixels) and
@@ -628,7 +628,68 @@ impl<A: App> Harness<A> {
     pub fn drag(&mut self, name: &str, dx: f32, dy: f32) -> &mut Self {
         let (x, y) = self.center(name);
         let (x2, y2) = (x + dx, y + dy);
-        self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerMove { x: x2, y: y2 }, Event::PointerUp { x: x2, y: y2 }])
+        self.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerMove { x: x2, y: y2 }, Event::PointerUp { x: x2, y: y2 }])
+    }
+
+    /// Double-clicks the middle of the widget with this name. In a text field this selects the
+    /// word there (the last word when the middle is past the end of the text). Separate
+    /// [`Harness::click`]s never count as a double-click.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui, Key};
+    /// # use kargui::test::Harness;
+    /// struct Search {
+    ///     query: String,
+    /// }
+    ///
+    /// impl App for Search {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.text_input(&mut self.query).label("Search");
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Search { query: "red apples".into() });
+    /// h.double_click("Search").type_text("pears");
+    /// assert_eq!(h.app().query, "red pears");
+    /// ```
+    pub fn double_click(&mut self, name: &str) -> &mut Self {
+        let (x, y) = self.center(name);
+        self.send(vec![
+            Event::PointerDown { x, y, shift: false, count: 1 },
+            Event::PointerUp { x, y },
+            Event::PointerDown { x, y, shift: false, count: 2 },
+            Event::PointerUp { x, y },
+        ])
+    }
+
+    /// Triple-clicks the middle of the widget with this name. In a one-line text field this
+    /// selects all the text; in a multi-line field, the line there.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Search {
+    ///     query: String,
+    /// }
+    ///
+    /// impl App for Search {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.text_input(&mut self.query).label("Search");
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Search { query: "red apples".into() });
+    /// h.triple_click("Search").type_text("pears");
+    /// assert_eq!(h.app().query, "pears");
+    /// ```
+    pub fn triple_click(&mut self, name: &str) -> &mut Self {
+        let (x, y) = self.center(name);
+        let mut events = Vec::new();
+        for count in 1..=3 {
+            events.push(Event::PointerDown { x, y, shift: false, count });
+            events.push(Event::PointerUp { x, y });
+        }
+        self.send(events)
     }
 
     /// Drags the widget named `name` onto the widget named `target` (drag and drop, see
@@ -698,7 +759,7 @@ impl<A: App> Harness<A> {
     pub fn drag_over(&mut self, name: &str, target: &str) -> &mut Self {
         let (x, y) = self.center(name);
         let (x2, y2) = self.center(target);
-        self.send(vec![Event::PointerDown { x, y, shift: false }]);
+        self.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }]);
         for k in 1..=4 {
             let f = k as f32 / 4.0;
             self.send(vec![Event::PointerMove { x: x + (x2 - x) * f, y: y + (y2 - y) * f }]);
@@ -1707,11 +1768,11 @@ mod tests {
         let mut h = Harness::new(Task { done: false });
         let r = h.find("00001 企画書を作る").unwrap();
         let (x, y) = (r.right() - 3.0, r.y + r.h / 2.0);
-        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
         assert!(h.app().done);
         // 文字の外（右の空き）を押しても切り替わらない
         let (x, y) = (r.right() + 40.0, r.y + r.h / 2.0);
-        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
         assert!(h.app().done);
     }
 
@@ -1784,7 +1845,7 @@ mod tests {
         h.rt.cx.bar_hover = Some(l.id);
         h.frame();
         step(&mut h, "棒のホバー");
-        h.send(vec![Event::PointerDown { x: tx, y: t.y + 3.0, shift: false }]);
+        h.send(vec![Event::PointerDown { x: tx, y: t.y + 3.0, shift: false, count: 1 }]);
         step(&mut h, "つまみをつかむ");
         for k in 1..=6 {
             h.send(vec![Event::PointerMove { x: tx, y: t.y + 3.0 + k as f32 * 7.0 }]);
@@ -1794,7 +1855,7 @@ mod tests {
         step(&mut h, "つまみを下の端へ");
         h.send(vec![Event::PointerUp { x: tx, y: l.rect.bottom() + 50.0 }]);
         step(&mut h, "つまみを離す");
-        h.send(vec![Event::PointerDown { x: tx, y: l.rect.y + 3.0, shift: false }, Event::PointerUp { x: tx, y: l.rect.y + 3.0 }]);
+        h.send(vec![Event::PointerDown { x: tx, y: l.rect.y + 3.0, shift: false, count: 1 }, Event::PointerUp { x: tx, y: l.rect.y + 3.0 }]);
         step(&mut h, "棒の空いた所を押す");
         h.rt.cx.bar_hover = None;
         h.frame();
@@ -1802,7 +1863,7 @@ mod tests {
     }
 
     fn press(h: &mut Harness<Book>, x: f32, y: f32) {
-        h.send(vec![Event::PointerDown { x, y, shift: false }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }]);
     }
     fn drag_to(h: &mut Harness<Book>, x: f32, y: f32) {
         h.send(vec![Event::PointerMove { x, y }]);
@@ -2158,7 +2219,7 @@ mod tests {
         assert!((end.bottom() - area.bottom()).abs() <= 1.0, "最後 {end:?} / 入れ物 {area:?}");
         // 入れ物の上に隠れた行は押せない（見出しの所を押すと、見出しの下の行ではなく何も当たらない）
         let heading = h.find("Settings").unwrap();
-        h.send(vec![Event::PointerDown { x: heading.x + 4.0, y: heading.y + 4.0, shift: false }, Event::PointerUp { x: heading.x + 4.0, y: heading.y + 4.0 }]);
+        h.send(vec![Event::PointerDown { x: heading.x + 4.0, y: heading.y + 4.0, shift: false, count: 1 }, Event::PointerUp { x: heading.x + 4.0, y: heading.y + 4.0 }]);
         assert!(h.app().options.iter().all(|o| !o), "隠れた行が押された: {:?}", h.app().options);
     }
 
@@ -2226,7 +2287,7 @@ mod tests {
         // ポインター: 音量のスライダーの左端を押し、真ん中、右の外まで動かす
         let r = h.find("Volume level").unwrap();
         let y = r.y + r.h / 2.0;
-        h.send(vec![Event::PointerDown { x: r.x + 1.0, y, shift: false }]);
+        h.send(vec![Event::PointerDown { x: r.x + 1.0, y, shift: false, count: 1 }]);
         assert!(h.app().volume < 0.01, "左端で 0: {}", h.app().volume);
         h.send(vec![Event::PointerMove { x: r.x + r.w / 2.0, y }]);
         assert!((h.app().volume - 0.5).abs() < 0.01, "真ん中で 0.5: {}", h.app().volume);
@@ -2236,7 +2297,7 @@ mod tests {
         h.send(vec![Event::PointerMove { x: r.x, y }]);
         assert_eq!(h.app().volume, 1.0, "離した後の動きは効かない");
         // 押してすぐ離す（同じフレームに届く）だけでも、その位置の値になる
-        h.send(vec![Event::PointerDown { x: r.x + r.w / 2.0, y, shift: false }, Event::PointerUp { x: r.x + r.w / 2.0, y }]);
+        h.send(vec![Event::PointerDown { x: r.x + r.w / 2.0, y, shift: false, count: 1 }, Event::PointerUp { x: r.x + r.w / 2.0, y }]);
         assert!((h.app().volume - 0.5).abs() < 0.01, "クリックで 0.5: {}", h.app().volume);
         // 読み上げソフトの「増やす」
         let i = (0..h.rt.tree.info.len()).find(|&i| a11y::name_of(&h.rt.tree, i).as_deref() == Some("Text size")).unwrap();
@@ -2445,13 +2506,13 @@ mod tests {
         let mid = r.y + r.h / 2.0;
         for (x, y) in [(r.x - 2.0, mid), (r.right() + 10.0, mid), (r.x + 4.0, r.y - 5.0)] {
             let before = h.app().done[0];
-            h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+            h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
             assert_ne!(h.app().done[0], before, "({x}, {y}) が当たらない");
         }
         // 2 行目の本来の範囲は、1 行目の余白より強い
         let r2 = h.find("00002 企画書を作る").unwrap();
         let (x, y) = (r2.x + 4.0, r2.y + 1.0);
-        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
         assert!(h.app().done[1]);
     }
 
@@ -3166,7 +3227,7 @@ mod tests {
         h.frame();
         let r = h.find("Body").unwrap();
         // 入力欄の下の端の近く（3 行目）を押す
-        h.send(vec![Event::PointerDown { x: r.x + 12.0, y: r.bottom() - 8.0, shift: false }, Event::PointerUp { x: r.x + 12.0, y: r.bottom() - 8.0 }]);
+        h.send(vec![Event::PointerDown { x: r.x + 12.0, y: r.bottom() - 8.0, shift: false, count: 1 }, Event::PointerUp { x: r.x + 12.0, y: r.bottom() - 8.0 }]);
         h.type_text("#");
         let body = h.app().body.clone();
         assert!(body.starts_with("first\nsecond\n") && body.contains('#') && body.find('#').unwrap() >= "first\nsecond\n".len(), "{body:?}");
@@ -3995,7 +4056,7 @@ mod tests {
         assert!(h.rt.draw.quads.len() > quads, "点の円が増える");
         // 押している間の位置
         let (x, y) = (area.x + 10.0, area.y + 20.0);
-        h.send(vec![Event::PointerDown { x, y, shift: false }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }]);
         assert_eq!(h.app().held, Some((10.0, 20.0)));
         h.send(vec![Event::PointerMove { x: x + 30.0, y }]);
         assert_eq!(h.app().held, Some((40.0, 20.0)));
@@ -4043,7 +4104,7 @@ mod tests {
         // 左の印（シェブロン）を押すと開く
         let row = h.find("Documents").unwrap();
         let (x, y) = (row.x + 12.0, row.y + row.h / 2.0);
-        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
         let child = h.find("report.pdf").expect("開く");
         assert!(child.y > row.y);
         let n = a11y_node(&h, "Documents");
@@ -4052,7 +4113,7 @@ mod tests {
         assert_eq!((n.level(), n.is_expanded()), (Some(2), None), "葉は開閉を持たない");
         assert!(a11y_nodes(&h).iter().any(|n| n.role() == accesskit::Role::Tree && n.label() == Some("Files")));
         // 子は字下げされる（行の中の文字の位置を、描いた絵で比べる代わりに、行の左の余白の印の位置で見る）
-        h.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerUp { x, y }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
         assert!(h.find("report.pdf").is_none(), "もう一度押すと閉じる");
     }
 
@@ -4542,7 +4603,7 @@ mod tests {
     fn escape_and_releasing_outside_any_target_cancel() {
         let mut h = board();
         let ((x, y), (x2, y2)) = (mid(&h, "Write"), mid(&h, "Done"));
-        h.send(vec![Event::PointerDown { x, y, shift: false }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }]);
         h.send(vec![Event::PointerMove { x: x2, y: y2 }]);
         assert!(h.cur().cx.dnd.is_some(), "4 ピクセルより動いたら引っ張り始める");
         h.press(Key::Escape);
@@ -4582,7 +4643,7 @@ mod tests {
     fn the_target_under_the_pointer_is_known_while_dragging() {
         let mut h = board();
         let ((x, y), (x2, y2), (bx, by)) = (mid(&h, "Write"), mid(&h, "Done"), mid(&h, "Bin"));
-        h.send(vec![Event::PointerDown { x, y, shift: false }]);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }]);
         h.send(vec![Event::PointerMove { x: x + 10.0, y }]);
         h.send(vec![Event::PointerMove { x: x2, y: y2 }]);
         let over = h.cur().cx.dnd.as_ref().and_then(|d| d.over);
@@ -5064,5 +5125,79 @@ mod tests {
         assert_eq!(hex_of(&h).len(), 9);
         h.click("Color code").press_with(Key::A, Mods::CTRL).type_text("#11223344");
         assert_eq!(hex_of(&h), "#11223344");
+    }
+
+    struct Fields {
+        line: String,
+        notes: String,
+    }
+
+    impl App for Fields {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.text_input(&mut self.line).label("Line");
+            ui.text_area(&mut self.notes).label("Notes");
+        }
+    }
+
+    fn fields() -> Harness<Fields> {
+        Harness::new(Fields { line: "hello world".into(), notes: "first line
+second line".into() })
+    }
+
+    /// 欄の中で選んでいる文字
+    fn selected(h: &Harness<Fields>, name: &str) -> String {
+        let id = id_named(h, name);
+        let st = h.cur().cx.edits.get(&id).unwrap();
+        let (a, b) = st.selection();
+        let text = if name == "Line" { &h.app().line } else { &h.app().notes };
+        text[a..b].to_string()
+    }
+
+    /// 押したまま動かすと、押した所から今の所までを選ぶ（作者が色の番号の欄で試して、選べなかった。2026-11-22）
+    #[test]
+    fn dragging_in_a_field_selects_from_the_press_to_the_pointer() {
+        let mut h = fields();
+        let r = h.find("Line").unwrap();
+        // 欄の左の端から右の外まで引っ張ると、全部を選ぶ
+        h.send(vec![Event::PointerDown { x: r.x + 2.0, y: r.y + r.h / 2.0, shift: false, count: 1 }, Event::PointerMove { x: r.right() + 50.0, y: r.y + r.h / 2.0 }]);
+        h.send(vec![Event::PointerUp { x: r.right() + 50.0, y: r.y + r.h / 2.0 }]);
+        assert_eq!(selected(&h, "Line"), "hello world");
+        h.press(Key::Backspace);
+        assert_eq!(h.app().line, "", "選んで消せる");
+    }
+
+    #[test]
+    fn double_and_triple_clicks_select_a_word_all_or_a_line() {
+        let mut h = fields();
+        h.double_click("Line");
+        assert_eq!(selected(&h, "Line"), "world", "真ん中が文字の後ろなら、最後の単語");
+        h.triple_click("Line");
+        assert_eq!(selected(&h, "Line"), "hello world", "1 行の欄は全部");
+        // 別々の click は 2 回押しにならない
+        h.click("Line").click("Line");
+        assert_eq!(selected(&h, "Line"), "");
+        // 複数行の欄の 3 回押しは、押した行だけ
+        let r = h.find("Notes").unwrap();
+        let (x, y) = (r.x + 30.0, r.y + 16.0);
+        let mut events = Vec::new();
+        for count in 1..=3 {
+            events.push(Event::PointerDown { x, y, shift: false, count });
+            events.push(Event::PointerUp { x, y });
+        }
+        h.send(events);
+        assert_eq!(selected(&h, "Notes"), "first line");
+    }
+
+    #[test]
+    fn the_color_code_can_be_selected_in_one_go() {
+        let mut h = paint(0x1a73e8);
+        h.click("Fill").double_click("Color code").type_text("ff8800");
+        assert_eq!(hex_of(&h), "#FF8800", "2 回押しで番号の数字を選んで打ち直す");
+        let r = h.find("Color code").unwrap();
+        let y = r.y + r.h / 2.0;
+        h.send(vec![Event::PointerDown { x: r.right() - 2.0, y, shift: false, count: 1 }, Event::PointerMove { x: r.x - 20.0, y }]);
+        h.send(vec![Event::PointerUp { x: r.x - 20.0, y }]);
+        h.type_text("#00ff00");
+        assert_eq!(hex_of(&h), "#00FF00", "浮き出しの中の欄でも、引っ張って全部を選べる");
     }
 }

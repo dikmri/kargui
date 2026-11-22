@@ -241,8 +241,9 @@ pub(crate) enum A11yAction {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Event {
-    /// 位置は物理ピクセル
-    PointerDown { x: f32, y: f32, shift: bool },
+    /// 位置は物理ピクセル。count は続けて押した何回目か（1 = ふつう、2 = 2 回押し、3 = 3 回押し）。数えるのは窓の処理
+    /// （OS の 2 回押しの時間と距離で数える。試験台は止めた時計で数えられないので、試験が決める）
+    PointerDown { x: f32, y: f32, shift: bool, count: u8 },
     PointerUp { x: f32, y: f32 },
     /// 押したまま動かした（スクロールの棒をつかんでいる間と、部品を押している間だけ届く）
     PointerMove { x: f32, y: f32 },

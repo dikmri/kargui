@@ -355,7 +355,11 @@ pub(crate) struct Context {
     /// キャレットが見えるようにスクロールする複数行の入力欄（打った・動かした時。描く時に使って消す）
     pub reveal: Option<Id>,
     /// 入力欄の中のクリック（場所と Shift）
-    pub pointer_text: Option<(Id, f32, f32, bool)>,
+    pub pointer_text: Option<(Id, f32, f32, bool, u8)>,
+    /// 入力欄を押したまま動かした最後の位置（入力欄, x, y）。押した所から選ぶ
+    pub pointer_text_drag: Option<(Id, f32, f32)>,
+    /// 押している入力欄（押したまま動かした時に選ぶため）
+    pub press_text: Option<Id>,
     /// 押している部品の上のポインターの位置（押した・動かした・離した時に入れる）
     pub pointer: Option<(f32, f32)>,
     /// 配置の後に、いちばん近いスクロールの入れ物の上端へ持ってくる部品（Handle::scroll_into_view）
@@ -454,6 +458,8 @@ impl Context {
             app_keys: Vec::new(),
             reveal: None,
             pointer_text: None,
+            pointer_text_drag: None,
+            press_text: None,
             pointer: None,
             released: None,
             scroll_into_view: None,
@@ -813,7 +819,7 @@ impl Context {
     pub fn handle(&mut self, events: Vec<Event>) {
         for e in events {
             match e {
-                Event::PointerDown { x, y, shift } => {
+                Event::PointerDown { x, y, shift, count } => {
                     self.cancel_drag("pressed again");
                     self.commit_preedit("pointer");
                     // 押した部品のツールチップは消す
@@ -862,8 +868,11 @@ impl Context {
                         let spin = hit.as_ref().and_then(|h| self.prev.spins.get(&h.id).copied());
                         self.focus = spin.or(hit.as_ref().filter(|h| h.focusable).map(|h| h.id));
                     }
+                    self.press_text = None;
                     if let Some(h) = hit.filter(|h| h.text_input) {
-                        self.pointer_text = Some((h.id, x, y, shift));
+                        self.pointer_text = Some((h.id, x, y, shift, count));
+                        self.pointer_text_drag = None;
+                        self.press_text = Some(h.id);
                     }
                 }
                 Event::PointerUp { x, y } => {
@@ -889,6 +898,7 @@ impl Context {
                         self.pointer = Some((x, y));
                     }
                     self.released = self.pressed.take();
+                    self.press_text = None;
                 }
                 Event::PointerMove { x, y } => {
                     if let Some(d) = self.drag.as_mut() {
@@ -905,6 +915,10 @@ impl Context {
                         self.move_drag(x, y);
                     } else if self.pressed.is_some() {
                         self.pointer = Some((x, y));
+                        // 入力欄を押したまま動かした: 押した所から、ここまでを選ぶ
+                        if let Some(t) = self.press_text.filter(|&t| self.pressed == Some(t)) {
+                            self.pointer_text_drag = Some((t, x, y));
+                        }
                     }
                 }
                 // マウスのつかみが外れたら、窓の中の引っ張りだけをやめる。ほかのアプリからの引っ張りは、マウスをつかんで
