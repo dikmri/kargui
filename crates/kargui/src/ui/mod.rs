@@ -2303,8 +2303,9 @@ impl<'a> Ui<'a> {
     /// A field showing a color that opens a color picker below it when clicked (or with Enter,
     /// Space, Alt+Down or F4): a square for saturation (left to right) and brightness (bottom to
     /// top), a hue bar, a field for the color code (`#RRGGBB`) and ready-made colors. `*color`
-    /// changes as soon as the user moves something (dragging, the arrow keys, typing a code that
-    /// can be read, clicking a ready-made color); Escape or a click outside closes. In the square
+    /// changes as soon as the user moves something (dragging, the arrow keys, finishing a 6-digit
+    /// code, clicking a ready-made color; a 3-digit code such as `#F80` takes effect with Enter, so
+    /// a code half typed does not flash other colors); Escape or a click outside closes. In the square
     /// and the bars the arrow keys move by 1% or 1° (10 with Shift). Opacity is kept as it is
     /// unless [`ColorPicker::alpha`] adds an opacity bar. The words come from
     /// [`Ui::set_color_text`]. The square and bars are drawn as pictures, which the Direct3D 11
@@ -2440,7 +2441,11 @@ impl<'a> Ui<'a> {
                 // 色の番号（読める番号になった時だけ色を変える）
                 let mut code = st.code.clone();
                 let field = ui.text_input(&mut code).hint(if opts.alpha { "#RRGGBBAA" } else { "#RRGGBB" }).label(words.code).monospace();
-                if field.changed()
+                // 打っている間は 6 桁（.alpha() なら 8 桁も）になった時だけ変える。3 桁（#RGB）は Enter で決めた時だけ
+                // （消したり打ったりする途中の #8E2・#FF9 を色として読むと、色が飛んで見える。2026-11-22 の作者の記録）
+                let digits = code.trim().trim_start_matches('#').len();
+                let complete = digits == 6 || (opts.alpha && digits == 8);
+                if (field.submitted() || field.changed() && complete)
                     && let Some(c) = parse_hex(&code)
                 {
                     picked = Some(if opts.alpha { c } else { [c[0], c[1], c[2], st.alpha] });
@@ -2480,7 +2485,10 @@ impl<'a> Ui<'a> {
                 }
                 changed = !same_bytes(new, *color);
                 *color = new;
-                crate::log::event("color.pick", &format!("color={}", hex(new, true)), &format!("by={}", if picked.is_some() { "code_or_swatch" } else { "drag_or_keys" }));
+                // ビューは 1 フレームに何回か回るので、色が変わった回だけ書く
+                if changed {
+                    crate::log::event("color.pick", &format!("color={}", hex(new, true)), &format!("by={}", if picked.is_some() { "code_or_swatch" } else { "drag_or_keys" }));
+                }
             }
             self.cx.color_state.insert(id, st);
             // 開いた時は、面に焦点を置く

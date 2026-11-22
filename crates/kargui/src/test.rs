@@ -5035,6 +5035,24 @@ mod tests {
         assert_eq!(hex_of(&h), "#FF8000", "灰色を通っても色相を忘れない");
     }
 
+    /// 番号を消したり打ったりしている途中の 3 桁（#8E2・#FF9）で色を変えない。3 桁は Enter で決めた時だけ。
+    /// 作者が #8E24AA を消して #FF8800 と打った時、途中で #88EE22・#FFFF99・#FFFF88 に変わった（2026-11-22 の記録）
+    #[test]
+    fn a_half_typed_code_does_not_change_the_color() {
+        let mut h = paint(0x8e24aa);
+        h.click("Fill").click("Color code").press(Key::End);
+        for _ in 0..3 {
+            h.press(Key::Backspace);
+        }
+        assert_eq!(hex_of(&h), "#8E24AA", "消している途中の #8E2 では変えない");
+        h.press_with(Key::A, Mods::CTRL).type_text("#FF9");
+        assert_eq!(hex_of(&h), "#8E24AA", "打っている途中の #FF9 でも変えない");
+        h.press(Key::Enter);
+        assert_eq!(hex_of(&h), "#FFFF99", "Enter で決めれば 3 桁も読む");
+        h.press_with(Key::A, Mods::CTRL).type_text("#ff8800");
+        assert_eq!(hex_of(&h), "#FF8800", "6 桁は打ち終えた時に変わる");
+    }
+
     #[test]
     fn alpha_adds_an_opacity_bar_and_eight_digit_codes() {
         let mut h = Harness::new(Paint { color: crate::rgb(0x000000), alpha: true });

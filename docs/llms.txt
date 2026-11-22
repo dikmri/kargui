@@ -595,8 +595,9 @@ if ui.time_picker(&mut start).label("Start").changed() {
 A field showing a color that opens a color picker below it when clicked (or with Enter,
 Space, Alt+Down or F4): a square for saturation (left to right) and brightness (bottom to
 top), a hue bar, a field for the color code (`#RRGGBB`) and ready-made colors. `*color`
-changes as soon as the user moves something (dragging, the arrow keys, typing a code that
-can be read, clicking a ready-made color); Escape or a click outside closes. In the square
+changes as soon as the user moves something (dragging, the arrow keys, finishing a 6-digit
+code, clicking a ready-made color; a 3-digit code such as `#F80` takes effect with Enter, so
+a code half typed does not flash other colors); Escape or a click outside closes. In the square
 and the bars the arrow keys move by 1% or 1° (10 with Shift). Opacity is kept as it is
 unless [`ColorPicker::alpha`] adds an opacity bar. The words come from
 [`Ui::set_color_text`]. The square and bars are drawn as pictures, which the Direct3D 11

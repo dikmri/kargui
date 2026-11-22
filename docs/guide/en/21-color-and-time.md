@@ -1,4 +1,4 @@
-<!-- source: ja/21-color-and-time.md fnv=55f30be61a96a79e -->
+<!-- source: ja/21-color-and-time.md fnv=005cb1fcbd4eead4 -->
 <!-- covers: Ui::time_picker TimePicker::changed TimePicker::minute_step Time::new Time::now Time::parse Time::hour Time::minute Time::minutes Time::from_minutes Time::add_minutes Ui::color_picker ColorPicker::changed ColorPicker::alpha ColorPicker::swatches Ui::set_color_text ColorText::english ColorText::japanese sig=e317c6ca600891c4 -->
 # Color and time pickers
 
@@ -55,7 +55,8 @@ if ui.color_picker(&mut accent).label("Accent color").changed() {
 # });
 ```
 
-- Dragging in the square or a bar, pressing an arrow key, finishing a code that can be read, or clicking a ready-made color changes the color at once. Escape or a click outside closes.
+- Dragging in the square or a bar, pressing an arrow key, finishing a 6-digit code, or clicking a ready-made color changes the color at once. Escape or a click outside closes.
+- A 3-digit code (such as `#F80`) is read when Enter is pressed, so a code half typed or half deleted (such as `#FF9`) does not change the color.
 - In the square and the bars the arrow keys move by 1% (1° for hue), by 10 with Shift.
 - While it is open the hue is remembered: lowering the saturation to 0 (grey) and raising it again comes back to the same hue.
 - A ready-made color or a typed code is returned exactly, so it compares equal (`==`) with the app's own colors.
