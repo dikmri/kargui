@@ -148,7 +148,7 @@ impl App for Notepad {
                     cmd = Some(Cmd::SaveAs);
                 }
                 m.separator();
-                if m.item("終了").clicked() {
+                if m.item("終了").shortcut(Key::Q, Mods::CTRL).clicked() {
                     cmd = Some(Cmd::Exit);
                 }
             });
@@ -363,5 +363,20 @@ mod tests {
         }
         h.click("終了");
         assert!(h.is_closed());
+    }
+
+    #[test]
+    fn ctrl_q_exits_and_still_asks_about_unsaved_changes() {
+        // 作者が実際の窓で Ctrl+Q を押して終わろうとした（2026-11-22 の記録）
+        let mut h = app();
+        h.click("ここに書きます").type_text("書きかけ");
+        h.press_with(Key::Q, Mods::CTRL);
+        assert!(h.find("変更を保存しますか？").is_some(), "変更があれば先に聞く");
+        assert!(!h.is_closed());
+        h.click("保存しない");
+        assert!(h.is_closed());
+        let mut h = app();
+        h.press_with(Key::Q, Mods::CTRL);
+        assert!(h.is_closed(), "変更が無ければすぐ閉じる");
     }
 }
