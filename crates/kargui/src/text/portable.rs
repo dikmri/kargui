@@ -168,11 +168,18 @@ impl Text {
         families
     }
 
-    /// 試験用: 書体から決めたファミリーの並び（parley は OS とアプリの書体を 1 つの一覧で探すので、2 つ目はいつも false）
+    /// 試験用: 書体から決めたファミリーの並び（parley は OS とアプリの書体を 1 つの一覧で探すので、2 つ目はいつも false）。
+    /// 等幅は、並びの中で入っている最初の書体の名前を返す（並びをそのまま返すと、入っていない BIZ UD ゴシックが先頭に
+    /// あるだけで「日本語の等幅がある」と見なし、試験を飛ばせなかった。2026-11-22 の CI の Windows）
     #[cfg(test)]
     pub fn resolved(&mut self, font: &Font) -> (String, bool) {
         let id = self.fonts.id(font);
-        (self.family(id), false)
+        let family = self.family(id);
+        if *font == Font::Monospace {
+            let installed = family.split(',').map(|n| n.trim().trim_matches('"')).find(|n| self.font_cx.collection.family_id(n).is_some());
+            return (installed.unwrap_or("monospace").to_string(), false);
+        }
+        (family, false)
     }
 
     /// 書体の番号から、parley に渡すファミリーの並びを決める（決めた物は覚える）
