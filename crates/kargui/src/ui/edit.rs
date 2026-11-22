@@ -21,6 +21,8 @@ pub(crate) struct EditState {
     pub multiline: bool,
     /// 上下の矢印で続けて移る時に保つ横の位置（物理ピクセル。ほかの操作で忘れる）
     pub goal_x: Option<f32>,
+    /// この欄の書体（.font() で決めた物。作るたびに忘れ、.font() が入れ直す）
+    pub font: Option<crate::text::FontId>,
 }
 
 /// UTF-16 の位置 i がある行の番号。折り返しの境目（前の行の終わり = 次の行の始め）は次の行にする

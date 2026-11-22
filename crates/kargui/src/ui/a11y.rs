@@ -170,7 +170,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.add_action(Action::Focus);
                 n
             }
-            Kind::TextInput { value, hint, password } => {
+            Kind::TextInput { value, hint, password, .. } => {
                 // パスワードは値を出さない
                 let mut n = Node::new(if *password { Role::PasswordInput } else { Role::TextInput });
                 if !*password {

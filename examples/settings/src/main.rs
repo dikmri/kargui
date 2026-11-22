@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use kargui::{App, Frame, Options, Size, Ui};
+use kargui::{App, Font, Frame, Options, Size, Ui};
 use taskcore::{args, log};
 
 const DEFAULT_LOG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../logs/settings.log");
@@ -14,6 +14,24 @@ enum Look {
     System,
     Light,
     Dark,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Typeface {
+    System,
+    Readable,
+    Mono,
+}
+
+impl Typeface {
+    fn font(self) -> Font {
+        match self {
+            Typeface::System => Font::Ui,
+            // Windows 10 以降に入っている、読みやすさを考えて作られた書体
+            Typeface::Readable => Font::family("BIZ UDPGothic"),
+            Typeface::Mono => Font::Monospace,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -28,6 +46,7 @@ struct Prefs {
     name: String,
     email: String,
     look: Look,
+    typeface: Typeface,
     font_size: i32,
     line_height: f32,
     autosave: bool,
@@ -46,6 +65,7 @@ impl Default for Prefs {
             name: String::new(),
             email: String::new(),
             look: Look::System,
+            typeface: Typeface::System,
             font_size: 14,
             line_height: 1.5,
             autosave: true,
@@ -98,6 +118,8 @@ impl App for Settings {
         if self.edit.look != Look::System {
             ui.set_dark(self.edit.look == Look::Dark);
         }
+        // 書体は選んだ時からすぐ窓全体に当てる（テーマと同じ）
+        ui.set_font(self.edit.typeface.font());
         ui.row(|ui| {
             ui.heading("設定");
             ui.fill();
@@ -119,6 +141,13 @@ impl App for Settings {
             section(ui, "表示");
             field(ui, "テーマ", |ui| {
                 ui.segmented(&mut e.look, &[(Look::System, "システム"), (Look::Light, "ライト"), (Look::Dark, "ダーク")]);
+            });
+            field(ui, "書体", |ui| {
+                let before = e.typeface;
+                ui.segmented(&mut e.typeface, &[(Typeface::System, "システム"), (Typeface::Readable, "BIZ UDP ゴシック"), (Typeface::Mono, "等幅")]);
+                if e.typeface != before {
+                    log::event("typeface", &format!("{before:?}"), &format!("{:?}", e.typeface));
+                }
             });
             field(ui, "文字の大きさ", |ui| {
                 ui.slider(&mut e.font_size, 10..=24).label("文字の大きさ");
@@ -250,6 +279,18 @@ mod tests {
     }
 
     #[test]
+    fn the_typeface_applies_to_the_whole_window_at_once() {
+        let mut h = app();
+        let width = |h: &Harness<Settings>| h.find("システム").unwrap().w;
+        let before = width(&h);
+        h.click("等幅");
+        assert_eq!(h.app().edit.typeface, Typeface::Mono);
+        assert_ne!(width(&h), before, "窓の書体が変わると、ほかの文字の幅も変わる");
+        h.click("元に戻す");
+        assert_eq!(width(&h), before);
+    }
+
+    #[test]
     fn a_wrong_email_is_not_saved() {
         let mut h = app();
         h.click("name@example.com").type_text("abc").click("保存");
@@ -260,8 +301,8 @@ mod tests {
     #[test]
     fn every_setting_is_reachable_with_tab_and_the_slider_follows_keys() {
         let mut h = app();
-        // 文字の大きさのスライダーまで Tab で移る（名前・メール・テーマ 3 つ・スライダー）
-        for _ in 0..6 {
+        // 文字の大きさのスライダーまで Tab で移る（名前・メール・テーマ 3 つ・書体 3 つ・スライダー）
+        for _ in 0..9 {
             h.press(Key::Tab);
         }
         h.press(Key::Right).press(Key::Right);

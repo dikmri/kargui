@@ -59,6 +59,7 @@ pub use icon::Icon;
 pub use image::Image;
 pub use input::{Key, Mods};
 pub use log::set_logger;
+pub use text::Font;
 pub use theme::Theme;
 pub use ui::{Align, Id, Size, SliderValue, Ui};
 pub use wake::Waker;
@@ -140,6 +141,8 @@ mod guide {
     struct Ja18DragAndDrop;
     #[doc = include_str!("../../../docs/guide/ja/19-animation.md")]
     struct Ja19Animation;
+    #[doc = include_str!("../../../docs/guide/ja/20-fonts.md")]
+    struct Ja20Fonts;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -180,6 +183,8 @@ mod guide {
     struct En18DragAndDrop;
     #[doc = include_str!("../../../docs/guide/en/19-animation.md")]
     struct En19Animation;
+    #[doc = include_str!("../../../docs/guide/en/20-fonts.md")]
+    struct En20Fonts;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]

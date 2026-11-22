@@ -1,5 +1,6 @@
 //! The application: what you implement, and how to open its window.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use crate::ui::Ui;
@@ -199,7 +200,7 @@ pub enum Renderer {
 /// options.dark = Some(true);
 /// assert_eq!(options.title, "Notes");
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Options {
     /// Window title (also the name screen readers use for the window).
     pub title: String,
@@ -222,6 +223,46 @@ pub struct Options {
     /// The smallest size of the inside of the window, in logical pixels, that the user can make
     /// it, or `None` for no limit.
     pub min_size: Option<(f32, f32)>,
+    /// The font of the text in the window and in windows opened with [`Ui::window`], unless a
+    /// widget has its own (see [`Font`](crate::Font)). [`Ui::set_font`] changes it while the
+    /// app runs.
+    pub font: crate::Font,
+    /// Font files the app brings along (TrueType or OpenType: `.ttf`, `.otf`, `.ttc`), for
+    /// example with `include_bytes!`. Choose them by family name with
+    /// [`Font::family`](crate::Font::family). Empty by default, and then no font data is read
+    /// when the window opens.
+    ///
+    /// ```
+    /// use kargui::{Font, Options};
+    ///
+    /// let mut options = Options::new("Shop");
+    /// // In an app: options.fonts.push(include_bytes!("../fonts/ShopSans.ttf").as_slice().into());
+    /// if let Ok(data) = std::fs::read("fonts/ShopSans.ttf") {
+    ///     options.fonts.push(data.into());
+    /// }
+    /// options.font = Font::family("Shop Sans");
+    /// ```
+    pub fonts: Vec<Cow<'static, [u8]>>,
+}
+
+impl std::fmt::Debug for Options {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 書体のファイルは中身を出さず、数と大きさだけ
+        let bytes: usize = self.fonts.iter().map(|d| d.len()).sum();
+        f.debug_struct("Options")
+            .field("title", &self.title)
+            .field("size", &self.size)
+            .field("position", &self.position)
+            .field("activate", &self.activate)
+            .field("renderer", &self.renderer)
+            .field("full_rate", &self.full_rate)
+            .field("dark", &self.dark)
+            .field("icon", &self.icon)
+            .field("min_size", &self.min_size)
+            .field("font", &self.font)
+            .field("fonts", &format_args!("{} files, {bytes} bytes", self.fonts.len()))
+            .finish()
+    }
 }
 
 impl Options {
@@ -243,6 +284,8 @@ impl Options {
             dark: None,
             icon: None,
             min_size: None,
+            font: crate::Font::Ui,
+            fonts: Vec::new(),
         }
     }
 }

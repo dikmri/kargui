@@ -126,12 +126,83 @@ fn add_trailing_line(s: &str, lines: &mut Vec<Line>) {
     }
 }
 
+/// A typeface for text.
+///
+/// The font of the whole window is [`Options::font`](crate::Options::font) (changed while the
+/// app runs with [`Ui::set_font`](crate::Ui::set_font)); labels and text fields can have their own
+/// with `.font(…)` or `.monospace()`. Characters a font lacks are drawn with the system's
+/// fallback fonts, so Japanese stays readable in a Latin-only font.
+///
+/// ```
+/// use kargui::Font;
+///
+/// # kargui::test::example(|ui| {
+/// ui.label("let total = 1_280;").font(Font::Monospace);
+/// ui.label("お知らせ").font(Font::family("BIZ UDPGothic"));
+/// # });
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Font {
+    /// The system's font for user interfaces: Yu Gothic UI on Windows, Hiragino Sans on macOS
+    /// and a Japanese sans-serif such as Noto Sans CJK JP on Linux. The default.
+    #[default]
+    Ui,
+    /// A fixed-width font for code and columns of numbers. Where the font has both, a Japanese
+    /// character is exactly as wide as two Latin letters: BIZ UDGothic on Windows (or Consolas,
+    /// then MS Gothic), and Noto Sans Mono CJK JP, TakaoGothic or DejaVu Sans Mono on Linux.
+    Monospace,
+    /// A font family by name: one installed on the system, or one whose file the app gave in
+    /// [`Options::fonts`](crate::Options::fonts). If no font has the name, the UI font is used
+    /// (and the log says `font.missing`).
+    Family(String),
+}
+
+impl Font {
+    /// A font family by name. See [`Font::Family`].
+    ///
+    /// ```
+    /// use kargui::Font;
+    ///
+    /// assert_eq!(Font::family("Meiryo"), Font::Family("Meiryo".to_string()));
+    /// ```
+    pub fn family(name: impl Into<String>) -> Self {
+        Font::Family(name.into())
+    }
+}
+
+/// 書体の番号（FontTable の位置）。0 はいつも UI の書体
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub(crate) struct FontId(pub u16);
+
+/// 使った書体の一覧。部品と書式は書体を番号で持つ（毎フレーム文字列を比べないため）
+pub(crate) struct FontTable(Vec<Font>);
+
+impl FontTable {
+    pub fn new() -> Self {
+        Self(vec![Font::Ui])
+    }
+
+    /// 書体の番号（初めての書体は一覧の最後に足す）
+    pub fn id(&mut self, font: &Font) -> FontId {
+        if let Some(k) = self.0.iter().position(|f| f == font) {
+            return FontId(k as u16);
+        }
+        self.0.push(font.clone());
+        FontId((self.0.len() - 1) as u16)
+    }
+
+    pub fn get(&self, id: FontId) -> &Font {
+        self.0.get(id.0 as usize).unwrap_or(&Font::Ui)
+    }
+}
+
 /// 文字の書式
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TextStyle {
     /// 大きさ（物理ピクセル）
     pub size: f32,
     pub bold: bool,
+    pub font: FontId,
 }
 
 /// 並べた結果を覚えるための鍵
@@ -140,6 +211,7 @@ struct LayoutKey {
     text: String,
     size: u32,
     bold: bool,
+    font: u16,
     max_width: u32,
 }
 
@@ -149,6 +221,7 @@ impl LayoutKey {
             text: s.to_string(),
             size: (style.size * 64.0) as u32,
             bold: style.bold,
+            font: style.font.0,
             max_width: max_width.map_or(u32::MAX, |w| w.max(0.0).round() as u32),
         }
     }
@@ -202,7 +275,7 @@ mod tests {
     #[test]
     fn layout_measures_wraps_and_hit_tests_japanese() {
         let mut t = Text::new().unwrap();
-        let style = TextStyle { size: 14.0, bold: false };
+        let style = TextStyle { size: 14.0, bold: false, font: FontId(0) };
         let one = t.layout("資料", style, None);
         assert!(one.width > 20.0 && one.width < 40.0, "{}", one.width);
         assert!(!one.glyphs.is_empty());
@@ -225,7 +298,7 @@ mod tests {
     #[test]
     fn hit_testing_counts_utf16_positions() {
         let mut t = Text::new().unwrap();
-        let style = TextStyle { size: 14.0, bold: false };
+        let style = TextStyle { size: 14.0, bold: false, font: FontId(0) };
         let laid = t.layout("ab牛乳😀c", style, None);
         // a, b, 牛, 乳 は 1 つずつ、😀 は 2 つ、c は 1 つ（全部で 7）
         let xs: Vec<f32> = (0..=7).filter(|&i| i != 5).map(|i| laid.x_of(i)).collect();
@@ -254,7 +327,7 @@ mod tests {
     #[test]
     fn lines_carets_and_points_in_multiline_text() {
         let mut t = Text::new().unwrap();
-        let st = TextStyle { size: 14.0, bold: false };
+        let st = TextStyle { size: 14.0, bold: false, font: FontId(0) };
         let laid = t.layout("ab\ncd\n", st, None);
         let spans: Vec<(usize, usize)> = laid.lines.iter().map(|l| (l.start, l.end)).collect();
         assert_eq!(spans, [(0, 2), (3, 5), (6, 6)], "改行で終わると最後に空の行");
@@ -290,15 +363,91 @@ mod tests {
         assert_eq!(empty.caret(0).1, 0.0);
     }
 
+    fn styled(t: &mut Text, font: Font) -> TextStyle {
+        TextStyle { size: 14.0, bold: false, font: t.fonts.id(&font) }
+    }
+
+    #[test]
+    fn font_table_gives_each_font_one_number_and_zero_is_the_ui_font() {
+        let mut f = FontTable::new();
+        assert_eq!(f.id(&Font::Ui), FontId(0));
+        let mono = f.id(&Font::Monospace);
+        assert_eq!(f.id(&Font::family("Meiryo")), FontId(2));
+        assert_eq!(f.id(&Font::Monospace), mono, "同じ書体は同じ番号");
+        assert_eq!(f.get(FontId(2)), &Font::family("Meiryo"));
+        assert_eq!(f.get(FontId(99)), &Font::Ui, "知らない番号は UI の書体");
+    }
+
+    /// 等幅の書体では、細い字も太い字も同じ幅。UI の書体では違う
+    #[test]
+    fn monospace_letters_all_have_the_same_width() {
+        let mut t = Text::new().unwrap();
+        let (mono, ui) = (styled(&mut t, Font::Monospace), styled(&mut t, Font::Ui));
+        let (i, m) = (t.layout("iiiiiiii", mono, None).width, t.layout("MMMMMMMM", mono, None).width);
+        assert!((i - m).abs() < 0.5, "等幅: i {i} M {m}（{:?}）", t.resolved(&Font::Monospace));
+        let (i, m) = (t.layout("iiiiiiii", ui, None).width, t.layout("MMMMMMMM", ui, None).width);
+        assert!(m > i * 1.5, "UI の書体: i {i} M {m}");
+    }
+
+    /// 日本語も持つ等幅の書体（BIZ UD ゴシックなど）では、日本語 1 字が英字 2 字とちょうど同じ幅
+    #[test]
+    fn in_a_japanese_monospace_font_a_kanji_is_two_letters_wide() {
+        let mut t = Text::new().unwrap();
+        let (family, _) = t.resolved(&Font::Monospace);
+        let japanese = ["BIZ UDGothic", "Noto Sans Mono CJK JP", "TakaoGothic", "IPAGothic", "VL Gothic", "MS Gothic"];
+        if !japanese.iter().any(|f| family.starts_with(&format!("\"{f}\"")) || family == *f) {
+            eprintln!("日本語の等幅の書体が無いので飛ばす: {family}");
+            return;
+        }
+        let mono = styled(&mut t, Font::Monospace);
+        let (kanji, latin) = (t.layout("漢字漢字", mono, None).width, t.layout("abcdefgh", mono, None).width);
+        assert!((kanji - latin).abs() < 1.0, "漢字 4 字 {kanji}、英字 8 字 {latin}（{family}）");
+    }
+
+    /// 無い名前の書体は UI の書体で出す（文字が消えない）
+    #[test]
+    fn an_unknown_family_falls_back_to_the_ui_font() {
+        let mut t = Text::new().unwrap();
+        let (missing, ui) = (styled(&mut t, Font::family("No Such Font 4cb3")), styled(&mut t, Font::Ui));
+        let (a, b) = (t.layout("設定 Settings", missing, None).width, t.layout("設定 Settings", ui, None).width);
+        assert!((a - b).abs() < 0.5, "{a} {b}");
+        assert_eq!(t.resolved(&Font::family("No Such Font 4cb3")), t.resolved(&Font::Ui));
+    }
+
+    /// アプリが渡した書体のファイルを読み込むと、その名前で選べる（Windows では OS の書体より先に探す）
+    #[test]
+    fn font_files_from_the_app_are_found_by_family_name() {
+        let (path, family) = if cfg!(windows) {
+            ("C:\\Windows\\Fonts\\consola.ttf", "Consolas")
+        } else {
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "DejaVu Sans Mono")
+        };
+        let Ok(data) = std::fs::read(path) else {
+            eprintln!("{path} が無いので飛ばす");
+            return;
+        };
+        let mut t = Text::new().unwrap();
+        assert_eq!(t.load_fonts(&[]), 0, "渡さなければ何も読まない");
+        assert!(t.load_fonts(&[data.into()]) >= 1);
+        let (name, from_app) = t.resolved(&Font::family(family));
+        assert!(name.contains(family), "{name}");
+        if cfg!(all(windows, not(feature = "portable-text"))) {
+            assert!(from_app, "読み込んだファイルから見つける");
+        }
+        let st = styled(&mut t, Font::family(family));
+        let (i, m) = (t.layout("iiii", st, None).width, t.layout("MMMM", st, None).width);
+        assert!((i - m).abs() < 0.5, "読み込んだ等幅の書体で並べる: {i} {m}");
+    }
+
     #[test]
     fn bold_draws_more_ink_and_empty_text_has_height() {
         let mut t = Text::new().unwrap();
-        let normal = t.layout("Settings 設定", TextStyle { size: 14.0, bold: false }, None);
-        let bold = t.layout("Settings 設定", TextStyle { size: 14.0, bold: true }, None);
+        let normal = t.layout("Settings 設定", TextStyle { size: 14.0, bold: false, font: FontId(0) }, None);
+        let bold = t.layout("Settings 設定", TextStyle { size: 14.0, bold: true, font: FontId(0) }, None);
         let (a, b) = (ink(&t, &normal), ink(&t, &bold));
         assert!(b as f64 > a as f64 * 1.1, "普通 {a}、太字 {b}");
         assert!(bold.width >= normal.width, "{} {}", bold.width, normal.width);
-        let empty = t.layout("", TextStyle { size: 14.0, bold: false }, None);
+        let empty = t.layout("", TextStyle { size: 14.0, bold: false, font: FontId(0) }, None);
         assert_eq!(empty.width, 0.0);
         assert!(empty.height > 10.0, "{}", empty.height);
     }

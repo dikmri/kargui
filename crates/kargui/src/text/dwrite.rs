@@ -1,5 +1,6 @@
 //! 文字の Windows の道。DirectWrite で並べ（行の折り返し・代わりのフォント）、形（ラスタライズ）も DirectWrite で作る。
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -7,9 +8,9 @@ use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
 use windows::Win32::Graphics::DirectWrite::*;
-use windows::core::{BOOL, ComObject, IUnknown, Interface, Ref, Result, implement, w};
+use windows::core::{BOOL, ComObject, HSTRING, IUnknown, Interface, Ref, Result, implement, w};
 
-use super::{ATLAS_SIZE, Atlas, LayoutCache, LayoutKey, Line, Placed, Slot, TextStyle, add_trailing_line};
+use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Slot, TextStyle, add_trailing_line};
 use crate::log;
 
 /// 並べ終えた文字列
@@ -159,7 +160,15 @@ impl IDWriteTextRenderer_Impl for Collector_Impl {
 
 pub(crate) struct Text {
     factory: IDWriteFactory2,
-    formats: HashMap<(u32, bool), IDWriteTextFormat>,
+    formats: HashMap<(u32, bool, u16), IDWriteTextFormat>,
+    /// 使った書体の一覧（部品と書式は番号で持つ）
+    pub fonts: FontTable,
+    /// 書体の番号ごとに決めた、ファミリーの名前と探す一覧（None は OS の一覧）
+    families: HashMap<u16, (HSTRING, Option<IDWriteFontCollection>)>,
+    /// OS に入っている書体の一覧（UI の書体だけを使うアプリは読まない）
+    system: Option<IDWriteFontCollection>,
+    /// アプリが渡した書体のファイルの一覧（Options::fonts）
+    custom: Option<IDWriteFontCollection>,
     glyphs: HashMap<GlyphKey, Option<Slot>>,
     /// 形の鍵にフォントのポインタを使うので、使ったフォントを持ち続ける
     faces: Vec<IDWriteFontFace>,
@@ -172,7 +181,16 @@ pub(crate) struct Text {
 }
 
 /// UI の文字に使うフォント
-const FONT: windows::core::PCWSTR = w!("Yu Gothic UI");
+const UI_FONT: &str = "Yu Gothic UI";
+
+/// 等幅の書体の候補（入っている最初の物を使う）。BIZ UD ゴシックは、日本語の幅が英字のちょうど 2 つ分
+const MONOSPACE: [&str; 3] = ["BIZ UDGothic", "Consolas", "MS Gothic"];
+
+/// 一覧にそのファミリーがあるか
+fn has_family(collection: &IDWriteFontCollection, name: &HSTRING) -> bool {
+    let (mut index, mut exists) = (0u32, BOOL::default());
+    unsafe { collection.FindFamilyName(name, &mut index, &mut exists) }.is_ok() && exists.as_bool()
+}
 
 impl Text {
     pub fn new() -> Result<Self> {
@@ -182,6 +200,10 @@ impl Text {
         Ok(Self {
             factory,
             formats: HashMap::new(),
+            fonts: FontTable::new(),
+            families: HashMap::new(),
+            system: None,
+            custom: None,
             glyphs: HashMap::new(),
             faces: Vec::new(),
             layouts: LayoutCache::new(),
@@ -202,14 +224,110 @@ impl Text {
         self.atlas = self.atlas.renewed();
     }
 
-    fn format(&mut self, size: f32, bold: bool) -> Result<IDWriteTextFormat> {
-        let key = ((size * 64.0) as u32, bold);
+    /// アプリが渡した書体のファイル（Options::fonts）を読み込み、名前で選べるようにする。読めたファミリーの数を返す
+    pub fn load_fonts(&mut self, files: &[Cow<'static, [u8]>]) -> usize {
+        if files.is_empty() {
+            return 0;
+        }
+        let bytes: usize = files.iter().map(|f| f.len()).sum();
+        match self.font_collection(files) {
+            Ok((collection, families)) => {
+                self.custom = Some(collection);
+                // 名前を決め直す（前に OS の一覧で見つからなかった名前も、読み込んだ書体で見つかる）
+                self.families.clear();
+                self.formats.clear();
+                self.layouts.clear();
+                log::event("font.load", &format!("files={} bytes={bytes}", files.len()), &format!("families={families}"));
+                families
+            }
+            Err(e) => {
+                log::event("font.load", &format!("files={} bytes={bytes}", files.len()), &format!("error={e:?}"));
+                0
+            }
+        }
+    }
+
+    /// 書体のファイルの中身から、名前で探せる一覧を作る（中身は DirectWrite が写して持つ）
+    fn font_collection(&self, files: &[Cow<'static, [u8]>]) -> Result<(IDWriteFontCollection, usize)> {
+        let f5: IDWriteFactory5 = self.factory.cast()?;
+        let loader = unsafe { f5.CreateInMemoryFontFileLoader()? };
+        unsafe { f5.RegisterFontFileLoader(&loader)? };
+        let builder = unsafe { f5.CreateFontSetBuilder()? };
+        for data in files {
+            let file = unsafe { loader.CreateInMemoryFontFileReference(&f5, data.as_ptr().cast(), data.len() as u32, None)? };
+            unsafe { builder.AddFontFile(&file)? };
+        }
+        let set = unsafe { builder.CreateFontSet()? };
+        let collection = unsafe { f5.CreateFontCollectionFromFontSet(&set)? };
+        let families = unsafe { collection.GetFontFamilyCount() } as usize;
+        Ok((collection.cast()?, families))
+    }
+
+    /// 試験用: 書体から決めたファミリーの名前と、アプリが渡したファイルから見つけたか
+    #[cfg(test)]
+    pub fn resolved(&mut self, font: &Font) -> (String, bool) {
+        let id = self.fonts.id(font);
+        let (name, from_app) = self.family(id);
+        (name.to_string(), from_app.is_some())
+    }
+
+    /// OS に入っている書体の一覧（初めて要る時に読む）
+    fn system_fonts(&mut self) -> Option<IDWriteFontCollection> {
+        if self.system.is_none() {
+            let mut c = None;
+            if unsafe { self.factory.GetSystemFontCollection(&mut c, false) }.is_ok() {
+                self.system = c;
+            }
+        }
+        self.system.clone()
+    }
+
+    /// 書体の番号から、DirectWrite に渡すファミリーの名前と探す一覧を決める（決めた物は覚える）
+    fn family(&mut self, id: FontId) -> (HSTRING, Option<IDWriteFontCollection>) {
+        if let Some(f) = self.families.get(&id.0) {
+            return f.clone();
+        }
+        let ui = (HSTRING::from(UI_FONT), None);
+        let font = self.fonts.get(id).clone();
+        let found = match &font {
+            Font::Ui => ui,
+            Font::Monospace => {
+                let system = self.system_fonts();
+                let first = MONOSPACE.iter().map(|n| HSTRING::from(*n)).find(|n| system.as_ref().is_some_and(|c| has_family(c, n)));
+                match first {
+                    Some(name) => (name, None),
+                    None => {
+                        log::event("font.missing", "family=monospace", "fallback=ui");
+                        ui
+                    }
+                }
+            }
+            Font::Family(name) => {
+                let h = HSTRING::from(name.as_str());
+                if let Some(c) = self.custom.as_ref().filter(|c| has_family(c, &h)) {
+                    (h, Some(c.clone()))
+                } else if self.system_fonts().is_some_and(|c| has_family(&c, &h)) {
+                    (h, None)
+                } else {
+                    log::event("font.missing", &format!("family={name}"), "fallback=ui");
+                    ui
+                }
+            }
+        };
+        log::event("font.resolve", &format!("font={font:?}"), &format!("family={} from_app={}", found.0, found.1.is_some()));
+        self.families.insert(id.0, found.clone());
+        found
+    }
+
+    fn format(&mut self, size: f32, bold: bool, font: FontId) -> Result<IDWriteTextFormat> {
+        let key = ((size * 64.0) as u32, bold, font.0);
         if let Some(f) = self.formats.get(&key) {
             return Ok(f.clone());
         }
         let weight = if bold { DWRITE_FONT_WEIGHT_BOLD } else { DWRITE_FONT_WEIGHT_NORMAL };
+        let (family, collection) = self.family(font);
         let format = unsafe {
-            self.factory.CreateTextFormat(FONT, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("ja-jp"))?
+            self.factory.CreateTextFormat(&family, collection.as_ref(), weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("ja-jp"))?
         };
         self.formats.insert(key, format.clone());
         Ok(format)
@@ -234,7 +352,7 @@ impl Text {
 
     fn make_layout(&mut self, s: &str, style: TextStyle, max_width: Option<f32>) -> Result<Laid> {
         self.layouts_made += 1;
-        let format = self.format(style.size, style.bold)?;
+        let format = self.format(style.size, style.bold, style.font)?;
         let wide: Vec<u16> = s.encode_utf16().collect();
         let layout = unsafe { self.factory.CreateTextLayout(&wide, &format, max_width.unwrap_or(1.0e6).max(1.0), 1.0e6)? };
         unsafe {

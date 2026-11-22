@@ -38,6 +38,9 @@
 //! assert_eq!(h.app().notes, ["milk", "牛乳"]);
 //! ```
 
+use std::borrow::Cow;
+use std::rc::Rc;
+
 use crate::app::App;
 use crate::geom::{IRect, Rect};
 use crate::input::{Event, Key, Mods};
@@ -89,6 +92,8 @@ pub struct Harness<A: App> {
     closed: bool,
     /// 押したままのポインターの位置（Harness::drag_over の後。Harness::release で離す）
     pointer_held: Option<(f32, f32)>,
+    /// アプリが渡した書体のファイル（ほかの窓にも読み込む）
+    font_files: Rc<Vec<Cow<'static, [u8]>>>,
 }
 
 impl<A: App> Harness<A> {
@@ -152,8 +157,39 @@ impl<A: App> Harness<A> {
     /// assert_eq!(h.render().width, 720);
     /// ```
     pub fn with_size(app: A, width: f32, height: f32, scale: f32) -> Self {
+        Self::make(app, width, height, scale, false, &crate::Font::Ui, Rc::new(Vec::new()))
+    }
+
+    /// A screen with the app's [`Options`](crate::Options): their size, font and font files
+    /// ([`Options::font`](crate::Options::font), [`Options::fonts`](crate::Options::fonts)) and
+    /// dark mode if `dark` is `Some(true)` (otherwise light), at 100% scale, after the first frame.
+    ///
+    /// ```
+    /// use kargui::{App, Font, Options, Ui};
+    /// use kargui::test::Harness;
+    ///
+    /// struct Receipt;
+    ///
+    /// impl App for Receipt {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.label(format!("{:?}", ui.font()));
+    ///     }
+    /// }
+    ///
+    /// let mut options = Options::new("Receipt");
+    /// options.size = (320.0, 480.0);
+    /// options.font = Font::Monospace;
+    /// let h = Harness::with_options(Receipt, &options);
+    /// assert!(h.find("Monospace").is_some());
+    /// ```
+    pub fn with_options(app: A, options: &crate::Options) -> Self {
+        let (w, h) = options.size;
+        Self::make(app, w, h, 1.0, options.dark == Some(true), &options.font, Rc::new(options.fonts.clone()))
+    }
+
+    fn make(app: A, width: f32, height: f32, scale: f32, dark: bool, font: &crate::Font, font_files: Rc<Vec<Cow<'static, [u8]>>>) -> Self {
         let text = Text::new().expect("the text engine starts");
-        let mut rt = Runtime::new(text, false, Box::new(MemoryClipboard::default()), "test".into());
+        let mut rt = Runtime::new(text, dark, Box::new(MemoryClipboard::default()), "test".into());
         rt.resize((width * scale).round(), (height * scale).round(), scale);
         // 試験台の時計は止めておき、wait で進める（動く部品の写真と試験を毎回同じにする）
         rt.cx.frozen = Some(std::time::Duration::ZERO);
@@ -161,7 +197,9 @@ impl<A: App> Harness<A> {
         rt.cx.today = crate::date::Date::new(2026, 11, 22);
         // 動きは切っておく（押した後の画面が、時計を進めなくても終わりの形になる）。動きを試す時は reduce_motion(false)
         rt.cx.reduce_motion = true;
-        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None };
+        rt.cx.text.load_fonts(&font_files);
+        rt.cx.font = rt.cx.text.fonts.id(font);
+        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None, font_files };
         h.frame();
         h
     }
@@ -911,6 +949,10 @@ impl<A: App> Harness<A> {
             rt.cx.frozen = self.rt.cx.frozen;
             rt.cx.today = self.rt.cx.today;
             rt.cx.reduce_motion = self.rt.cx.reduce_motion;
+            // 書体は主の窓の今の書体と、同じ書体のファイル
+            rt.cx.text.load_fonts(&self.font_files);
+            let font = self.rt.cx.text.fonts.get(self.rt.cx.font).clone();
+            rt.cx.font = rt.cx.text.fonts.id(&font);
             self.windows.push((r.key.clone(), rt));
         }
         let app = &mut self.app;
@@ -4784,5 +4826,55 @@ mod tests {
         assert!(p > 0.3 && p < 1.0, "途中: {p}");
         h.wait(Duration::from_millis(100));
         assert_eq!(pos(&h), Some(1.0));
+    }
+
+    struct Typeset {
+        code: String,
+        mono_window: bool,
+    }
+
+    impl App for Typeset {
+        fn view(&mut self, ui: &mut Ui) {
+            if self.mono_window {
+                ui.set_font(crate::Font::Monospace);
+            }
+            // 行の中のラベルは中身の幅になる（縦の並びでは幅いっぱいに伸びる）
+            ui.row(|ui| {
+                ui.label("iiiiiiii");
+            });
+            ui.row(|ui| {
+                ui.label("MMMMMMMM");
+            });
+            ui.row(|ui| {
+                ui.label("iiii mono").monospace();
+            });
+            ui.row(|ui| {
+                ui.label("MMMM mono").monospace();
+            });
+            ui.text_area(&mut self.code).hint("Code").monospace();
+        }
+    }
+
+    #[test]
+    fn labels_take_their_own_font_and_set_font_changes_the_rest() {
+        let mut h = Harness::new(Typeset { code: String::new(), mono_window: false });
+        let w = |h: &Harness<Typeset>, name: &str| h.find(name).unwrap().w;
+        assert!((w(&h, "iiii mono") - w(&h, "MMMM mono")).abs() < 1.0, "等幅のラベル");
+        assert!(w(&h, "MMMMMMMM") > w(&h, "iiiiiiii") * 1.5, "窓の書体（UI）のラベル");
+        h.app_mut().mono_window = true;
+        h.frame();
+        assert!((w(&h, "MMMMMMMM") - w(&h, "iiiiiiii")).abs() < 1.0, "set_font の後は窓の書体が等幅");
+    }
+
+    #[test]
+    fn moving_the_caret_between_lines_measures_in_the_fields_font() {
+        let mut h = Harness::new(Typeset { code: "MMMM\naaaaaaaa".into(), mono_window: false });
+        h.click("Code").press_with(Key::Home, Mods::CTRL).press(Key::End);
+        let id = id_named(&h, "Code");
+        let cursor = |h: &Harness<Typeset>| h.cur().cx.edits.get(&id).unwrap().cursor;
+        assert_eq!(cursor(&h), 4, "1 行目の終わり");
+        // 等幅なので、M 4 つ分の位置は a 4 つ分（UI の書体なら M の方が広いので、もっと右になる）
+        h.press(Key::Down);
+        assert_eq!(cursor(&h), 9);
     }
 }

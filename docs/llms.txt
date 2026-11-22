@@ -880,6 +880,26 @@ ui.set_dark(true);
 assert_eq!(ui.theme().background, kargui::Theme::dark().background);
 ```
 
+### `pub fn font(&self) -> Font`
+
+The window's font: the one text uses when its widget has no font of its own.
+
+```
+use kargui::Font;
+assert_eq!(ui.font(), Font::Ui);
+```
+
+### `pub fn set_font(&mut self, font: Font)`
+
+Changes the window's font (it starts as [`Options::font`](crate::Options::font)). Text
+whose widget has no font of its own uses it, from this frame on; it stays until changed
+again. Use it for a font setting in the app.
+
+```
+use kargui::Font;
+ui.set_font(if readable { Font::family("BIZ UDPGothic") } else { Font::Ui });
+```
+
 ### `pub fn theme(&self) -> &Theme`
 
 The colors in use, for example to match your own drawing to the widgets.
@@ -1368,6 +1388,23 @@ if ui.slider(&mut volume, 0..=100).label("Volume").changed() {
 ```
 
 ## Text fields (`TextInput`)
+
+### `pub fn font(mut self, font: Font) -> Self`
+
+Shows the text in `font` instead of the window's font. See [`Font`].
+
+```
+use kargui::Font;
+ui.text_input(&mut path).font(Font::Monospace).hint("C:\\Users\\…");
+```
+
+### `pub fn monospace(self) -> Self`
+
+Shows the text in the fixed-width font ([`Font::Monospace`]).
+
+```
+ui.text_input(&mut code).monospace().hint("ABCD-1234");
+```
 
 ### `pub fn hint(mut self, hint: impl Into<String>) -> Self`
 

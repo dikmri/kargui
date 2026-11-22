@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Fonts: `Font` is `Font::Ui` (the system's UI font, the default), `Font::Monospace` (a
+  fixed-width font; on Windows BIZ UDGothic, where a Japanese character is exactly two Latin
+  letters wide, then Consolas, then MS Gothic) or `Font::family(name)`. `Options::font` sets the
+  font of the windows, `ui.set_font` changes it while the app runs and `ui.font()` reads it.
+  Labels, text fields and multi-line text fields take `.font(font)` and `.monospace()`; caret
+  movement and clicks in a field are measured in its font. `Options::fonts` takes font files the
+  app brings along (TrueType or OpenType, for example with `include_bytes!`), chosen by family name
+  and found before system fonts of the same name. A name no font has falls back to the UI font
+  (logged as `font.missing`). Nothing is read for fonts at startup unless the app uses them.
+  Tests: `Harness::with_options(app, &options)`. Guide page 20. The notepad example has View >
+  Monospace font, and the settings example a font choice that applies to the whole window.
+- `Options` (behaviour change for code that builds it with a struct expression): new fields `font`
+  and `fonts`. `Options::new` fills them in.
 - Animation helpers: `ui.animate(key, target, duration)` returns a number that moves from where it
   is to `target` over `duration` whenever `target` changes (a cubic ease-out; the first call
   returns `target` at once, and turning back midway starts from where the value is), and

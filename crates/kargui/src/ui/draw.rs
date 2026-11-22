@@ -2,7 +2,7 @@
 
 use crate::geom::{Color, IRect, Rect};
 use crate::paint::{DrawList, Scroll};
-use crate::text::{Laid, TextStyle};
+use crate::text::{FontId, Laid, TextStyle};
 use crate::ime::ImeField;
 use crate::ui::context::{Context, Hit, ListInfo, OverlayInfo, Prev};
 use crate::ui::edit;
@@ -44,7 +44,12 @@ mod sz {
 }
 
 fn style(cx: &Context, kind: TextKind, bold: bool) -> TextStyle {
-    TextStyle { size: (kind.size() * cx.scale).round(), bold }
+    TextStyle { size: (kind.size() * cx.scale).round(), bold, font: cx.font }
+}
+
+/// 部品が書体を決めていればその書体、無ければ窓の書体
+fn styled(cx: &Context, kind: TextKind, bold: bool, font: Option<FontId>) -> TextStyle {
+    TextStyle { font: font.unwrap_or(cx.font), ..style(cx, kind, bold) }
 }
 
 fn px(cx: &Context, v: f32) -> f32 {
@@ -56,8 +61,8 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
     let s = cx.scale;
     let p = |v: f32| (v * s).round();
     Some(match kind {
-        Kind::Label { text, size, bold, wrap, .. } => {
-            let st = style(cx, *size, *bold);
+        Kind::Label { text, size, bold, wrap, font, .. } => {
+            let st = styled(cx, *size, *bold, *font);
             let laid = cx.text.layout(text, st, if *wrap { max_w } else { None });
             (if *wrap { 0.0 } else { laid.width.ceil() }, laid.height.ceil())
         }
@@ -160,8 +165,8 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             (laid.width.ceil() + 2.0 * p(sz::SEGMENT_PAD), p(sz::SEGMENT_H))
         }
         Kind::TextInput { .. } => (p(sz::INPUT_W), p(sz::INPUT_H)),
-        Kind::TextArea { rows, .. } => {
-            let line_h = cx.text.layout("あ", style(cx, TextKind::Body, false), None).height.ceil();
+        Kind::TextArea { rows, font, .. } => {
+            let line_h = cx.text.layout("あ", styled(cx, TextKind::Body, false, *font), None).height.ceil();
             (p(sz::INPUT_W), *rows as f32 * line_h + 2.0 * p(sz::AREA_PAD_Y))
         }
         Kind::Slider { .. } => (p(sz::SLIDER_W), p(sz::SLIDER_H)),
@@ -592,8 +597,8 @@ impl Painter<'_> {
                     self.node(tree, c);
                 }
             }
-            Kind::Label { text, size, bold, weak, strike, wrap, right } => {
-                let st = style(self.cx, *size, *bold);
+            Kind::Label { text, size, bold, weak, strike, wrap, right, font } => {
+                let st = styled(self.cx, *size, *bold, *font);
                 let color = if tree.info[i].disabled {
                     self.cx.theme.done_text
                 } else if *weak {
@@ -1254,8 +1259,8 @@ impl Painter<'_> {
                 put(self.d, &laid, (r.x + (r.w - laid.width) / 2.0).round(), (r.y + (r.h - laid.height) / 2.0).round(), color);
                 self.hit(tree, i, true, false);
             }
-            Kind::TextInput { value, hint, password } => self.text_input(tree, i, value, hint, *password),
-            Kind::TextArea { value, hint, .. } => self.text_area(tree, i, value, hint),
+            Kind::TextInput { value, hint, password, .. } => self.text_input(tree, i, value, hint, *password),
+            Kind::TextArea { value, hint, font, .. } => self.text_area(tree, i, value, hint, *font),
             Kind::List { count, separators, .. } => self.list(tree, i, *count, *separators),
             Kind::Scroll => self.scroll_area(tree, i),
             Kind::Slider { value, min, max, .. } => {
@@ -1402,7 +1407,9 @@ impl Painter<'_> {
         self.d.boxed(r, if off { t.button } else { t.field }, if focused { t.accent } else { t.border }, if focused { 2.0 * line } else { line }, radius);
         let pad = self.px(sz::INPUT_PAD);
         let inner = Rect::new(r.x + pad, r.y, (r.w - 2.0 * pad - reserve).max(0.0), r.h);
-        let st = style(self.cx, TextKind::Body, false);
+        // 書体は入力欄が決めた物（数の入力欄は窓の書体）
+        let font = if let Kind::TextInput { font, .. } = &tree.info[i].kind { *font } else { None };
+        let st = styled(self.cx, TextKind::Body, false, font);
         let (cursor, anchor) = self.cx.edits.get(&id).map_or((value.len(), value.len()), |e| (e.cursor.min(value.len()), e.anchor.min(value.len())));
         // パスワードは点にして描く（位置も点の位置に直す）
         let masked;
@@ -1494,7 +1501,7 @@ impl Painter<'_> {
 
     /// 複数行の入力欄。折り返して並べ、縦にスクロールする（スクロールの棒とホイールは一覧と同じ仕組み）。
     /// 選んだ範囲と変換中の文字の下線は、行ごとの四角に分けて描く
-    fn text_area(&mut self, tree: &Tree, i: usize, value: &str, hint: &str) {
+    fn text_area(&mut self, tree: &Tree, i: usize, value: &str, hint: &str, font: Option<FontId>) {
         let r = tree.layout[i].rect;
         let id = tree.info[i].id;
         let t = self.cx.theme.clone();
@@ -1508,7 +1515,7 @@ impl Painter<'_> {
         // 文字を並べる範囲（右にスクロールの棒の分をいつも空け、幅が揺れないようにする）
         let inner = Rect::new(r.x + pad_x, r.y + pad_y, (r.w - 2.0 * pad_x - gutter).max(1.0), (r.h - 2.0 * pad_y).max(1.0));
         let view = Rect::new(r.x + line, r.y + line, (r.w - 2.0 * line).max(0.0), (r.h - 2.0 * line).max(0.0));
-        let st = style(self.cx, TextKind::Body, false);
+        let st = styled(self.cx, TextKind::Body, false, font);
         let (cursor, anchor) = self.cx.edits.get(&id).map_or((value.len(), value.len()), |e| (e.cursor.min(value.len()), e.anchor.min(value.len())));
         let preedit = if focused { self.cx.preedit.clone() } else { String::new() };
         let shown = if preedit.is_empty() { value.to_string() } else { format!("{}{}{}", &value[..cursor], preedit, &value[cursor..]) };

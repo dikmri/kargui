@@ -64,6 +64,7 @@ use crate::date::{Date, DateText};
 use crate::file_dialog::FileDialog;
 use std::path::PathBuf;
 use crate::geom::{Color, Rect};
+use crate::text::{Font, FontId};
 use crate::input::{Event, Key, Mods};
 use crate::wake::Waker;
 use crate::icon::Icon;
@@ -132,7 +133,7 @@ pub(crate) enum Kind {
     Row,
     Column,
     Stack,
-    Label { text: String, size: TextKind, bold: bool, weak: bool, strike: bool, wrap: bool, right: bool },
+    Label { text: String, size: TextKind, bold: bool, weak: bool, strike: bool, wrap: bool, right: bool, font: Option<FontId> },
     Button { text: String, primary: bool, small: bool, icon: Option<Icon> },
     /// アイコン（大きさは論理ピクセル）
     Icon { icon: Icon, size: u32, weak: bool },
@@ -208,9 +209,9 @@ pub(crate) enum Kind {
     /// pos はつまみの位置（0 が切、1 が入。切り替えた時に 167 ms で滑る）
     Toggle { on: bool, text: String, pos: f32 },
     Segment { text: String, selected: bool },
-    TextInput { value: String, hint: String, password: bool },
+    TextInput { value: String, hint: String, password: bool, font: Option<FontId> },
     /// 複数行の入力欄（rows は見える行の数）
-    TextArea { value: String, hint: String, rows: u32 },
+    TextArea { value: String, hint: String, rows: u32, font: Option<FontId> },
     Space,
     /// 一覧（table は表の行の一覧。読み上げで行と升にする）
     List { count: usize, separators: bool, view_h: f32, table: bool },
@@ -724,7 +725,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn label(&mut self, text: impl Into<String>) -> Label<'_> {
-        let kind = Kind::Label { text: text.into(), size: TextKind::Body, bold: false, weak: false, strike: false, wrap: false, right: false };
+        let kind = Kind::Label { text: text.into(), size: TextKind::Body, bold: false, weak: false, strike: false, wrap: false, right: false, font: None };
         let (idx, id) = self.add(kind, Dir::Leaf);
         Label(self.handle(idx, id))
     }
@@ -738,7 +739,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn heading(&mut self, text: impl Into<String>) -> Label<'_> {
-        let kind = Kind::Label { text: text.into(), size: TextKind::Heading, bold: true, weak: false, strike: false, wrap: false, right: false };
+        let kind = Kind::Label { text: text.into(), size: TextKind::Heading, bold: true, weak: false, strike: false, wrap: false, right: false, font: None };
         let (idx, id) = self.add(kind, Dir::Leaf);
         Label(self.handle(idx, id))
     }
@@ -1026,11 +1027,12 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn password(&mut self, text: &mut String) -> TextInput<'_> {
-        let (idx, id) = self.add(Kind::TextInput { value: String::new(), hint: String::new(), password: true }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::TextInput { value: String::new(), hint: String::new(), password: true, font: None }, Dir::Leaf);
         let (changed, submitted) = self.edit(id, text, Field::Password);
         if let Kind::TextInput { value, .. } = &mut self.tree.info[idx].kind {
             *value = text.clone();
         }
+        self.forget_field_font(id);
         let composing = (self.cx.focus == Some(id) && !self.cx.preedit.is_empty()).then(|| self.cx.preedit.clone());
         TextInput { h: self.handle(idx, id), changed, submitted, composing }
     }
@@ -1058,7 +1060,7 @@ impl<'a> Ui<'a> {
         let current = options.iter().position(|(v, _)| v == value);
         let text = current.map_or("", |k| options[k].1).to_string();
         // 幅は一番長い項目に合わせる（開いても閉じても幅が変わらない）
-        let style = crate::text::TextStyle { size: self.px(TextKind::Body.size()), bold: false };
+        let style = crate::text::TextStyle { size: self.px(TextKind::Body.size()), bold: false, font: self.cx.font };
         let widest = options.iter().map(|(_, t)| *t).max_by(|a, b| self.cx.text.layout(a, style, None).width.total_cmp(&self.cx.text.layout(b, style, None).width)).unwrap_or("").to_string();
         let (idx, id) = self.add(Kind::Dropdown { text, widest, open: false }, Dir::Leaf);
         let pop = Id(hash_of((id.0, "dropdown")));
@@ -2490,11 +2492,12 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn text_input(&mut self, text: &mut String) -> TextInput<'_> {
-        let (idx, id) = self.add(Kind::TextInput { value: String::new(), hint: String::new(), password: false }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::TextInput { value: String::new(), hint: String::new(), password: false, font: None }, Dir::Leaf);
         let (changed, submitted) = self.edit(id, text, Field::Line);
         if let Kind::TextInput { value, .. } = &mut self.tree.info[idx].kind {
             *value = text.clone();
         }
+        self.forget_field_font(id);
         let composing = (self.cx.focus == Some(id) && !self.cx.preedit.is_empty()).then(|| self.cx.preedit.clone());
         TextInput { h: self.handle(idx, id), changed, submitted, composing }
     }
@@ -2517,13 +2520,21 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn text_area(&mut self, text: &mut String) -> TextArea<'_> {
-        let (idx, id) = self.add(Kind::TextArea { value: String::new(), hint: String::new(), rows: 4 }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::TextArea { value: String::new(), hint: String::new(), rows: 4, font: None }, Dir::Leaf);
         let (changed, _) = self.edit(id, text, Field::Area);
         if let Kind::TextArea { value, .. } = &mut self.tree.info[idx].kind {
             *value = text.clone();
         }
+        self.forget_field_font(id);
         let composing = (self.cx.focus == Some(id) && !self.cx.preedit.is_empty()).then(|| self.cx.preedit.clone());
         TextArea { h: self.handle(idx, id), changed, composing }
+    }
+
+    /// 入力欄の書体を忘れる（作るたびに呼ぶ。.font() が同じフレームの中で入れ直す）
+    fn forget_field_font(&mut self, id: Id) {
+        if let Some(e) = self.cx.edits.get_mut(&id) {
+            e.font = None;
+        }
     }
 
     /// 焦点のある入力欄に、この回の入力を当てる。(変わったか, 送信したか)
@@ -2535,7 +2546,8 @@ impl<'a> Ui<'a> {
         }
         let before = s.clone();
         let mut submitted = false;
-        let style = crate::text::TextStyle { size: self.px(TextKind::Body.size()), bold: false };
+        let font = self.cx.edits.get(&id).and_then(|e| e.font).unwrap_or(self.cx.font);
+        let style = crate::text::TextStyle { size: self.px(TextKind::Body.size()), bold: false, font };
         self.cx.edits.entry(id).or_default().clamp(s);
         self.cx.edits.get_mut(&id).unwrap().multiline = multiline;
         // 焦点が移る前に確定した変換中の文字（押した位置へキャレットを動かすより先に入れる）
@@ -2803,6 +2815,33 @@ impl<'a> Ui<'a> {
     /// ```
     pub fn set_dark(&mut self, dark: bool) {
         self.cx.set_dark(dark);
+    }
+
+    /// The window's font: the one text uses when its widget has no font of its own.
+    ///
+    /// ```
+    /// use kargui::Font;
+    /// # kargui::test::example(|ui| {
+    /// assert_eq!(ui.font(), Font::Ui);
+    /// # });
+    /// ```
+    pub fn font(&self) -> Font {
+        self.cx.text.fonts.get(self.cx.font).clone()
+    }
+
+    /// Changes the window's font (it starts as [`Options::font`](crate::Options::font)). Text
+    /// whose widget has no font of its own uses it, from this frame on; it stays until changed
+    /// again. Use it for a font setting in the app.
+    ///
+    /// ```
+    /// use kargui::Font;
+    /// # let readable = true;
+    /// # kargui::test::example(|ui| {
+    /// ui.set_font(if readable { Font::family("BIZ UDPGothic") } else { Font::Ui });
+    /// # });
+    /// ```
+    pub fn set_font(&mut self, font: Font) {
+        self.cx.font = self.cx.text.fonts.id(&font);
     }
 
     /// The colors in use, for example to match your own drawing to the widgets.
@@ -3200,7 +3239,7 @@ impl Handle<'_> {
                 let mut l = LayoutNode::new(Dir::Column);
                 l.pad = ((8.0 * scale).round(), (5.0 * scale).round());
                 self.tree.layout.push(l);
-                let label = Kind::Label { text, size: TextKind::Small, bold: false, weak: false, strike: false, wrap: false, right: false };
+                let label = Kind::Label { text, size: TextKind::Small, bold: false, weak: false, strike: false, wrap: false, right: false, font: None };
                 self.tree.info.push(NodeInfo { id: Id(hash_of((id.0, "tooltip-text"))), kind: label, label: None, disabled: false, description: None, context_menu: false, skip_tab: false, drag_source: false, drop_type: None });
                 self.tree.layout.push(LayoutNode::new(Dir::Leaf));
                 self.tree.layout[idx].children.push(idx + 1);
@@ -3672,6 +3711,32 @@ impl Label<'_> {
         }
         self
     }
+    /// Draws in `font` instead of the window's font. See [`Font`].
+    ///
+    /// ```
+    /// use kargui::Font;
+    /// # kargui::test::example(|ui| {
+    /// ui.label("お知らせ").font(Font::family("BIZ UDPGothic"));
+    /// # });
+    /// ```
+    pub fn font(mut self, font: Font) -> Self {
+        let id = self.0.cx.text.fonts.id(&font);
+        if let Kind::Label { font: f, .. } = self.0.kind() {
+            *f = Some(id);
+        }
+        self
+    }
+    /// Draws in the fixed-width font ([`Font::Monospace`]), for code, file names and numbers
+    /// that should line up.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.label("let total = 1_280;").monospace();
+    /// # });
+    /// ```
+    pub fn monospace(self) -> Self {
+        self.font(Font::Monospace)
+    }
     /// Draws in the less prominent text color.
     ///
     /// ```
@@ -4047,6 +4112,37 @@ pub struct TextInput<'t> {
 common!(TextInput, " # let mut text = String::new();", "text_input(&mut text)");
 
 impl TextInput<'_> {
+    /// Shows the text in `font` instead of the window's font. See [`Font`].
+    ///
+    /// ```
+    /// use kargui::Font;
+    /// # let mut path = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.text_input(&mut path).font(Font::Monospace).hint("C:\\Users\\…");
+    /// # });
+    /// ```
+    pub fn font(mut self, font: Font) -> Self {
+        let id = self.h.cx.text.fonts.id(&font);
+        if let Kind::TextInput { font: f, .. } = self.h.kind() {
+            *f = Some(id);
+        }
+        // 文字の入力（キャレットの移動・押した位置）も同じ書体で測る（次のフレームから）
+        if let Some(e) = self.h.cx.edits.get_mut(&self.h.id) {
+            e.font = Some(id);
+        }
+        self
+    }
+    /// Shows the text in the fixed-width font ([`Font::Monospace`]).
+    ///
+    /// ```
+    /// # let mut code = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.text_input(&mut code).monospace().hint("ABCD-1234");
+    /// # });
+    /// ```
+    pub fn monospace(self) -> Self {
+        self.font(Font::Monospace)
+    }
     /// Text shown while the field is empty.
     ///
     /// ```
@@ -4123,6 +4219,39 @@ pub struct TextArea<'t> {
 common!(TextArea, " # let mut text = String::new();", "text_area(&mut text)");
 
 impl TextArea<'_> {
+    /// Shows the text in `font` instead of the window's font (the line height follows the
+    /// font). See [`Font`].
+    ///
+    /// ```
+    /// use kargui::Font;
+    /// # let mut text = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.text_area(&mut text).font(Font::family("BIZ UDPGothic"));
+    /// # });
+    /// ```
+    pub fn font(mut self, font: Font) -> Self {
+        let id = self.h.cx.text.fonts.id(&font);
+        if let Kind::TextArea { font: f, .. } = self.h.kind() {
+            *f = Some(id);
+        }
+        // 文字の入力（上下の行への移動・押した位置）も同じ書体で測る（次のフレームから）
+        if let Some(e) = self.h.cx.edits.get_mut(&self.h.id) {
+            e.font = Some(id);
+        }
+        self
+    }
+    /// Shows the text in the fixed-width font ([`Font::Monospace`]), for code and
+    /// plain-text tables.
+    ///
+    /// ```
+    /// # let mut code = String::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.text_area(&mut code).monospace().rows(12);
+    /// # });
+    /// ```
+    pub fn monospace(self) -> Self {
+        self.font(Font::Monospace)
+    }
     /// Gray text shown while the field is empty. Screen readers use it as the name.
     ///
     /// ```

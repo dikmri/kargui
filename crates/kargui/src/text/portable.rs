@@ -1,11 +1,13 @@
 //! 文字の Windows 以外の道（Linux・macOS と、Windows で `portable-text` の時）。parley で並べ（行の折り返し・
 //! 代わりのフォント・当たり判定）、swash で形を作る。フォントは OS に入っている物を fontique（parley の中）で探す。
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use parley::editing::Cursor;
-use parley::fontique::Language;
+use parley::fontique::{Blob, Language};
 use parley::layout::Affinity;
 use parley::style::{FontFamily, FontWeight, StyleProperty};
 use parley::{Alignment, AlignmentOptions, FontContext, FontData, Layout, LayoutContext, PositionedLayoutItem};
@@ -13,7 +15,7 @@ use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
 use swash::zeno::Format;
 
-use super::{ATLAS_SIZE, Atlas, LayoutCache, LayoutKey, Line, Placed, Slot, TextStyle, add_trailing_line};
+use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Slot, TextStyle, add_trailing_line};
 use crate::log;
 
 /// UI の文字に使うフォント（CSS の font-family の形）。先にある物から使い、無い文字は代わりのフォントで出す
@@ -24,6 +26,15 @@ const FONTS: &str = "\"Yu Gothic UI\", \"Segoe UI\", sans-serif";
 #[cfg(not(any(windows, target_os = "macos")))]
 const FONTS: &str =
     "\"Noto Sans CJK JP\", \"Noto Sans JP\", \"Source Han Sans JP\", \"IPAexGothic\", \"IPAPGothic\", \"TakaoPGothic\", \"VL PGothic\", sans-serif";
+
+/// 等幅の書体（Font::Monospace）。日本語の幅が英字のちょうど 2 つ分になる書体を先に置く
+#[cfg(target_os = "macos")]
+const MONOSPACE: &str = "\"Osaka-Mono\", Menlo, monospace, \"Hiragino Sans\"";
+#[cfg(windows)]
+const MONOSPACE: &str = "\"BIZ UDGothic\", Consolas, \"MS Gothic\", monospace";
+#[cfg(not(any(windows, target_os = "macos")))]
+const MONOSPACE: &str =
+    "\"Noto Sans Mono CJK JP\", \"TakaoGothic\", \"IPAGothic\", \"VL Gothic\", \"DejaVu Sans Mono\", monospace";
 
 /// 並べ終えた文字列
 pub(crate) struct Laid {
@@ -101,7 +112,11 @@ struct GlyphKey {
 }
 
 pub(crate) struct Text {
-    fonts: FontContext,
+    font_cx: FontContext,
+    /// 使った書体の一覧（部品と書式は番号で持つ）
+    pub fonts: FontTable,
+    /// 書体の番号ごとに決めた、parley に渡すファミリーの並び（CSS の font-family の形）
+    families: HashMap<u16, String>,
     layout_cx: LayoutContext<()>,
     scale: ScaleContext,
     glyphs: HashMap<GlyphKey, Option<Slot>>,
@@ -114,7 +129,9 @@ pub(crate) struct Text {
 impl Text {
     pub fn new() -> Result<Self, crate::Error> {
         Ok(Self {
-            fonts: FontContext::new(),
+            font_cx: FontContext::new(),
+            fonts: FontTable::new(),
+            families: HashMap::new(),
             layout_cx: LayoutContext::new(),
             scale: ScaleContext::new(),
             glyphs: HashMap::new(),
@@ -130,6 +147,53 @@ impl Text {
         self.glyphs.clear();
         self.layouts.clear();
         self.atlas = self.atlas.renewed();
+    }
+
+    /// アプリが渡した書体のファイル（Options::fonts）を読み込み、名前で選べるようにする。読めたファミリーの数を返す
+    pub fn load_fonts(&mut self, files: &[Cow<'static, [u8]>]) -> usize {
+        let mut families = 0;
+        for data in files {
+            let blob = Blob::new(Arc::new(data.clone()));
+            families += self.font_cx.collection.register_fonts(blob, None).len();
+        }
+        if !files.is_empty() {
+            self.families.clear();
+            self.layouts.clear();
+            let bytes: usize = files.iter().map(|f| f.len()).sum();
+            log::event("font.load", &format!("files={} bytes={bytes}", files.len()), &format!("families={families}"));
+        }
+        families
+    }
+
+    /// 試験用: 書体から決めたファミリーの並び（parley は OS とアプリの書体を 1 つの一覧で探すので、2 つ目はいつも false）
+    #[cfg(test)]
+    pub fn resolved(&mut self, font: &Font) -> (String, bool) {
+        let id = self.fonts.id(font);
+        (self.family(id), false)
+    }
+
+    /// 書体の番号から、parley に渡すファミリーの並びを決める（決めた物は覚える）
+    fn family(&mut self, id: FontId) -> String {
+        if let Some(f) = self.families.get(&id.0) {
+            return f.clone();
+        }
+        let font = self.fonts.get(id).clone();
+        let found = match &font {
+            Font::Ui => FONTS.to_string(),
+            Font::Monospace => MONOSPACE.to_string(),
+            Font::Family(name) => {
+                if self.font_cx.collection.family_id(name).is_some() {
+                    // 無い文字は UI の書体で出す
+                    format!("\"{}\", {FONTS}", name.replace('"', ""))
+                } else {
+                    log::event("font.missing", &format!("family={name}"), "fallback=ui");
+                    FONTS.to_string()
+                }
+            }
+        };
+        log::event("font.resolve", &format!("font={font:?}"), &format!("family={found}"));
+        self.families.insert(id.0, found.clone());
+        found
     }
 
     /// 文字列を並べる。max_width を渡すとその幅で折り返す。結果は覚えておき、同じ物には同じ結果を返す
@@ -151,8 +215,9 @@ impl Text {
             return Laid { glyphs: Vec::new(), width: 0.0, height: probe.height, lines, text: String::new(), layout: None };
         }
         self.layouts_made += 1;
-        let mut b = self.layout_cx.ranged_builder(&mut self.fonts, s, 1.0, true);
-        b.push_default(StyleProperty::FontFamily(FontFamily::Source(FONTS.into())));
+        let family = self.family(style.font);
+        let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, s, 1.0, true);
+        b.push_default(StyleProperty::FontFamily(FontFamily::Source(family.into())));
         b.push_default(StyleProperty::FontSize(style.size));
         b.push_default(StyleProperty::Locale(Language::parse("ja-JP").ok()));
         if style.bold {

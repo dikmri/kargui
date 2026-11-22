@@ -594,6 +594,8 @@ struct State {
     icon_image: Option<crate::Image>,
     /// 中の大きさの下限（論理ピクセル）
     min_size: Option<(f32, f32)>,
+    /// アプリが渡した書体のファイル（Options::fonts。ほかの窓にも読み込む）
+    font_files: Rc<Vec<std::borrow::Cow<'static, [u8]>>>,
     rt: Runtime,
     surface: Option<Surface>,
     adapter: Option<Adapter>,
@@ -755,14 +757,15 @@ fn do_post(p: Post) {
 
 /// Ui::window で頼まれた窓を作って見せ、1 枚目を描く（描き方・明暗は主の窓と同じ）
 fn open_window(r: crate::ui::context::WindowRequest) {
-    let Some((app, renderer, dark, full_rate, started, main_icon)) =
-        with_state(|st| (st.app.clone(), st.renderer, st.rt.cx.dark, st.full_rate, st.started, st.icon_image.clone()))
-    else {
+    let Some((app, renderer, dark, full_rate, started, main_icon, font, font_files)) = with_state(|st| {
+        let font = st.rt.cx.text.fonts.get(st.rt.cx.font).clone();
+        (st.app.clone(), st.renderer, st.rt.cx.dark, st.full_rate, st.started, st.icon_image.clone(), font, st.font_files.clone())
+    }) else {
         return;
     };
     // アイコンが無ければ主の窓のアイコン
     let icon = r.icon.clone().or(main_icon);
-    match create_window(Some(r.key.clone()), &r.title, r.size, r.position, renderer, dark, full_rate, icon, r.min_size, app, started) {
+    match create_window(Some(r.key.clone()), &r.title, r.size, r.position, renderer, dark, full_rate, icon, r.min_size, font, font_files, app, started) {
         Ok(w) => {
             let hwnd = w.hwnd;
             with_windows(|ws| ws.push(w));
@@ -1611,6 +1614,8 @@ fn create_window(
     full_rate: bool,
     icon_image: Option<crate::Image>,
     min_size: Option<(f32, f32)>,
+    font: crate::Font,
+    font_files: Rc<Vec<std::borrow::Cow<'static, [u8]>>>,
     app: Rc<RefCell<Box<dyn App>>>,
     started: Instant,
 ) -> Result<State, crate::Error> {
@@ -1665,6 +1670,9 @@ fn create_window(
     });
     rt.resize(cw as f32, ch as f32, dpi as f32 / 96.0);
     rt.cx.reduce_motion = system_reduce_motion();
+    // 書体（アプリが書体のファイルを渡さず、UI の書体のままなら何も読まない）
+    rt.cx.text.load_fonts(&font_files);
+    rt.cx.font = rt.cx.text.fonts.id(&font);
     log::event("motion.setting", &format!("key={key:?}"), &format!("reduce={}", rt.cx.reduce_motion));
     let actions = Arc::new(Mutex::new(VecDeque::new()));
     let focused = unsafe { GetForegroundWindow() } == hwnd;
@@ -1679,6 +1687,7 @@ fn create_window(
         icon,
         icon_image,
         min_size,
+        font_files,
         rt,
         surface: Some(surface),
         adapter: Some(adapter),
@@ -1737,7 +1746,22 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     }
     let app = Rc::new(RefCell::new(app));
     let dark = options.dark.unwrap_or_else(system_dark);
-    let main = create_window(None, &options.title, options.size, options.position, options.renderer, dark, options.full_rate, options.icon.clone(), options.min_size, app, started)?;
+    let font_files = Rc::new(options.fonts.clone());
+    let main = create_window(
+        None,
+        &options.title,
+        options.size,
+        options.position,
+        options.renderer,
+        dark,
+        options.full_rate,
+        options.icon.clone(),
+        options.min_size,
+        options.font.clone(),
+        font_files,
+        app,
+        started,
+    )?;
     let hwnd = main.hwnd;
     STATE.with(|s| s.borrow_mut().push(main));
 

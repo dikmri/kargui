@@ -45,11 +45,13 @@ struct Notepad {
     ready: bool,
     /// --light・--dark で決めた明暗（None なら OS の設定に従う。写真を撮る時に使う）
     dark: Option<bool>,
+    /// 表示 > 等幅の書体（コードや表を書く時）
+    monospace: bool,
 }
 
 impl Notepad {
     fn new(started: Instant) -> Self {
-        Self { text: String::new(), path: None, dirty: false, asking: None, after_save: None, about: false, message: String::new(), started, ready: false, dark: None }
+        Self { text: String::new(), path: None, dirty: false, asking: None, after_save: None, about: false, message: String::new(), started, ready: false, dark: None, monospace: false }
     }
 
     fn name(&self) -> String {
@@ -160,6 +162,11 @@ impl App for Notepad {
                     cmd = Some(Cmd::Exit);
                 }
             });
+            bar.menu("表示", |m| {
+                if m.check(&mut self.monospace, "等幅の書体").clicked() {
+                    log::event("view.monospace", "", &format!("on={}", self.monospace));
+                }
+            });
             bar.menu("ヘルプ", |m| {
                 if m.item("このアプリについて").clicked() {
                     cmd = Some(Cmd::About);
@@ -186,7 +193,11 @@ impl App for Notepad {
         // 入力欄と状態の行をまとめた所に、エクスプローラーからファイルを落とせる（メニューバーの下のどこでも）
         let mut body = ui
             .column(|ui| {
-                if ui.text_area(&mut self.text).hint("ここに書きます").grow().changed() {
+                let mut area = ui.text_area(&mut self.text).hint("ここに書きます").grow();
+                if self.monospace {
+                    area = area.monospace();
+                }
+                if area.changed() {
                     self.dirty = true;
                 }
                 let (lines, chars) = (self.text.lines().count().max(1), self.text.chars().count());
@@ -383,6 +394,18 @@ mod tests {
         }
         h.click("終了");
         assert!(h.is_closed());
+    }
+
+    #[test]
+    fn the_view_menu_switches_the_text_to_a_monospace_font() {
+        let mut h = app();
+        h.click("表示").click("等幅の書体");
+        assert!(h.app().monospace);
+        // 等幅でも、書いて保存の確認まで今までどおり動く
+        h.click("ここに書きます").type_text("let x = 1;");
+        assert!(h.app().dirty);
+        h.click("表示").click("等幅の書体");
+        assert!(!h.app().monospace);
     }
 
     #[test]

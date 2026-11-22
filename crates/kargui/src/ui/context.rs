@@ -324,6 +324,8 @@ pub(crate) struct Context {
     pub anims: HashMap<Id, Anim>,
     /// 利用者が OS で動きを減らしている（Windows の「アニメーション効果」が切）。動きは目標へ飛ぶ
     pub reduce_motion: bool,
+    /// 窓の書体（Options::font と Ui::set_font。部品が書体を決めていない時に使う）
+    pub font: crate::text::FontId,
     /// フレームの番号（Runtime が数える。使われなくなった動きを捨てるのに使う）
     pub frame_no: u64,
     /// ポインターが乗っているスクロールの棒（一覧の id）
@@ -426,6 +428,7 @@ impl Context {
             wants_files: false,
             anims: HashMap::new(),
             reduce_motion: false,
+            font: crate::text::FontId(0),
             frame_no: 0,
             bar_hover: None,
             drag: None,
