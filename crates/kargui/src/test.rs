@@ -4685,6 +4685,19 @@ mod tests {
     }
 
     #[test]
+    fn a_value_seen_for_the_first_time_does_not_ask_for_frames() {
+        use std::time::Duration;
+        // 初めて呼んだ値は動かないので、フレームを頼まない（頼むと、切り替えのある画面が起動のたびに 167 ms 描き続ける）
+        let mut h = fader();
+        h.rt.cx.want_frame = false;
+        let v = h.rt.cx.animate(crate::ui::Id(42), 1.0, Duration::from_millis(250));
+        assert_eq!(v, 1.0);
+        assert!(!h.rt.cx.want_frame, "動かない値でフレームを頼んだ");
+        let now = h.rt.cx.now;
+        assert!(h.rt.cx.anims.values().all(|a| a.done(now)), "初めて現れた値は、もう止まっている");
+    }
+
+    #[test]
     fn turning_back_midway_starts_from_where_it_is() {
         use std::time::Duration;
         let mut h = fader();

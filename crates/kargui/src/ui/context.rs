@@ -555,7 +555,8 @@ impl Context {
             self.anims.insert(id, Anim { from: target, to: target, start: now, dur: Duration::ZERO, seen: frame });
             return target;
         }
-        let a = self.anims.entry(id).or_insert(Anim { from: target, to: target, start: now, dur, seen: frame });
+        // 初めて呼んだ値は、止まった形で覚える（動かないのにフレームを頼まない）
+        let a = self.anims.entry(id).or_insert(Anim { from: target, to: target, start: now, dur: Duration::ZERO, seen: frame });
         if a.to != target {
             let at = a.value(now);
             *a = Anim { from: at, to: target, start: now, dur, seen: frame };
