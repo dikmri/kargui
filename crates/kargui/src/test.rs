@@ -1436,7 +1436,7 @@ impl<A: App> Harness<A> {
     }
 
     /// 最後のフレームで文字の形を描いた四角（x, y, 幅, 高さ。画素）。
-    /// xtask の写真の比べが、OS の書体の版による文字の形の違いだけを見分けるのに使う
+    /// xtask の写真の比べが、PC ごとに入っている書体の違いによる文字の形の違いだけを見分けるのに使う
     #[doc(hidden)]
     pub fn glyph_boxes(&mut self) -> Vec<[i32; 4]> {
         let rt = self.cur();
