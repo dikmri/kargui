@@ -246,6 +246,8 @@ pub(crate) enum Event {
     PointerUp { x: f32, y: f32 },
     /// 押したまま動かした（スクロールの棒をつかんでいる間と、部品を押している間だけ届く）
     PointerMove { x: f32, y: f32 },
+    /// 押している途中で、マウスのつかみが外れた（別の窓へ移った）。離した知らせは来ない
+    PointerCancel,
     /// dy は論理ピクセル（下へ回すと正）
     Wheel { x: f32, y: f32, dy: f32 },
     Key { key: Key, mods: Mods },

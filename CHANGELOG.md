@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Drag and drop inside the window: `.drag_source(payload)` on any widget lets the pointer carry
+  `payload` (any `'static` type; it is taken once, so it need not be `Clone`), and
+  `.dropped::<T>()` on a widget returns it when it is released there. A drag starts after the
+  pointer moves 4 pixels (shorter moves stay clicks), a box with the widget's name follows the
+  pointer, the widget that takes the payload is outlined, other places show the "not allowed"
+  pointer, and Escape or losing the mouse capture cancels. Nested targets: the innermost one that
+  takes the type wins, which makes reordering easy. Widgets that drag by themselves (text fields,
+  sliders, dividers, drawing surfaces) and disabled widgets do not start a drag. Tests:
+  `Harness::drag_to`, `Harness::drag_over` and `Harness::release`. Guide page 18 and the example
+  `examples/board` (cards moved between columns, with a "Move" menu for people who cannot drag).
+- Layout (behaviour change): `Size::Fill` now shares the remaining length by weight whatever the
+  children's content, like WinUI's star sizing and CSS `flex: 1`, and never makes a child shorter
+  than its content. Before, each `Fill` child got its content length plus a share, so children with
+  equal weights could get different lengths. A single `Fill` (a text field next to a button) lays
+  out as before.
+
 ## 0.2.0 (2026-11-22)
 
 Everyday desktop apps can now be written with kargui alone: menus, tabs, number inputs, toolbars,

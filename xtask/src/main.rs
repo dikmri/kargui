@@ -472,6 +472,35 @@ fn shots() -> Vec<Shot> {
             setup: no_setup,
         },
         Shot {
+            name: "drag_and_drop",
+            size: (440.0, 200.0),
+            view: |ui| {
+                ui.row(|ui| {
+                    for (title, cards) in [("To do", &["Write the guide", "Take the pictures"][..]), ("Done", &["Release 0.2.0"][..])] {
+                        let mut column = ui
+                            .card(|ui| {
+                                ui.heading(title);
+                                for (k, card) in cards.iter().enumerate() {
+                                    ui.card(|ui| {
+                                        ui.label(*card);
+                                    })
+                                    .drag_source(k);
+                                }
+                            })
+                            .width(kargui::Size::Fill(1.0))
+                            .height(kargui::Size::Fill(1.0));
+                        let _ = column.dropped::<usize>();
+                    }
+                })
+                .gap(12.0)
+                .grow();
+            },
+            // 引っ張ったまま止める: 受け取る列の強調と、ポインターについて動く箱を写す
+            setup: |h| {
+                h.drag_over("Take the pictures", "Release 0.2.0");
+            },
+        },
+        Shot {
             name: "tree",
             size: (320.0, 240.0),
             view: |ui| {

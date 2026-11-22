@@ -87,6 +87,8 @@ pub struct Harness<A: App> {
     file_dialog: Option<(String, crate::FileDialog)>,
     /// アプリが閉じた（閉じるのを認めた、か Ui::quit）
     closed: bool,
+    /// 押したままのポインターの位置（Harness::drag_over の後。Harness::release で離す）
+    pointer_held: Option<(f32, f32)>,
 }
 
 impl<A: App> Harness<A> {
@@ -157,7 +159,7 @@ impl<A: App> Harness<A> {
         rt.cx.frozen = Some(std::time::Duration::ZERO);
         // 今日も止める（暦の「今日」の印が日によって変わらないように）
         rt.cx.today = crate::date::Date::new(2026, 11, 22);
-        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false };
+        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None };
         h.frame();
         h
     }
@@ -587,6 +589,104 @@ impl<A: App> Harness<A> {
         let (x, y) = self.center(name);
         let (x2, y2) = (x + dx, y + dy);
         self.send(vec![Event::PointerDown { x, y, shift: false }, Event::PointerMove { x: x2, y: y2 }, Event::PointerUp { x: x2, y: y2 }])
+    }
+
+    /// Drags the widget named `name` onto the widget named `target` (drag and drop, see
+    /// [`Handle::drag_source`](crate::ui::Handle::drag_source)): presses it, moves the pointer in a
+    /// few steps, one frame each, and releases it over the middle of `target`.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Shelf {
+    ///     books: Vec<&'static str>,
+    ///     read: Vec<&'static str>,
+    /// }
+    ///
+    /// impl App for Shelf {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         for (k, book) in self.books.iter().enumerate() {
+    ///             ui.label(*book).drag_source(k);
+    ///         }
+    ///         let mut read = ui.column(|ui| {
+    ///             ui.heading("Read");
+    ///         });
+    ///         if let Some(k) = read.dropped::<usize>() {
+    ///             let book = self.books.remove(k);
+    ///             self.read.push(book);
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Shelf { books: vec!["Dune", "Emma"], read: vec![] });
+    /// h.drag_to("Emma", "Read");
+    /// assert_eq!(h.app().read, ["Emma"]);
+    /// ```
+    pub fn drag_to(&mut self, name: &str, target: &str) -> &mut Self {
+        self.drag_over(name, target).release()
+    }
+
+    /// Like [`Harness::drag_to`], but keeps the pointer button pressed over the middle of `target`:
+    /// to look at what is drawn while dragging (the highlighted target, the box that follows the
+    /// pointer). Finish with [`Harness::release`] (drops there) or Escape (cancels).
+    ///
+    /// ```
+    /// # use kargui::{App, Key, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Bin {
+    ///     emptied: u32,
+    /// }
+    ///
+    /// impl App for Bin {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.button("Old file").drag_source(());
+    ///         let mut bin = ui.column(|ui| {
+    ///             ui.heading("Bin");
+    ///         });
+    ///         if bin.dropped::<()>().is_some() {
+    ///             self.emptied += 1;
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Bin { emptied: 0 });
+    /// h.drag_over("Old file", "Bin").press(Key::Escape).release();
+    /// assert_eq!(h.app().emptied, 0, "Escape cancelled the drag");
+    /// h.drag_over("Old file", "Bin").release();
+    /// assert_eq!(h.app().emptied, 1);
+    /// ```
+    pub fn drag_over(&mut self, name: &str, target: &str) -> &mut Self {
+        let (x, y) = self.center(name);
+        let (x2, y2) = self.center(target);
+        self.send(vec![Event::PointerDown { x, y, shift: false }]);
+        for k in 1..=4 {
+            let f = k as f32 / 4.0;
+            self.send(vec![Event::PointerMove { x: x + (x2 - x) * f, y: y + (y2 - y) * f }]);
+        }
+        self.pointer_held = Some((x2, y2));
+        self
+    }
+
+    /// Releases the pointer button where [`Harness::drag_over`] left it. Does nothing if the button
+    /// is not held.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// # struct Empty;
+    /// # impl App for Empty {
+    /// #     fn view(&mut self, ui: &mut Ui) {
+    /// #         ui.label("Nothing to drag");
+    /// #     }
+    /// # }
+    /// let mut h = Harness::new(Empty);
+    /// h.release();
+    /// ```
+    pub fn release(&mut self) -> &mut Self {
+        match self.pointer_held.take() {
+            Some((x, y)) => self.send(vec![Event::PointerUp { x, y }]),
+            None => self,
+        }
     }
 
     /// Moves the test to the window opened with [`Ui::window`](crate::Ui::window) under `key`:
@@ -4235,5 +4335,134 @@ mod tests {
         assert_eq!((h.app().from_menu, h.app().from_button), (1, 0), "メニューが開いている間はメニューの項目");
         h.click("Delete");
         assert_eq!((h.app().from_menu, h.app().from_button), (1, 1), "閉じていればボタン");
+    }
+
+    /// ドラッグ＆ドロップの見本: 2 つの列の間でカードを移す。「Bin」は別の型の荷物（Tool）だけを受け取る
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct CardAt(usize, usize);
+    struct Tool;
+
+    struct Board {
+        cols: [Vec<&'static str>; 2],
+        taps: u32,
+        binned: u32,
+    }
+
+    impl App for Board {
+        fn view(&mut self, ui: &mut Ui) {
+            let mut moved = None;
+            ui.row(|ui| {
+                for c in 0..2 {
+                    let mut col = ui
+                        .column(|ui| {
+                            ui.heading(if c == 0 { "To do" } else { "Done" });
+                            for (k, name) in self.cols[c].iter().enumerate() {
+                                ui.label(*name).drag_source(CardAt(c, k));
+                            }
+                        })
+                        .width(Size::Fixed(160.0))
+                        .height(Size::Fixed(200.0));
+                    if let Some(card) = col.dropped::<CardAt>() {
+                        moved = Some((card, c));
+                    }
+                }
+                let mut bin = ui
+                    .column(|ui| {
+                        ui.label("Bin");
+                    })
+                    .width(Size::Fixed(100.0))
+                    .height(Size::Fixed(200.0));
+                if bin.dropped::<Tool>().is_some() {
+                    self.binned += 1;
+                }
+                ui.row(|ui| {
+                    if ui.button("Tap").clicked() {
+                        self.taps += 1;
+                    }
+                })
+                .drag_source(Tool);
+            });
+            if let Some((CardAt(from, k), to)) = moved {
+                let card = self.cols[from].remove(k);
+                self.cols[to].push(card);
+            }
+        }
+    }
+
+    fn board() -> Harness<Board> {
+        Harness::with_size(Board { cols: [vec!["Write", "Read"], vec![]], taps: 0, binned: 0 }, 640.0, 300.0, 1.0)
+    }
+
+    fn mid(h: &Harness<Board>, name: &str) -> (f32, f32) {
+        let r = h.find(name).unwrap_or_else(|| panic!("{name}"));
+        (r.x + r.w / 2.0, r.y + r.h / 2.0)
+    }
+
+    #[test]
+    fn dragging_a_card_to_another_column_drops_it_there() {
+        let mut h = board();
+        h.drag_to("Write", "Done");
+        assert_eq!(h.app().cols, [vec!["Read"], vec!["Write"]]);
+        assert!(h.cur().cx.dnd.is_none() && h.cur().cx.drop.is_none(), "終わったら何も残らない");
+    }
+
+    #[test]
+    fn a_drag_that_arrives_in_one_go_still_drops() {
+        // 押す・動かす・離すが 1 回に届いても（素早く動かした時）、荷物は離した後のビューで受け取る
+        let mut h = board();
+        let ((x, y), (x2, y2)) = (mid(&h, "Read"), mid(&h, "Done"));
+        h.drag("Read", x2 - x, y2 - y);
+        assert_eq!(h.app().cols, [vec!["Write"], vec!["Read"]]);
+    }
+
+    #[test]
+    fn escape_and_releasing_outside_any_target_cancel() {
+        let mut h = board();
+        let ((x, y), (x2, y2)) = (mid(&h, "Write"), mid(&h, "Done"));
+        h.send(vec![Event::PointerDown { x, y, shift: false }]);
+        h.send(vec![Event::PointerMove { x: x2, y: y2 }]);
+        assert!(h.cur().cx.dnd.is_some(), "4 ピクセルより動いたら引っ張り始める");
+        h.press(Key::Escape);
+        assert!(h.cur().cx.dnd.is_none(), "Esc で取り消す");
+        h.send(vec![Event::PointerUp { x: x2, y: y2 }]);
+        assert_eq!(h.app().cols[1], Vec::<&str>::new(), "取り消した後に離しても落とさない");
+        // 受け取れる所の外（窓の下の端）で離す
+        h.drag("Write", 0.0, 290.0 - y);
+        assert_eq!(h.app().cols, [vec!["Write", "Read"], vec![]]);
+    }
+
+    #[test]
+    fn a_target_takes_only_its_own_kind_of_payload() {
+        let mut h = board();
+        h.drag_to("Write", "Bin");
+        assert_eq!((h.app().cols[0].len(), h.app().binned), (2, 0), "カードは Bin に落とせない");
+        h.drag_to("Tap", "Bin");
+        assert_eq!(h.app().binned, 1);
+        assert_eq!(h.app().taps, 0, "引っ張ったボタンは押したことにならない");
+    }
+
+    #[test]
+    fn a_short_move_is_still_a_click() {
+        let mut h = board();
+        h.drag("Tap", 3.0, 0.0);
+        assert_eq!(h.app().taps, 1, "4 ピクセル未満はクリック");
+        assert!(h.cur().cx.dnd.is_none());
+    }
+
+    #[test]
+    fn the_target_under_the_pointer_is_known_while_dragging() {
+        let mut h = board();
+        let ((x, y), (x2, y2), (bx, by)) = (mid(&h, "Write"), mid(&h, "Done"), mid(&h, "Bin"));
+        h.send(vec![Event::PointerDown { x, y, shift: false }]);
+        h.send(vec![Event::PointerMove { x: x + 10.0, y }]);
+        h.send(vec![Event::PointerMove { x: x2, y: y2 }]);
+        let over = h.cur().cx.dnd.as_ref().and_then(|d| d.over);
+        assert!(over.is_some(), "Done の列の上");
+        assert_eq!(h.cur().cx.drag_cursor(x2, y2), Some(true), "受け取れる所の上はふつうの矢印");
+        h.send(vec![Event::PointerMove { x: bx, y: by }]);
+        assert_eq!(h.cur().cx.dnd.as_ref().and_then(|d| d.over), None, "Bin はカードを受け取らない");
+        assert_eq!(h.cur().cx.drag_cursor(bx, by), Some(false), "受け取れない所は禁止の形");
+        h.send(vec![Event::PointerUp { x: bx, y: by }]);
+        assert_eq!(h.cur().cx.drag_cursor(bx, by), None);
     }
 }

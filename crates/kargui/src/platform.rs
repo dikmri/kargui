@@ -395,6 +395,13 @@ fn hi(v: isize) -> i32 {
     ((v >> 16) & 0xffff) as i16 as i32
 }
 
+/// ポインターの形を OS の決まった形にする（IDC_ARROW・IDC_NO など）
+fn set_cursor(shape: windows::core::PCWSTR) {
+    if let Ok(c) = unsafe { LoadCursorW(None, shape) } {
+        unsafe { SetCursor(Some(c)) };
+    }
+}
+
 struct State {
     hwnd: HWND,
     /// Ui::window のキー（主の窓は None）
@@ -1010,11 +1017,21 @@ impl State {
                         TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
                     self.tracking_leave = unsafe { TrackMouseEvent(&mut t) }.is_ok();
                 }
-                if self.rt.cx.drag.is_some() || self.rt.cx.pressed.is_some() {
-                    // つまみをつかんでいる間と部品を押している間は、移動を部品へ渡す。左のボタンが離れていたら
-                    // （捕まえを失って WM_LBUTTONUP が届かなかった）、押すのを終える
+                let cx = &self.rt.cx;
+                if cx.drag.is_some() || cx.pressed.is_some() || cx.press_source.is_some() || cx.dnd.is_some() {
+                    // つまみをつかんでいる間・部品を押している間・引っ張り出せる部品を押している間と引っ張っている間は、
+                    // 移動を渡す。左のボタンが離れていたら（捕まえを失って WM_LBUTTONUP が届かなかった）、押すのを終える。
+                    // 引っ張っている途中なら、そこへは落とさずに取り消す
                     if wp.0 & MK_LBUTTON != 0 {
                         self.push(Event::PointerMove { x, y });
+                        // つかんでいる間は WM_SETCURSOR が来ないので、ここで形を決める（受け取れない所は禁止の形）
+                        if let Some(ok) = self.rt.cx.drag_cursor(x, y) {
+                            set_cursor(if ok { IDC_ARROW } else { IDC_NO });
+                        }
+                    } else if self.rt.cx.dnd.is_some() || self.rt.cx.press_source.is_some() {
+                        log::event("drag.lost", &format!("x={x} y={y}"), "cancel");
+                        self.push(Event::PointerCancel);
+                        set_cursor(IDC_ARROW);
                     } else {
                         let what = if self.rt.cx.drag.is_some() { "scrollbar.lost" } else { "pointer.lost" };
                         log::event(what, &format!("x={x} y={y}"), "released");
@@ -1082,6 +1099,10 @@ impl State {
             WM_LBUTTONUP => {
                 let (x, y) = (lo(lp.0) as f32, hi(lp.0) as f32);
                 self.post.push(Post::Capture(self.hwnd, false));
+                // 引っ張りの禁止の形を戻す（離した後、ポインターを動かすまで WM_SETCURSOR が来ない）
+                if self.rt.cx.dnd.is_some() {
+                    set_cursor(IDC_ARROW);
+                }
                 self.push(Event::PointerUp { x, y });
                 Some(LRESULT(0))
             }

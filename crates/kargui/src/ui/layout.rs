@@ -186,19 +186,40 @@ fn grid_tracks(columns: &[Size], sizes: &[(f32, f32)]) -> (Vec<f32>, Vec<f32>) {
     (cw, rh)
 }
 
-/// 主軸の長さを子に分ける。Fixed と Auto はそのまま、Fill は残りを重みで分ける
+/// 主軸の長さを子に分ける。Fixed と Auto はそのまま。Fill は残りを重みで分ける（WinUI の * と CSS の flex: 1 と同じく、
+/// 同じ重みなら中身に関わらず同じ長さ）が、中身より短くはしない: 取り分が中身より短い子は中身の長さで止め、残りをほかの
+/// Fill で分け直す。全部が入りきらない時は、どれも中身の長さ（はみ出す）
 fn distribute(sizes: &[Size], measured: &[f32], avail: f32) -> Vec<f32> {
-    let basis: Vec<f32> = sizes.iter().zip(measured).map(|(s, &m)| fixed_or(*s, m)).collect();
-    let weights: f32 = sizes.iter().map(|s| if let Size::Fill(w) = s { w.max(0.0) } else { 0.0 }).sum();
-    let free = avail - basis.iter().sum::<f32>();
-    sizes
-        .iter()
-        .zip(basis)
-        .map(|(s, b)| match s {
-            Size::Fill(w) if weights > 0.0 && free > 0.0 => b + free * w.max(0.0) / weights,
-            _ => b,
-        })
-        .collect()
+    let weight = |s: &Size| if let Size::Fill(w) = s { w.max(0.0) } else { 0.0 };
+    let mut out: Vec<f32> = sizes.iter().zip(measured).map(|(s, &m)| if weight(s) > 0.0 { 0.0 } else { fixed_or(*s, m) }).collect();
+    // 長さが決まった子（Fixed・Auto・重み 0 の Fill と、中身で止めた Fill）
+    let mut done: Vec<bool> = sizes.iter().map(|s| weight(s) <= 0.0).collect();
+    loop {
+        let used: f32 = out.iter().zip(&done).filter(|&(_, &d)| d).map(|(&l, _)| l).sum();
+        let weights: f32 = sizes.iter().zip(&done).filter(|&(_, &d)| !d).map(|(s, _)| weight(s)).sum();
+        if weights <= 0.0 {
+            break;
+        }
+        let free = (avail - used).max(0.0);
+        let mut stopped = false;
+        for k in 0..sizes.len() {
+            if done[k] {
+                continue;
+            }
+            let share = free * weight(&sizes[k]) / weights;
+            if share < measured[k] {
+                out[k] = measured[k];
+                done[k] = true;
+                stopped = true;
+            } else {
+                out[k] = share;
+            }
+        }
+        if !stopped {
+            break;
+        }
+    }
+    out
 }
 
 fn cross(size: Size, measured: f32, avail: f32, align: Align) -> (f32, f32) {
@@ -436,6 +457,33 @@ mod tests {
         assert_eq!(nodes[1].rect.w, 100.0);
         assert_eq!(nodes[2].rect.w, 300.0);
         assert_eq!(nodes[3].rect, Rect::new(400.0, 0.0, 100.0, 10.0));
+    }
+
+    #[test]
+    fn equal_fills_get_equal_lengths_whatever_their_content() {
+        // 中身の幅が違う 3 つの Fill(1.0)（カードの板の列: 1 列目だけ入力欄で中身が広い）。WinUI の * と CSS の flex: 1 と同じく、
+        // 同じ重みなら同じ幅にする
+        let mut nodes = vec![LayoutNode::new(Dir::Row), leaf(250.0, 10.0), leaf(80.0, 10.0), leaf(80.0, 10.0)];
+        nodes[0].children = vec![1, 2, 3];
+        for k in 1..=3 {
+            nodes[k].width = Size::Fill(1.0);
+        }
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 900.0, 10.0));
+        assert_eq!([nodes[1].rect.w, nodes[2].rect.w, nodes[3].rect.w], [300.0, 300.0, 300.0]);
+    }
+
+    #[test]
+    fn a_fill_never_gets_shorter_than_its_content_and_the_others_share_the_rest() {
+        let mut nodes = vec![LayoutNode::new(Dir::Row), leaf(500.0, 10.0), leaf(80.0, 10.0), leaf(0.0, 10.0)];
+        nodes[0].children = vec![1, 2, 3];
+        for k in 1..=3 {
+            nodes[k].width = Size::Fill(1.0);
+        }
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 900.0, 10.0));
+        assert_eq!([nodes[1].rect.w, nodes[2].rect.w, nodes[3].rect.w], [500.0, 200.0, 200.0], "取り分 300 より広い中身は中身の幅");
+        // 全部が入りきらない時は、どれも中身の幅（前と同じくはみ出す）
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 400.0, 10.0));
+        assert_eq!([nodes[1].rect.w, nodes[2].rect.w, nodes[3].rect.w], [500.0, 80.0, 0.0]);
     }
 
     #[test]

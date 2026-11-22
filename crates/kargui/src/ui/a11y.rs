@@ -30,6 +30,11 @@ pub(crate) fn name_of(tree: &Tree, i: usize) -> Option<String> {
     }
 }
 
+/// 引っ張っている物の影に書く文字: 読み上げの名前（無ければ中の文字をつないだ物）
+pub(crate) fn drag_text(tree: &Tree, i: usize) -> String {
+    name_of(tree, i).filter(|s| !s.is_empty()).unwrap_or_else(|| row_name(tree, i))
+}
+
 /// 行の中の文字をつないだ名前（一覧の行の読み上げに使う）
 fn row_name(tree: &Tree, i: usize) -> String {
     let mut parts = Vec::new();

@@ -1100,6 +1100,57 @@ if let Some(k) = remove {
 }
 ```
 
+### `pub fn drag_source<T: Any>(self, payload: T) -> Self`
+
+Lets the pointer drag this widget and carry `payload`. Pressing the widget and moving the
+pointer more than 4 logical pixels picks it up (a shorter move is still a click); a box with
+the widget's name follows the pointer, and a widget that takes the same type with
+[`Handle::dropped`] receives `payload` when it is released over it. Escape cancels. A drag
+does not start on widgets that use dragging themselves (text fields, sliders, dividers,
+drawing surfaces), nor on disabled ones.
+
+Dragging is hard or impossible for some people, and screen readers cannot do it: offer the
+same action another way as well, for example "Move to Done" in a context menu.
+
+```
+#[derive(Clone, Copy)]
+struct Card(usize);
+
+ui.column(|ui| {
+    for (k, name) in todo.iter().enumerate() {
+        ui.label(name).drag_source(Card(k));
+    }
+});
+let mut done_column = ui.column(|ui| {
+    ui.heading("Done");
+    for name in &done {
+        ui.label(name);
+    }
+});
+if let Some(Card(k)) = done_column.dropped::<Card>() {
+    done.push(todo.remove(k));
+}
+```
+
+### `pub fn dropped<T: Any>(&mut self) -> Option<T>`
+
+Takes payloads of type `T` dragged from a [`Handle::drag_source`]. While one is over this
+widget, the widget is highlighted (other types show the "not allowed" pointer); when it is
+released here, this returns it, once. If drop targets are nested, the innermost one that
+takes the type gets it. Call it in every frame, like [`Button::clicked`].
+
+```
+struct Trash;
+
+ui.button("Old file").drag_source(Trash);
+let mut bin = ui.column(|ui| {
+    ui.label("Drop here to delete");
+});
+if bin.dropped::<Trash>().is_some() {
+    emptied += 1;
+}
+```
+
 ### `pub fn scroll_into_view(self) -> Self`
 
 Scrolls the nearest [`Ui::scroll`] container that holds this widget so that the widget is at
@@ -1129,6 +1180,23 @@ Adds a menu that opens on a right-click. See [`Handle::context_menu`].
 ui.label("report.pdf").context_menu(|m| {
     m.item("Open");
 });
+```
+
+### `pub fn drag_source<T: Any>(self, payload: T) -> Self`
+
+Lets the pointer drag this label. See [`Handle::drag_source`].
+
+```
+ui.label("report.pdf").drag_source(std::path::PathBuf::from("report.pdf"));
+```
+
+### `pub fn dropped<T: Any>(&mut self) -> Option<T>`
+
+Takes payloads of type `T` dropped on this label. See [`Handle::dropped`].
+
+```
+let dropped = ui.label("Archive").dropped::<std::path::PathBuf>();
+assert!(dropped.is_none());
 ```
 
 ## Buttons (`Button`)

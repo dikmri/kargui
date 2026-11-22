@@ -328,6 +328,7 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     for o in &tree.overlays {
         p.overlay(tree, o);
     }
+    p.drag_ghost();
     p.d.finish();
     let prev = std::mem::take(&mut p.prev);
     cx.prev = prev;
@@ -399,7 +400,10 @@ impl Painter<'_> {
             )
             || (enabled && focusable && self.toolbar);
         let vertical = matches!(tree.info[i].kind, Kind::TextArea { .. } | Kind::NumberInput { .. });
-        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, vertical, enabled });
+        // 引っ張りを自分で使う部品（この上からはドラッグ＆ドロップを始めない）
+        let drags = text_input
+            || matches!(tree.info[i].kind, Kind::Slider { .. } | Kind::Splitter { .. } | Kind::Canvas { .. } | Kind::ColumnGrip | Kind::TextArea { .. } | Kind::NumberInput { .. });
+        self.prev.hits.push(Hit { id, rect: r, slop, focusable, text_input, arrows, vertical, enabled, drags });
         // メニューバー・タブ・ツールバーは、まとまりの中の 1 つにだけ Tab で止まる
         if focusable && !tree.info[i].skip_tab && !matches!(tree.info[i].kind, Kind::MenuBarItem { tab_stop: false, .. }) {
             self.prev.focus_order.push(id);
@@ -497,7 +501,64 @@ impl Painter<'_> {
         }
     }
 
+    /// 部品を描く。引っ張っている荷物を受け取れる部品の上にポインターがあれば、中身の上に強調を重ねる
     fn node(&mut self, tree: &Tree, i: usize) {
+        let r = tree.layout[i].rect;
+        let id = tree.info[i].id;
+        // 引っ張り出せる部品と落とせる部品は、見えている範囲と、ここまでの当たりの数を覚える（後から上に描いた物に
+        // 隠れているかを見るため）
+        let (source, target) = (tree.info[i].drag_source, tree.info[i].drop_type);
+        if source || target.is_some() {
+            if let Some(c) = intersect(r, self.clip) {
+                let order = self.prev.hits.len();
+                if source {
+                    self.prev.drag_sources.push((id, c, super::a11y::drag_text(tree, i), order));
+                }
+                if let Some(t) = target {
+                    self.prev.drop_targets.push((id, c, t, order));
+                }
+            }
+        }
+        self.node_body(tree, i);
+        if self.cx.dnd.as_ref().is_some_and(|d| d.over == Some(id)) {
+            if let Some(c) = intersect(r, self.clip) {
+                self.drop_highlight(c);
+            }
+        }
+    }
+
+    /// 荷物を受け取れる部品の強調: 薄い主の色で塗り、主の色の枠を内側に 2 本分
+    fn drop_highlight(&mut self, r: Rect) {
+        let a = self.cx.theme.accent;
+        let w = 2.0 * self.line();
+        self.d.fill(r, [a[0], a[1], a[2], 0.10], self.px(4.0));
+        for e in [Rect::new(r.x, r.y, r.w, w), Rect::new(r.x, r.bottom() - w, r.w, w), Rect::new(r.x, r.y, w, r.h), Rect::new(r.right() - w, r.y, w, r.h)] {
+            self.d.fill(e, a, 0.0);
+        }
+    }
+
+    /// 引っ張っている物の影: 元の部品の大きさ（大きすぎれば縮める）の箱に名前を書き、つかんだ所がポインターの下に来るように
+    /// 描く。重ねて出した物よりも上
+    fn drag_ghost(&mut self) {
+        let Some(d) = self.cx.dnd.as_ref() else { return };
+        let (w, h) = (d.rect.w.min(self.px(360.0)), d.rect.h.min(self.px(120.0)));
+        let (gx, gy) = (d.grab.0.min(w), d.grab.1.min(h));
+        let r = Rect::new((d.at.0 - gx).round(), (d.at.1 - gy).round(), w, h);
+        let text = d.text.clone();
+        let t = self.cx.theme.clone();
+        let (radius, sh) = (self.px(4.0), self.px(3.0));
+        self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.12], radius + sh);
+        self.d.fill(r, t.accent, radius);
+        let line = self.line();
+        let bg = t.background;
+        self.d.fill(r.inset(line), [bg[0], bg[1], bg[2], 0.94], (radius - line).max(0.0));
+        self.d.push_clip(IRect::covering(r), None);
+        let st = style(self.cx, TextKind::Body, false);
+        text_mid(self.d, self.cx, &text, st, r.x + self.px(8.0), r, t.text);
+        self.d.pop_clip();
+    }
+
+    fn node_body(&mut self, tree: &Tree, i: usize) {
         let r = tree.layout[i].rect;
         let id = tree.info[i].id;
         let line = self.line();
@@ -551,7 +612,7 @@ impl Painter<'_> {
                     self.prev.rows.insert(id, (list, row));
                 }
                 if let Some(v) = intersect(r, self.clip) {
-                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled });
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled, drags: false });
                 }
                 if !enabled {
                     self.prev.disabled.insert(id);
@@ -639,7 +700,7 @@ impl Painter<'_> {
                 // Tab が止まるのはグループの中の 1 つだけ（矢印で移る）
                 let enabled = !off;
                 if let Some(v) = intersect(r, self.clip) {
-                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled });
+                    self.prev.hits.push(Hit { id, rect: v, slop: v, focusable: enabled, text_input: false, arrows: enabled, vertical: false, enabled, drags: false });
                 }
                 if !enabled {
                     self.prev.disabled.insert(id);
@@ -1218,7 +1279,7 @@ impl Painter<'_> {
         let window = Rect::new(0.0, 0.0, self.cx.width, self.cx.height);
         let start = self.prev.focus_order.len();
         let block = |p: &mut Self, rect: Rect| {
-            p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, vertical: false, enabled: false })
+            p.prev.hits.push(Hit { id: o.id, rect, slop: rect, focusable: false, text_input: false, arrows: false, vertical: false, enabled: false, drags: false })
         };
         let radius = self.px(if o.kind == OverlayKind::Tooltip { 4.0 } else { 8.0 });
         if o.kind == OverlayKind::Dialog {

@@ -51,6 +51,7 @@ pub(crate) mod draw;
 pub(crate) mod edit;
 pub(crate) mod layout;
 
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ops::RangeInclusive;
@@ -318,6 +319,10 @@ pub(crate) struct NodeInfo {
     pub context_menu: bool,
     /// Tab で止まらない（焦点は持てる。タブとツールバーは、まとまりの中の 1 つだけが Tab で止まる）
     pub skip_tab: bool,
+    /// 引っ張り出せる（Handle::drag_source）。描く時にその範囲を覚える
+    pub drag_source: bool,
+    /// 落とせる。受け取る荷物の型（Handle::dropped）
+    pub drop_type: Option<std::any::TypeId>,
 }
 
 /// ビュー 1 回分の画面の木。info と layout は同じ番号で並ぶ。親は子より前に入る
@@ -342,7 +347,7 @@ impl Tree {
         layout.pad = ((16.0 * scale).round(), (12.0 * scale).round());
         layout.gap = (10.0 * scale).round();
         Self {
-            info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false, description: None, context_menu: false, skip_tab: false }],
+            info: vec![NodeInfo { id: root, kind: Kind::Root, label: None, disabled: false, description: None, context_menu: false, skip_tab: false, drag_source: false, drop_type: None }],
             layout: vec![layout],
             overlays: Vec::new(),
             occurrences: HashMap::new(),
@@ -404,7 +409,7 @@ impl<'a> Ui<'a> {
     /// 重ねて出す物の入れ物を作る（親には付けず、Tree::overlays に入れる）
     fn push_overlay(&mut self, id: Id, kind: OverlayKind, title: String, anchor: Option<Id>) -> usize {
         let idx = self.tree.info.len();
-        self.tree.info.push(NodeInfo { id, kind: Kind::Overlay { kind, title }, label: None, disabled: self.disabled, description: None, context_menu: false, skip_tab: false });
+        self.tree.info.push(NodeInfo { id, kind: Kind::Overlay { kind, title }, label: None, disabled: self.disabled, description: None, context_menu: false, skip_tab: false, drag_source: false, drop_type: None });
         self.tree.layout.push(LayoutNode::new(Dir::Column));
         self.tree.overlays.push(Overlay { idx, id, anchor, kind, place: Place::Below });
         idx
@@ -412,7 +417,7 @@ impl<'a> Ui<'a> {
 
     fn push(&mut self, id: Id, kind: Kind, dir: Dir) -> (usize, Id) {
         let idx = self.tree.info.len();
-        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled, description: None, context_menu: false, skip_tab: false });
+        self.tree.info.push(NodeInfo { id, kind, label: None, disabled: self.disabled, description: None, context_menu: false, skip_tab: false, drag_source: false, drop_type: None });
         self.tree.layout.push(LayoutNode::new(dir));
         self.tree.layout[self.parent].children.push(idx);
         (idx, id)
@@ -3091,12 +3096,12 @@ impl Handle<'_> {
                 let ov = Id(hash_of((id.0, "tooltip")));
                 let idx = self.tree.info.len();
                 let kind = Kind::Overlay { kind: OverlayKind::Tooltip, title: String::new() };
-                self.tree.info.push(NodeInfo { id: ov, kind, label: None, disabled: false, description: None, context_menu: false, skip_tab: false });
+                self.tree.info.push(NodeInfo { id: ov, kind, label: None, disabled: false, description: None, context_menu: false, skip_tab: false, drag_source: false, drop_type: None });
                 let mut l = LayoutNode::new(Dir::Column);
                 l.pad = ((8.0 * scale).round(), (5.0 * scale).round());
                 self.tree.layout.push(l);
                 let label = Kind::Label { text, size: TextKind::Small, bold: false, weak: false, strike: false, wrap: false, right: false };
-                self.tree.info.push(NodeInfo { id: Id(hash_of((id.0, "tooltip-text"))), kind: label, label: None, disabled: false, description: None, context_menu: false, skip_tab: false });
+                self.tree.info.push(NodeInfo { id: Id(hash_of((id.0, "tooltip-text"))), kind: label, label: None, disabled: false, description: None, context_menu: false, skip_tab: false, drag_source: false, drop_type: None });
                 self.tree.layout.push(LayoutNode::new(Dir::Leaf));
                 self.tree.layout[idx].children.push(idx + 1);
                 self.tree.overlays.push(Overlay { idx, id: ov, anchor: Some(id), kind: OverlayKind::Tooltip, place: Place::Below });
@@ -3156,6 +3161,93 @@ impl Handle<'_> {
             }
         }
         self
+    }
+
+    /// Lets the pointer drag this widget and carry `payload`. Pressing the widget and moving the
+    /// pointer more than 4 logical pixels picks it up (a shorter move is still a click); a box with
+    /// the widget's name follows the pointer, and a widget that takes the same type with
+    /// [`Handle::dropped`] receives `payload` when it is released over it. Escape cancels. A drag
+    /// does not start on widgets that use dragging themselves (text fields, sliders, dividers,
+    /// drawing surfaces), nor on disabled ones.
+    ///
+    /// Dragging is hard or impossible for some people, and screen readers cannot do it: offer the
+    /// same action another way as well, for example "Move to Done" in a context menu.
+    ///
+    /// ```
+    /// #[derive(Clone, Copy)]
+    /// struct Card(usize);
+    ///
+    /// # let mut todo = vec!["Write the guide".to_string()];
+    /// # let mut done: Vec<String> = Vec::new();
+    /// # kargui::test::example(|ui| {
+    /// ui.column(|ui| {
+    ///     for (k, name) in todo.iter().enumerate() {
+    ///         ui.label(name).drag_source(Card(k));
+    ///     }
+    /// });
+    /// let mut done_column = ui.column(|ui| {
+    ///     ui.heading("Done");
+    ///     for name in &done {
+    ///         ui.label(name);
+    ///     }
+    /// });
+    /// if let Some(Card(k)) = done_column.dropped::<Card>() {
+    ///     done.push(todo.remove(k));
+    /// }
+    /// # });
+    /// ```
+    pub fn drag_source<T: Any>(self, payload: T) -> Self {
+        if self.tree.info[self.idx].disabled {
+            return self;
+        }
+        self.tree.info[self.idx].drag_source = true;
+        let id = self.id;
+        let cx = &mut *self.cx;
+        // 荷物は引っ張り始めてから 1 回だけ受け取る（毎回は作り直さない）
+        if let Some(d) = cx.dnd.as_mut().filter(|d| d.source == id && d.payload.is_none()) {
+            d.payload = Some(Box::new(payload));
+        } else if let Some(d) = cx.drop.as_mut().filter(|d| d.source == id && d.payload.is_none()) {
+            d.payload = Some(Box::new(payload));
+        }
+        self
+    }
+
+    /// Takes payloads of type `T` dragged from a [`Handle::drag_source`]. While one is over this
+    /// widget, the widget is highlighted (other types show the "not allowed" pointer); when it is
+    /// released here, this returns it, once. If drop targets are nested, the innermost one that
+    /// takes the type gets it. Call it in every frame, like [`Button::clicked`].
+    ///
+    /// ```
+    /// struct Trash;
+    ///
+    /// # let mut emptied = 0;
+    /// # kargui::test::example(|ui| {
+    /// ui.button("Old file").drag_source(Trash);
+    /// let mut bin = ui.column(|ui| {
+    ///     ui.label("Drop here to delete");
+    /// });
+    /// if bin.dropped::<Trash>().is_some() {
+    ///     emptied += 1;
+    /// }
+    /// # });
+    /// ```
+    pub fn dropped<T: Any>(&mut self) -> Option<T> {
+        if self.tree.info[self.idx].disabled {
+            return None;
+        }
+        let ty = TypeId::of::<T>();
+        self.tree.info[self.idx].drop_type = Some(ty);
+        let id = self.id;
+        let d = self.cx.drop.as_ref()?;
+        // 荷物がまだ無い: 元の部品がこの後で作られる。このフレームの描く回で受け取る
+        let p = d.payload.as_ref()?;
+        let pty = (**p).type_id();
+        if pty != ty || d.targets.iter().find(|t| t.1 == pty).map(|t| t.0) != Some(id) {
+            return None;
+        }
+        let d = self.cx.drop.take()?;
+        crate::log::event("drag.dropped", &format!("source={:x} target={:x}", d.source.0, id.0), "taken");
+        d.payload?.downcast::<T>().ok().map(|b| *b)
     }
 
     /// Scrolls the nearest [`Ui::scroll`] container that holds this widget so that the widget is at
@@ -3278,6 +3370,29 @@ macro_rules! common {
             pub fn context_menu(self, f: impl FnOnce(&mut Menu)) -> Self {
                 Self { h: self.h.context_menu(f), ..self }
             }
+            /// Lets the pointer drag this widget. See [`Handle::drag_source`].
+            ///
+            /// ```
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            #[doc = concat!(" ui.", $make, ".drag_source(7_u32);")]
+            /// # });
+            /// ```
+            pub fn drag_source<T: Any>(self, payload: T) -> Self {
+                Self { h: self.h.drag_source(payload), ..self }
+            }
+            /// Takes payloads of type `T` dropped on this widget. See [`Handle::dropped`].
+            ///
+            /// ```
+            #[doc = $setup]
+            /// # kargui::test::example(|ui| {
+            #[doc = concat!(" let dropped = ui.", $make, ".dropped::<u32>();")]
+            /// assert_eq!(dropped, None);
+            /// # });
+            /// ```
+            pub fn dropped<T: Any>(&mut self) -> Option<T> {
+                self.h.dropped()
+            }
         }
     };
 }
@@ -3304,6 +3419,29 @@ impl Label<'_> {
     /// ```
     pub fn context_menu(self, f: impl FnOnce(&mut Menu)) -> Self {
         Label(self.0.context_menu(f))
+    }
+
+    /// Lets the pointer drag this label. See [`Handle::drag_source`].
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.label("report.pdf").drag_source(std::path::PathBuf::from("report.pdf"));
+    /// # });
+    /// ```
+    pub fn drag_source<T: Any>(self, payload: T) -> Self {
+        Label(self.0.drag_source(payload))
+    }
+
+    /// Takes payloads of type `T` dropped on this label. See [`Handle::dropped`].
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let dropped = ui.label("Archive").dropped::<std::path::PathBuf>();
+    /// assert!(dropped.is_none());
+    /// # });
+    /// ```
+    pub fn dropped<T: Any>(&mut self) -> Option<T> {
+        self.0.dropped()
     }
 }
 

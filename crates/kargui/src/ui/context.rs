@@ -52,6 +52,8 @@ pub(crate) struct Hit {
     pub vertical: bool,
     /// 押せる。押せない部品も当たりには入れ、下の部品へクリックが抜けないようにする
     pub enabled: bool,
+    /// ポインターの引っ張りを自分で使う（入力欄・スライダー・仕切り・描く面）。この上からはドラッグを始めない
+    pub drags: bool,
 }
 
 /// 前のフレームで重ねて出した物（閉じる・焦点を戻す・Tab を閉じ込めるのに使う）
@@ -121,6 +123,34 @@ pub(crate) struct ScrollDrag {
     pub moves: u32,
 }
 
+/// 引っ張っている物（Handle::drag_source。押して DRAG_START より動かした所から）
+pub(crate) struct Dnd {
+    pub source: Id,
+    /// 荷物。元の部品がビューで渡す（引っ張り始めた後の最初のビューで入る）
+    pub payload: Option<Box<dyn std::any::Any>>,
+    /// 元の部品の見えていた範囲（影の大きさ）と、つかんだ所の、範囲の左上からの距離（物理ピクセル）
+    pub rect: Rect,
+    pub grab: (f32, f32),
+    /// 影に書く文字（元の部品の読み上げの名前）
+    pub text: String,
+    /// 今のポインターの位置
+    pub at: (f32, f32),
+    /// ポインターの下の、この荷物を受け取れる部品（強調して描く）
+    pub over: Option<Id>,
+}
+
+/// 離した所で受け取る物。荷物はビューで元の部品から受け取り（押す・動かす・離すが 1 回に届いた時はここで初めて
+/// 入る）、そろったら Handle::dropped が渡す。フレームの終わりまでに受け取られなければ捨てる
+pub(crate) struct PendingDrop {
+    pub source: Id,
+    /// 離した所の受け取る部品（上の物から）と、受け取る荷物の型
+    pub targets: Vec<(Id, std::any::TypeId)>,
+    pub payload: Option<Box<dyn std::any::Any>>,
+}
+
+/// 押してからこれだけ（論理ピクセル）動かしたら引っ張り始める。それまではクリック（Windows の SM_CXDRAG と同じ 4）
+pub(crate) const DRAG_START: f32 = 4.0;
+
 /// 前のフレームの配置
 #[derive(Default)]
 pub(crate) struct Prev {
@@ -155,6 +185,11 @@ pub(crate) struct Prev {
     pub split_bars: HashMap<Id, bool>,
     /// 自由に描く面の場所（ポインターを面の座標にする）
     pub canvases: HashMap<Id, Rect>,
+    /// 引っ張り出せる部品（Handle::drag_source）: 見えている範囲、影に書く文字、描いた時の当たりの数
+    /// （後から上に描いた物に隠れているかを見る）。描いた順
+    pub drag_sources: Vec<(Id, Rect, String, usize)>,
+    /// 落とせる部品（Handle::dropped）: 見えている範囲、受け取る荷物の型、描いた時の当たりの数。描いた順
+    pub drop_targets: Vec<(Id, Rect, std::any::TypeId, usize)>,
 }
 
 pub(crate) struct Context {
@@ -243,6 +278,12 @@ pub(crate) struct Context {
     /// 開いている右クリックのメニューの場所（物理ピクセル）
     pub context_at: (f32, f32),
     pub pressed: Option<Id>,
+    /// 押した所にあった、引っ張り出せる部品と押した位置（まだ動かしていない。動かしたら dnd になる）
+    pub press_source: Option<(Id, f32, f32)>,
+    /// 引っ張っている物
+    pub dnd: Option<Dnd>,
+    /// 離した所で受け取る物（フレームの終わりまで持つ。入力の回の後の描く回でも受け取れる）
+    pub drop: Option<PendingDrop>,
     /// ポインターが乗っているスクロールの棒（一覧の id）
     pub bar_hover: Option<Id>,
     /// つかんでいるスクロールの棒のつまみ
@@ -337,6 +378,9 @@ impl Context {
             context_request: None,
             context_at: (0.0, 0.0),
             pressed: None,
+            press_source: None,
+            dnd: None,
+            drop: None,
             bar_hover: None,
             drag: None,
             focus_visible: false,
@@ -565,6 +609,83 @@ impl Context {
         self.set_scroll(&l, f * max);
     }
 
+    /// 描いた時の当たりの数が order の部品（範囲 r）が、(x, y) で後から描いた物（重ねて出した物など）に隠れているか。
+    /// 中の部品（r の中に収まる当たり）は隠したことにしない
+    fn covered(&self, r: &Rect, order: usize, x: f32, y: f32) -> bool {
+        let inside = |q: &Rect| q.x >= r.x - 0.5 && q.y >= r.y - 0.5 && q.right() <= r.right() + 0.5 && q.bottom() <= r.bottom() + 0.5;
+        self.prev.hits.iter().skip(order).any(|h| h.rect.contains(x, y) && !inside(&h.rect))
+    }
+
+    /// (x, y) で上に見えている、引っ張り出せる部品（内側の物）
+    fn source_at(&self, x: f32, y: f32) -> Option<&(Id, Rect, String, usize)> {
+        self.prev.drag_sources.iter().rev().find(|s| s.1.contains(x, y) && !self.covered(&s.1, s.3, x, y))
+    }
+
+    /// (x, y) の落とせる部品と受け取る荷物の型（上の物・内側の物から）
+    fn targets_at(&self, x: f32, y: f32) -> Vec<(Id, std::any::TypeId)> {
+        self.prev.drop_targets.iter().rev().filter(|t| t.1.contains(x, y) && !self.covered(&t.1, t.3, x, y)).map(|t| (t.0, t.2)).collect()
+    }
+
+    /// 引っ張っている荷物を (x, y) で受け取る部品（荷物がまだ届いていなければ None）
+    fn target_for(&self, d: &Dnd, x: f32, y: f32) -> Option<Id> {
+        let ty = d.payload.as_ref().map(|p| (**p).type_id())?;
+        self.targets_at(x, y).into_iter().find(|t| t.1 == ty).map(|t| t.0)
+    }
+
+    /// 引っ張っている間のポインターの形: Some(true) は受け取れる所（ふつうの矢印）、Some(false) は受け取れない所
+    /// （禁止の形）。引っ張っていなければ None。荷物がまだ届いていない（引っ張り始めた直後の）間は矢印
+    pub fn drag_cursor(&self, x: f32, y: f32) -> Option<bool> {
+        let d = self.dnd.as_ref()?;
+        Some(d.payload.is_none() || self.target_for(d, x, y).is_some())
+    }
+
+    /// 押した所 (x0, y0) から (x, y) まで動かしたので、引っ張り始める。押していた部品は押したことにしない
+    fn start_drag(&mut self, source: Id, x0: f32, y0: f32, x: f32, y: f32) {
+        self.press_source = None;
+        let Some((_, rect, text, _)) = self.prev.drag_sources.iter().find(|s| s.0 == source).cloned() else { return };
+        self.pressed = None;
+        self.pointer = None;
+        self.tooltip_hidden = self.hover;
+        log::event("drag.start", &format!("source={:x} text={text:?}", source.0), &format!("at={x:.0},{y:.0}"));
+        self.dnd = Some(Dnd { source, payload: None, rect, grab: (x0 - rect.x, y0 - rect.y), text, at: (x, y), over: None });
+    }
+
+    /// 引っ張っている物を (x, y) へ動かし、下の受け取る部品を決め直す
+    fn move_drag(&mut self, x: f32, y: f32) {
+        let over = self.dnd.as_ref().and_then(|d| self.target_for(d, x, y));
+        if let Some(d) = self.dnd.as_mut() {
+            d.at = (x, y);
+            if d.over != over {
+                log::event("drag.over", &format!("source={:x} at={x:.0},{y:.0}", d.source.0), &format!("target={:?}", over.map(|o| format!("{:x}", o.0))));
+                d.over = over;
+            }
+        }
+    }
+
+    /// (x, y) で離した。受け取る部品があれば、ビューで渡す（荷物の型が分からない時は、そこの受け取る部品を全部候補にする）
+    fn finish_drag(&mut self, d: Dnd, x: f32, y: f32) {
+        let targets = self.targets_at(x, y);
+        let ty = d.payload.as_ref().map(|p| (**p).type_id());
+        let takes = match ty {
+            Some(t) => targets.iter().any(|g| g.1 == t),
+            None => !targets.is_empty(),
+        };
+        if takes {
+            log::event("drag.drop", &format!("source={:x} at={x:.0},{y:.0}", d.source.0), &format!("targets={} payload={}", targets.len(), ty.is_some()));
+            self.drop = Some(PendingDrop { source: d.source, targets, payload: d.payload });
+        } else {
+            log::event("drag.cancel", &format!("source={:x} at={x:.0},{y:.0}", d.source.0), "why=no-target");
+        }
+    }
+
+    /// 引っ張りをやめる（Esc・マウスのつかみが外れた）
+    fn cancel_drag(&mut self, why: &str) {
+        self.press_source = None;
+        if let Some(d) = self.dnd.take() {
+            log::event("drag.cancel", &format!("source={:x}", d.source.0), &format!("why={why}"));
+        }
+    }
+
     fn is_text_input(&self, id: Id) -> bool {
         self.prev.hits.iter().any(|h| h.id == id && h.text_input)
     }
@@ -592,6 +713,7 @@ impl Context {
         for e in events {
             match e {
                 Event::PointerDown { x, y, shift } => {
+                    self.cancel_drag("pressed again");
                     self.commit_preedit("pointer");
                     // 押した部品のツールチップは消す
                     self.tooltip_hidden = self.hover;
@@ -628,6 +750,10 @@ impl Context {
                     self.pressed = hit.as_ref().map(|h| h.id);
                     self.pointer = Some((x, y));
                     self.focus_visible = false;
+                    // 引っ張り出せる部品の上なら、動かした時に引っ張り始める（引っ張りを自分で使う部品の上は除く）
+                    if !hit.as_ref().is_some_and(|h| h.drags) {
+                        self.press_source = self.source_at(x, y).map(|s| (s.0, x, y));
+                    }
                     // ダイアログや浮き出しの空いた所を押しても、焦点は中に残す
                     let in_layer = self.top_dialog().is_some() || self.prev.overlays.iter().any(|o| o.kind != OverlayKind::Tooltip && o.rect.contains(x, y));
                     if hit.is_some() || !in_layer {
@@ -646,6 +772,12 @@ impl Context {
                         self.pressed = None;
                         continue;
                     }
+                    self.press_source = None;
+                    if let Some(d) = self.dnd.take() {
+                        self.finish_drag(d, x, y);
+                        self.pressed = None;
+                        continue;
+                    }
                     let hit = self.hit(x, y).filter(|h| h.enabled).map(|h| h.id);
                     if hit.is_some() && hit == self.pressed {
                         self.clicked = hit;
@@ -661,10 +793,18 @@ impl Context {
                         d.moves += 1;
                         let d = *d;
                         self.drag_scrollbar(d, y);
+                    } else if self.dnd.is_some() {
+                        self.move_drag(x, y);
+                    } else if let Some((src, x0, y0)) = self.press_source.filter(|&(_, x0, y0)| (x - x0).hypot(y - y0) > DRAG_START * self.scale) {
+                        self.start_drag(src, x0, y0, x, y);
+                        self.move_drag(x, y);
                     } else if self.pressed.is_some() {
                         self.pointer = Some((x, y));
                     }
                 }
+                Event::PointerCancel => self.cancel_drag("capture lost"),
+                // 引っ張っている間の Esc は、引っ張りだけをやめる
+                Event::Key { key: Key::Escape, .. } if self.dnd.is_some() => self.cancel_drag("escape"),
                 Event::Wheel { x, y, dy } => {
                     // ダイアログの後ろはスクロールしない
                     if self.top_dialog().is_some_and(|d| !d.rect.contains(x, y)) {

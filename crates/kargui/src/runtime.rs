@@ -116,6 +116,10 @@ impl Runtime {
             draw::layout(&mut tree, &mut self.cx);
             draw::paint(&tree, &mut self.cx, &mut self.draw);
         }
+        // 離した所の受け取る部品が、このフレームのビューで荷物を受け取らなかったら捨てる（元の部品が消えたなど）
+        if let Some(d) = self.cx.drop.take() {
+            crate::log::event("drag.unclaimed", &format!("source={:x}", d.source.0), &format!("payload={}", d.payload.is_some()));
+        }
         let drawn_focus = self.cx.focus;
         self.overlay_focus(&before, &tree);
         // 描いた後で焦点が動いた（開いた物の中へ移った・閉じて戻った）ら、新しい焦点を描くためにもう 1 フレーム描く

@@ -81,6 +81,7 @@ cargo run --release -p table-kargui                       # a 10,000-row table
 cargo run --release -p notepad-kargui                     # a text editor (menus, file dialogs, asking before closing)
 cargo run --release -p expenses-kargui                    # a household budget (form, table, tabs, chart)
 cargo run --release -p files-kargui                       # a file browser (tree, split panes, another window)
+cargo run --release -p board-kargui                       # a card board (drag and drop, with a "Move" menu too)
 ```
 
 Each app writes one line per event to `logs/<app>.log` (time, event, arguments, result).
@@ -121,9 +122,10 @@ Not there yet:
   passwords, drop-downs, menus (menu bar, menu buttons, submenus and context menus), tabs, number
   inputs, toolbars, grids, split panes, drawing surfaces, trees, tables with headings and date
   pickers were added in 0.2; images are not drawn on the Direct3D 11 renderer yet).
-- **App mechanisms:** drag and drop, choosing fonts, and animation helpers (shortcuts, timers,
-  waking from other threads, multiple windows, open and save file dialogs, the window icon, a
-  minimum window size and asking before closing were added in 0.2).
+- **App mechanisms:** dropping files from other apps, choosing fonts, and animation helpers
+  (shortcuts, timers, waking from other threads, multiple windows, open and save file dialogs, the
+  window icon, a minimum window size and asking before closing were added in 0.2; drag and drop
+  inside the window is on the main branch).
 - **Platforms:** windows open on Windows 10/11 only. The Direct3D 11 renderer (not the default)
   occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
   NVDA. Apps cannot start a reconversion themselves.

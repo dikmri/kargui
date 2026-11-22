@@ -136,6 +136,8 @@ mod guide {
     struct Ja16Windows;
     #[doc = include_str!("../../../docs/guide/ja/17-app-mechanisms.md")]
     struct Ja17AppMechanisms;
+    #[doc = include_str!("../../../docs/guide/ja/18-drag-and-drop.md")]
+    struct Ja18DragAndDrop;
     #[doc = include_str!("../../../docs/guide/ja/README.md")]
     struct JaReadme;
     #[doc = include_str!("../../../docs/guide/en/01-first-app.md")]
@@ -172,6 +174,8 @@ mod guide {
     struct En16Windows;
     #[doc = include_str!("../../../docs/guide/en/17-app-mechanisms.md")]
     struct En17AppMechanisms;
+    #[doc = include_str!("../../../docs/guide/en/18-drag-and-drop.md")]
+    struct En18DragAndDrop;
     #[doc = include_str!("../../../docs/guide/en/README.md")]
     struct EnReadme;
     #[doc = include_str!("../../../README.md")]
