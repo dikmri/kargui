@@ -1434,6 +1434,23 @@ impl<A: App> Harness<A> {
         Canvas { px: &mut pixels, width: w, height: h }.draw(&rt.draw, &atlas.pixels, atlas.size, IRect::new(0, 0, w, h), bg);
         Image { width: w as u32, height: h as u32, pixels }
     }
+
+    /// 最後のフレームで文字の形を描いた四角（x, y, 幅, 高さ。画素）。
+    /// xtask の写真の比べが、OS の書体の版による文字の形の違いだけを見分けるのに使う
+    #[doc(hidden)]
+    pub fn glyph_boxes(&mut self) -> Vec<[i32; 4]> {
+        let rt = self.cur();
+        rt.draw
+            .quads
+            .iter()
+            .filter(|q| q.is_glyph())
+            .map(|q| {
+                let b = q.bounds();
+                let (x, y) = (b.x.floor() as i32, b.y.floor() as i32);
+                [x, y, (b.right().ceil() as i32) - x, (b.bottom().ceil() as i32) - y]
+            })
+            .collect()
+    }
 }
 
 /// An image drawn by [`Harness::render`]: pixels as `0xAARRGGBB`, row by row from the top.
