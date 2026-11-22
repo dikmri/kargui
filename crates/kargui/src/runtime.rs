@@ -76,6 +76,7 @@ impl Runtime {
     pub fn frame_with(&mut self, view: &mut dyn FnMut(&mut Ui), events: Vec<Event>) -> FrameOut {
         self.cx.now = self.cx.clock();
         self.cx.wake_at = None;
+        self.cx.frame_no += 1;
         let mut want = false;
         let had_input = !events.is_empty();
         if had_input {
@@ -116,6 +117,9 @@ impl Runtime {
             draw::layout(&mut tree, &mut self.cx);
             draw::paint(&tree, &mut self.cx, &mut self.draw);
         }
+        // このフレームで使われなかった動き（部品が消えた・アプリが呼ばなくなった）を捨てる
+        let frame = self.cx.frame_no;
+        self.cx.anims.retain(|_, a| a.seen == frame);
         // 離した所の受け取る部品が、このフレームのビューで荷物を受け取らなかったら捨てる（元の部品が消えたなど）
         if let Some(d) = self.cx.drop.take() {
             crate::log::event("drag.unclaimed", &format!("source={:x}", d.source.0), &format!("payload={}", d.payload.is_some()));

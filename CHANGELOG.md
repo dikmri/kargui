@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Animation helpers: `ui.animate(key, target, duration)` returns a number that moves from where it
+  is to `target` over `duration` whenever `target` changes (a cubic ease-out; the first call
+  returns `target` at once, and turning back midway starts from where the value is), and
+  `ui.animate_bool(key, on)` moves between 0.0 and 1.0 in 250 ms. Frames are drawn only while a
+  value moves. When the user turned off Animation effects in Windows (read when a window is created
+  and again on `WM_SETTINGCHANGE`), values jump to the target; `ui.reduce_motion()` tells your own
+  effects to do the same. `.reveal(amount)` shows only the top part of a widget and cuts off the
+  rest (with `animate_bool`, a section that slides open and closed). The switch thumb of
+  `ui.toggle` now slides in 167 ms, and the content of `ui.expander` slides in and out in 250 ms.
+  Guide page 19.
+- Tests (behaviour change): `Harness` now starts with motion turned off, so the screen after an
+  action is already its end state (an expander's content is gone right after closing it). Turn
+  motion on with `Harness::reduce_motion(false)` and move the clock with `Harness::wait` to test
+  motion itself.
 - Drag and drop inside the window: `.drag_source(payload)` on any widget lets the pointer carry
   `payload` (any `'static` type; it is taken once, so it need not be `Clone`), and
   `.dropped::<T>()` on a widget returns it when it is released there. A drag starts after the

@@ -959,6 +959,59 @@ use std::time::Duration;
 ui.request_frame_after(Duration::from_secs(1));
 ```
 
+### `pub fn animate(&mut self, key: impl Hash, target: f32, duration: Duration) -> f32`
+
+Moves a number smoothly toward `target`. When `target` changes, the value returned here goes
+from where it was to the new target over `duration`, fast at first and slowing down at the
+end (a cubic ease-out). The first call returns `target` at once, and a change of
+direction midway starts from where the value is. Frames are drawn only while it moves. If the
+user turned animations off in the system (on Windows: Settings > Accessibility > Visual
+effects > Animation effects), the value jumps to `target`. `key` tells moving values apart
+inside the current container, as with [`Ui::keyed`].
+
+```
+use std::time::Duration;
+use kargui::Size;
+
+if ui.button("Wider").clicked() {
+    wide = !wide;
+}
+let width = ui.animate("panel", if wide { 320.0 } else { 160.0 }, Duration::from_millis(250));
+ui.column(|ui| {
+    ui.label("Panel");
+})
+.width(Size::Fixed(width));
+```
+
+### `pub fn animate_bool(&mut self, key: impl Hash, on: bool) -> f32`
+
+0.0 while `on` is false and 1.0 while it is true, moving between them in 250 ms (WinUI's
+normal duration) as [`Ui::animate`] does. Use it to slide or grow something that appears
+and disappears, for example with [`Handle::reveal`]. Call it in every frame, even while the
+thing is hidden: a value that is not asked for in a frame is forgotten.
+
+```
+let shown = ui.animate_bool("details", details);
+if shown > 0.0 {
+    // slides open from the top while `details` turns on, and closed while it turns off
+    ui.column(|ui| {
+        ui.label("Created 2026-11-22").weak();
+    })
+    .reveal(shown);
+}
+```
+
+### `pub fn reduce_motion(&self) -> bool`
+
+Whether the user asked the system to reduce motion (on Windows, Animation effects is off).
+[`Ui::animate`] and kargui's own widgets already jump instead of moving then; check it for
+effects of your own that are not made with [`Ui::animate`].
+
+```
+let label = if ui.reduce_motion() { "Done" } else { "Done!" };
+ui.label(label);
+```
+
 ### `pub fn waker(&self) -> Waker`
 
 A [`Waker`] that wakes this window from another thread.
@@ -990,6 +1043,24 @@ ui.row(|ui| {
     ui.label("Tall");
 })
 .height(Size::Fixed(48.0));
+```
+
+### `pub fn reveal(self, amount: f32) -> Self`
+
+Shows only the top `amount` of this widget (0.0 shows nothing, 1.0 all of it) and cuts off
+the rest. In its parent it takes only the height it shows, while its children keep their
+own sizes. With [`Ui::animate_bool`] it makes a section that slides open and closed. Widgets
+in the part that is cut off cannot be clicked, and Tab skips those that are cut off entirely.
+
+```
+let shown = ui.animate_bool("details", details);
+if shown > 0.0 {
+    ui.column(|ui| {
+        ui.label("Created 2026-11-22");
+        ui.label("Changed 2026-11-23");
+    })
+    .reveal(shown);
+}
 ```
 
 ### `pub fn grow(self) -> Self`

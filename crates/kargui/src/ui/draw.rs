@@ -339,6 +339,11 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     }
 }
 
+/// 2 つの色の間の色（p が 0 なら a、1 なら b）
+fn mix(a: Color, b: Color, p: f32) -> Color {
+    [a[0] + (b[0] - a[0]) * p, a[1] + (b[1] - a[1]) * p, a[2] + (b[2] - a[2]) * p, a[3] + (b[3] - a[3]) * p]
+}
+
 fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     let x0 = a.x.max(b.x);
     let y0 = a.y.max(b.y);
@@ -519,7 +524,17 @@ impl Painter<'_> {
                 self.prev.drop_targets.push((id, c, t, order));
             }
         }
-        self.node_body(tree, i);
+        if tree.layout[i].reveal.is_some() {
+            // 一部だけ見せる物: 見せる範囲の外を切り取る。外に出た子は押せず、Tab でも移らない
+            self.d.push_clip(IRect::covering(r), None);
+            let outer = self.clip;
+            self.clip = intersect(r, outer).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));
+            self.node_body(tree, i);
+            self.clip = outer;
+            self.d.pop_clip();
+        } else {
+            self.node_body(tree, i);
+        }
         if self.cx.dnd.as_ref().is_some_and(|d| d.over == Some(id))
             && let Some(c) = intersect(r, self.clip)
         {
@@ -1196,7 +1211,7 @@ impl Painter<'_> {
                 }
                 self.hit(tree, i, true, false);
             }
-            Kind::Toggle { on, text } => {
+            Kind::Toggle { text, pos, .. } => {
                 let t = self.cx.theme.clone();
                 let (tw, th) = (self.px(sz::TRACK_W), self.px(sz::TRACK_H));
                 let track = Rect::new(r.x, (r.y + (r.h - th) / 2.0).round(), tw, th);
@@ -1206,15 +1221,15 @@ impl Painter<'_> {
                     self.d.fill(track.inset(-w), t.background, th);
                 }
                 let off = tree.info[i].disabled;
-                let track_color = match (*on, off) {
-                    (true, false) => t.accent,
-                    (true, true) | (false, false) => t.border,
-                    (false, true) => t.separator,
-                };
+                // 切り替えの途中（pos が 0 と 1 の間）は、つまみの位置と色を間の値にする
+                let p = pos.clamp(0.0, 1.0);
+                let (track_off, track_on) = if off { (t.separator, t.border) } else { (t.border, t.accent) };
+                let track_color = mix(track_off, track_on, p);
                 self.d.fill(track, track_color, th / 2.0);
                 let k = th - self.px(6.0);
-                let kx = if *on { track.right() - self.px(3.0) - k } else { track.x + self.px(3.0) };
-                self.d.fill(Rect::new(kx, track.y + self.px(3.0), k, k), if *on { t.on_accent } else { t.field }, k / 2.0);
+                let (x0, x1) = (track.x + self.px(3.0), track.right() - self.px(3.0) - k);
+                let kx = (x0 + (x1 - x0) * p).round();
+                self.d.fill(Rect::new(kx, track.y + self.px(3.0), k, k), mix(t.field, t.on_accent, p), k / 2.0);
                 if !text.is_empty() {
                     let st = style(self.cx, TextKind::Body, false);
                     text_mid(self.d, self.cx, text, st, r.x + tw + self.px(sz::BOX_GAP), r, if off { t.done_text } else { t.text });

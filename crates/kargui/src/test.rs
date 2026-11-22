@@ -159,6 +159,8 @@ impl<A: App> Harness<A> {
         rt.cx.frozen = Some(std::time::Duration::ZERO);
         // 今日も止める（暦の「今日」の印が日によって変わらないように）
         rt.cx.today = crate::date::Date::new(2026, 11, 22);
+        // 動きは切っておく（押した後の画面が、時計を進めなくても終わりの形になる）。動きを試す時は reduce_motion(false)
+        rt.cx.reduce_motion = true;
         let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None };
         h.frame();
         h
@@ -705,6 +707,46 @@ impl<A: App> Harness<A> {
         self.send(vec![Event::FileDrop { x, y }])
     }
 
+    /// Acts as if the user turned animations off in the system (`true`, the default in tests) or
+    /// on (`false`), and draws a frame. While motion is off, [`Ui::animate`](crate::Ui::animate)
+    /// jumps to its target and [`Ui::reduce_motion`](crate::Ui::reduce_motion) returns `true`, so
+    /// the screen after an action is already its end state. To test motion itself, turn it on and
+    /// move the clock with [`Harness::wait`].
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Panel {
+    ///     open: bool,
+    ///     shown: f32,
+    /// }
+    ///
+    /// impl App for Panel {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("Open").clicked() {
+    ///             self.open = true;
+    ///         }
+    ///         self.shown = ui.animate_bool("panel", self.open);
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Panel { open: false, shown: 0.0 });
+    /// h.click("Open");
+    /// assert_eq!(h.app().shown, 1.0, "motion is off in tests: the panel is open at once");
+    ///
+    /// let mut h = Harness::new(Panel { open: false, shown: 0.0 });
+    /// h.reduce_motion(false).click("Open");
+    /// assert_eq!(h.app().shown, 0.0, "with motion on, it has only started");
+    /// h.wait(std::time::Duration::from_millis(250));
+    /// assert_eq!(h.app().shown, 1.0);
+    /// ```
+    pub fn reduce_motion(&mut self, on: bool) -> &mut Self {
+        for rt in std::iter::once(&mut self.rt).chain(self.windows.iter_mut().map(|(_, rt)| rt)) {
+            rt.cx.reduce_motion = on;
+        }
+        self.frame()
+    }
+
     /// Releases the pointer button where [`Harness::drag_over`] left it. Does nothing if the button
     /// is not held.
     ///
@@ -868,6 +910,7 @@ impl<A: App> Harness<A> {
             rt.resize((r.size.0 * scale).round(), (r.size.1 * scale).round(), scale);
             rt.cx.frozen = self.rt.cx.frozen;
             rt.cx.today = self.rt.cx.today;
+            rt.cx.reduce_motion = self.rt.cx.reduce_motion;
             self.windows.push((r.key.clone(), rt));
         }
         let app = &mut self.app;
@@ -2045,7 +2088,7 @@ mod tests {
         h.rt.cx.set_dark(true); // OS がダーク
         h.frame();
         let on = |h: &Harness<Nested>| h.rt.tree.info.iter().find_map(|n| match &n.kind {
-            crate::ui::Kind::Toggle { on, text } if text == "Dark" => Some(*on),
+            crate::ui::Kind::Toggle { on, text, .. } if text == "Dark" => Some(*on),
             _ => None,
         });
         assert_eq!(on(&h), Some(true), "スイッチは今の見た目（ダーク）を示す");
@@ -4599,5 +4642,134 @@ mod tests {
     fn mid_of<A: App>(h: &Harness<A>, name: &str) -> (f32, f32) {
         let r = h.find(name).unwrap_or_else(|| panic!("{name}"));
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
+    }
+
+    /// 動き: animate_bool の値を毎フレーム覚える
+    struct Fader {
+        on: bool,
+        value: f32,
+        wifi: bool,
+    }
+
+    impl App for Fader {
+        fn view(&mut self, ui: &mut Ui) {
+            if ui.button("Flip").clicked() {
+                self.on = !self.on;
+            }
+            self.value = ui.animate_bool("fade", self.on);
+            ui.toggle(&mut self.wifi, "Wi-Fi");
+        }
+    }
+
+    fn fader() -> Harness<Fader> {
+        let mut h = Harness::new(Fader { on: false, value: -1.0, wifi: false });
+        h.reduce_motion(false);
+        h
+    }
+
+    #[test]
+    fn animate_bool_moves_over_250_ms_slowing_down_and_then_stops() {
+        use std::time::Duration;
+        let mut h = fader();
+        assert_eq!(h.app().value, 0.0, "初めて現れた時は動かさない");
+        h.click("Flip");
+        assert_eq!(h.app().value, 0.0, "押したフレームはまだ動き始め");
+        h.wait(Duration::from_millis(125));
+        let mid = h.app().value;
+        assert!(mid > 0.6 && mid < 1.0, "減速の曲線なので、半分の時間で半分より先: {mid}");
+        h.wait(Duration::from_millis(125));
+        assert_eq!(h.app().value, 1.0, "250 ms で目標に着く");
+        h.wait(Duration::from_millis(500));
+        assert_eq!(h.app().value, 1.0, "着いたら止まる");
+        assert!(h.cur().cx.anims.values().all(|a| a.done(h.cur().cx.now)), "動いている物は残らない");
+    }
+
+    #[test]
+    fn turning_back_midway_starts_from_where_it_is() {
+        use std::time::Duration;
+        let mut h = fader();
+        h.click("Flip");
+        h.wait(Duration::from_millis(60));
+        let at = h.app().value;
+        assert!(at > 0.2 && at < 0.9, "途中: {at}");
+        h.click("Flip");
+        assert!((h.app().value - at).abs() < 1e-4, "向きを変えたフレームは、今いる所から（飛ばない）");
+        h.wait(Duration::from_millis(250));
+        assert_eq!(h.app().value, 0.0);
+    }
+
+    #[test]
+    fn with_reduced_motion_values_jump_to_the_target() {
+        let mut h = fader();
+        h.reduce_motion(true);
+        assert!(h.cur().cx.reduce_motion);
+        h.click("Flip");
+        assert_eq!(h.app().value, 1.0, "動きを減らす設定では、すぐ目標");
+    }
+
+    struct Drawer {
+        open: bool,
+        clicks: u32,
+    }
+
+    impl App for Drawer {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.expander(&mut self.open, "More", |ui| {
+                ui.label("Line one");
+                if ui.button("Deep button").clicked() {
+                    self.clicks += 1;
+                }
+            });
+            ui.label("Below");
+        }
+    }
+
+    #[test]
+    fn expanders_slide_open_and_closed_and_cut_off_what_is_not_shown() {
+        use std::time::Duration;
+        let mut h = Harness::new(Drawer { open: false, clicks: 0 });
+        h.reduce_motion(false);
+        let closed = h.find("Below").unwrap().y;
+        h.click("More");
+        assert!(h.app().open);
+        h.wait(Duration::from_millis(15));
+        // 開いている途中: 下の部品は少し下がるだけで、まだ見えていないボタンは押せない
+        let (mid, button) = (h.find("Below").unwrap().y, h.find("Deep button").unwrap());
+        assert!(mid > closed && mid < button.y, "途中: {closed} < {mid} < {}", button.y);
+        h.click_at(button.x + button.w / 2.0, button.y + button.h / 2.0);
+        assert_eq!(h.app().clicks, 0, "切り取られた所は押せない");
+        h.press(Key::Tab).press(Key::Tab);
+        assert_ne!(focused_name(&h).as_deref(), Some("Deep button"), "全部隠れた部品へは Tab で移らない");
+        h.wait(Duration::from_millis(250));
+        h.click("Deep button");
+        assert_eq!(h.app().clicks, 1, "開き終われば押せる");
+        // 閉じる時も、中身を描きながら縮み、終わったら消える
+        h.click("More");
+        assert!(!h.app().open);
+        h.wait(Duration::from_millis(60));
+        assert!(h.find("Line one").is_some(), "閉じている途中は、まだ描く");
+        h.wait(Duration::from_millis(250));
+        assert!(h.find("Line one").is_none());
+        assert_eq!(h.find("Below").unwrap().y, closed);
+    }
+
+    #[test]
+    fn the_switch_thumb_slides_in_167_ms() {
+        use std::time::Duration;
+        let pos = |h: &Harness<Fader>| {
+            h.cur().tree.info.iter().find_map(|n| match &n.kind {
+                crate::ui::Kind::Toggle { pos, .. } => Some(*pos),
+                _ => None,
+            })
+        };
+        let mut h = fader();
+        assert_eq!(pos(&h), Some(0.0));
+        h.click("Wi-Fi");
+        assert!(h.app().wifi);
+        h.wait(Duration::from_millis(80));
+        let p = pos(&h).unwrap();
+        assert!(p > 0.3 && p < 1.0, "途中: {p}");
+        h.wait(Duration::from_millis(100));
+        assert_eq!(pos(&h), Some(1.0));
     }
 }

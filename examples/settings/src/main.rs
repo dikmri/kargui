@@ -131,11 +131,16 @@ impl App for Settings {
 
             section(ui, "編集");
             ui.toggle(&mut e.autosave, "自動で保存する");
-            if e.autosave {
-                field(ui, "保存の間隔", |ui| {
-                    ui.slider(&mut e.autosave_minutes, 1..=30).label("保存の間隔");
-                    ui.label(format!("{} 分ごと", e.autosave_minutes));
-                });
+            // 保存の間隔は、自動で保存する間だけ上から出す（OS で動きを切っていれば、すぐ出し入れする）
+            let shown = ui.animate_bool("autosave-interval", e.autosave);
+            if shown > 0.0 {
+                ui.column(|ui| {
+                    field(ui, "保存の間隔", |ui| {
+                        ui.slider(&mut e.autosave_minutes, 1..=30).label("保存の間隔");
+                        ui.label(format!("{} 分ごと", e.autosave_minutes));
+                    });
+                })
+                .reveal(shown);
             }
             ui.checkbox(&mut e.spellcheck, "つづりを確かめる");
 
@@ -228,6 +233,20 @@ mod tests {
         assert_eq!(h.app().saved.name, "Hana");
         h.click("ダーク").click("元に戻す");
         assert_eq!(h.app().edit.look, Look::System);
+    }
+
+    #[test]
+    fn the_saving_interval_shows_only_while_autosave_is_on() {
+        let mut h = app();
+        assert!(h.find("保存の間隔").is_some());
+        h.click("自動で保存する");
+        assert!(!h.app().edit.autosave);
+        assert!(h.find("保存の間隔").is_none(), "試験台は動きを切ってあるので、すぐ消える");
+        // 動きを入れると、閉じる間も描き、開く時は上から出てくる
+        h.reduce_motion(false).click("自動で保存する");
+        assert!(h.find("保存の間隔").is_none(), "押したフレームは高さ 0");
+        h.wait(std::time::Duration::from_millis(100));
+        assert!(h.find("保存の間隔").is_some());
     }
 
     #[test]

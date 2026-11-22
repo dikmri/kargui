@@ -205,7 +205,8 @@ pub(crate) enum Kind {
     /// メニューの項目（gutter は印かアイコンの列を空けるか。メニューの中で 1 つでもあれば全部が空ける）
     MenuItem { text: String, shortcut: Option<String>, icon: Option<Icon>, mark: MenuMark, submenu: bool, open: bool, gutter: bool },
     Checkbox { checked: bool, text: String, strike: bool, mixed: bool },
-    Toggle { on: bool, text: String },
+    /// pos はつまみの位置（0 が切、1 が入。切り替えた時に 167 ms で滑る）
+    Toggle { on: bool, text: String, pos: f32 },
     Segment { text: String, selected: bool },
     TextInput { value: String, hint: String, password: bool },
     /// 複数行の入力欄（rows は見える行の数）
@@ -855,7 +856,7 @@ impl<'a> Ui<'a> {
     #[track_caller]
     pub fn progress_busy(&mut self) -> Handle<'_> {
         let (idx, id) = self.add(Kind::Progress { value: None, ring: false }, Dir::Leaf);
-        self.animate();
+        self.wake_for_motion();
         self.handle(idx, id)
     }
 
@@ -875,12 +876,12 @@ impl<'a> Ui<'a> {
         let (idx, id) = self.add(Kind::Progress { value: None, ring: true }, Dir::Leaf);
         let s = Size::Fixed(self.px(20.0));
         (self.tree.layout[idx].width, self.tree.layout[idx].height) = (s, s);
-        self.animate();
+        self.wake_for_motion();
         self.handle(idx, id)
     }
 
     /// 動く部品のために、約 30 fps で起こしてもらう（毎フレームは描かない）
-    fn animate(&mut self) {
+    fn wake_for_motion(&mut self) {
         let t = self.cx.now + Duration::from_millis(33);
         self.cx.wake_by(t);
     }
@@ -959,10 +960,15 @@ impl<'a> Ui<'a> {
                 *o = *open;
             }
         }
-        if *open {
+        // 中身は 250 ms で上から出し入れする（閉じる間も描く）
+        let shown = ui.cx.animate(Id(hash_of((hid.0, "expander"))), if *open { 1.0 } else { 0.0 }, ANIM_NORMAL);
+        if shown > 0.0 {
             let (body, _) = ui.add(Kind::Column, Dir::Column);
             ui.tree.layout[body].pad = (indent, 0.0);
             ui.tree.layout[body].gap = ui.px(6.0);
+            if shown < 1.0 {
+                ui.tree.layout[body].reveal = Some(shown);
+            }
             f(&mut ui.child(body));
         }
         flipped
@@ -2381,13 +2387,16 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn toggle(&mut self, on: &mut bool, text: impl Into<String>) -> Toggled<'_> {
-        let (idx, id) = self.add(Kind::Toggle { on: *on, text: text.into() }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::Toggle { on: *on, text: text.into(), pos: 0.0 }, Dir::Leaf);
         let changed = !self.disabled && self.cx.clicked == Some(id);
         if changed {
             *on = !*on;
-            if let Kind::Toggle { on: o, .. } = &mut self.tree.info[idx].kind {
-                *o = *on;
-            }
+        }
+        // つまみは、切り替えた時に短い長さで滑る
+        let p = self.cx.animate(id, if *on { 1.0 } else { 0.0 }, ANIM_FAST);
+        if let Kind::Toggle { on: o, pos, .. } = &mut self.tree.info[idx].kind {
+            *o = *on;
+            *pos = p;
         }
         Toggled { h: self.handle(idx, id), changed }
     }
@@ -2408,13 +2417,16 @@ impl<'a> Ui<'a> {
     #[track_caller]
     pub fn dark_mode_switch(&mut self, text: impl Into<String>) -> Toggled<'_> {
         let dark = self.cx.dark;
-        let (idx, id) = self.add(Kind::Toggle { on: dark, text: text.into() }, Dir::Leaf);
+        let (idx, id) = self.add(Kind::Toggle { on: dark, text: text.into(), pos: 0.0 }, Dir::Leaf);
         let changed = !self.disabled && self.cx.clicked == Some(id);
         if changed {
             self.cx.set_dark(!dark);
-            if let Kind::Toggle { on, .. } = &mut self.tree.info[idx].kind {
-                *on = !dark;
-            }
+        }
+        let now_dark = self.cx.dark;
+        let p = self.cx.animate(id, if now_dark { 1.0 } else { 0.0 }, ANIM_FAST);
+        if let Kind::Toggle { on, pos, .. } = &mut self.tree.info[idx].kind {
+            *on = now_dark;
+            *pos = p;
         }
         Toggled { h: self.handle(idx, id), changed }
     }
@@ -2897,6 +2909,71 @@ impl<'a> Ui<'a> {
         self.cx.wake_by(t);
     }
 
+    /// Moves a number smoothly toward `target`. When `target` changes, the value returned here goes
+    /// from where it was to the new target over `duration`, fast at first and slowing down at the
+    /// end (a cubic ease-out). The first call returns `target` at once, and a change of
+    /// direction midway starts from where the value is. Frames are drawn only while it moves. If the
+    /// user turned animations off in the system (on Windows: Settings > Accessibility > Visual
+    /// effects > Animation effects), the value jumps to `target`. `key` tells moving values apart
+    /// inside the current container, as with [`Ui::keyed`].
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use kargui::Size;
+    ///
+    /// # let mut wide = false;
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Wider").clicked() {
+    ///     wide = !wide;
+    /// }
+    /// let width = ui.animate("panel", if wide { 320.0 } else { 160.0 }, Duration::from_millis(250));
+    /// ui.column(|ui| {
+    ///     ui.label("Panel");
+    /// })
+    /// .width(Size::Fixed(width));
+    /// # });
+    /// ```
+    pub fn animate(&mut self, key: impl Hash, target: f32, duration: Duration) -> f32 {
+        let id = Id(hash_of((self.tree.info[self.parent].id.0, self.salt, key, "animate")));
+        self.cx.animate(id, target, duration)
+    }
+
+    /// 0.0 while `on` is false and 1.0 while it is true, moving between them in 250 ms (WinUI's
+    /// normal duration) as [`Ui::animate`] does. Use it to slide or grow something that appears
+    /// and disappears, for example with [`Handle::reveal`]. Call it in every frame, even while the
+    /// thing is hidden: a value that is not asked for in a frame is forgotten.
+    ///
+    /// ```
+    /// # let mut details = true;
+    /// # kargui::test::example(|ui| {
+    /// let shown = ui.animate_bool("details", details);
+    /// if shown > 0.0 {
+    ///     // slides open from the top while `details` turns on, and closed while it turns off
+    ///     ui.column(|ui| {
+    ///         ui.label("Created 2026-11-22").weak();
+    ///     })
+    ///     .reveal(shown);
+    /// }
+    /// # });
+    /// ```
+    pub fn animate_bool(&mut self, key: impl Hash, on: bool) -> f32 {
+        self.animate(key, if on { 1.0 } else { 0.0 }, ANIM_NORMAL)
+    }
+
+    /// Whether the user asked the system to reduce motion (on Windows, Animation effects is off).
+    /// [`Ui::animate`] and kargui's own widgets already jump instead of moving then; check it for
+    /// effects of your own that are not made with [`Ui::animate`].
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let label = if ui.reduce_motion() { "Done" } else { "Done!" };
+    /// ui.label(label);
+    /// # });
+    /// ```
+    pub fn reduce_motion(&self) -> bool {
+        self.cx.reduce_motion
+    }
+
     /// A [`Waker`] that wakes this window from another thread.
     ///
     /// ```
@@ -2973,6 +3050,29 @@ impl Handle<'_> {
     pub fn height(self, size: Size) -> Self {
         let s = self.px(size);
         self.tree.layout[self.idx].height = s;
+        self
+    }
+
+    /// Shows only the top `amount` of this widget (0.0 shows nothing, 1.0 all of it) and cuts off
+    /// the rest. In its parent it takes only the height it shows, while its children keep their
+    /// own sizes. With [`Ui::animate_bool`] it makes a section that slides open and closed. Widgets
+    /// in the part that is cut off cannot be clicked, and Tab skips those that are cut off entirely.
+    ///
+    /// ```
+    /// # let mut details = true;
+    /// # kargui::test::example(|ui| {
+    /// let shown = ui.animate_bool("details", details);
+    /// if shown > 0.0 {
+    ///     ui.column(|ui| {
+    ///         ui.label("Created 2026-11-22");
+    ///         ui.label("Changed 2026-11-23");
+    ///     })
+    ///     .reveal(shown);
+    /// }
+    /// # });
+    /// ```
+    pub fn reveal(self, amount: f32) -> Self {
+        self.tree.layout[self.idx].reveal = Some(amount.clamp(0.0, 1.0));
         self
     }
 
@@ -4137,6 +4237,10 @@ fn move_focus_with_arrows(cx: &mut Context, items: &[Id]) {
 
 /// ポインターが入れ子のメニューの項目に止まってから開く（ほかの項目なら閉じる）までの時間
 const SUBMENU_DELAY: Duration = Duration::from_millis(400);
+
+/// 動きの長さ（WinUI の ControlFastAnimationDuration・ControlNormalAnimationDuration と同じ）
+const ANIM_FAST: Duration = Duration::from_millis(167);
+const ANIM_NORMAL: Duration = Duration::from_millis(250);
 
 /// メニューの中身を作った結果
 struct MenuOut {

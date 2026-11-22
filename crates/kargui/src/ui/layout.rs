@@ -97,6 +97,11 @@ pub(crate) struct LayoutNode {
     pub gutter: f32,
     /// Grid の列の幅（Fixed は物理ピクセル）
     pub columns: Vec<Size>,
+    /// 上から何割の高さだけを見せるか（Handle::reveal）。親の中ではその高さだけを取り、子は元の高さで並べる（はみ出した所は
+    /// 描くときに切り取る）
+    pub reveal: Option<f32>,
+    /// reveal の時の、元の高さ（物理ピクセル）
+    pub full_h: f32,
     // 結果
     pub measured: (f32, f32),
     pub rect: Rect,
@@ -119,6 +124,8 @@ impl LayoutNode {
             content: 0.0,
             gutter: 0.0,
             columns: Vec::new(),
+            reveal: None,
+            full_h: 0.0,
             measured: (0.0, 0.0),
             rect: Rect::default(),
         }
@@ -164,6 +171,14 @@ pub(crate) fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
         (fixed_or(width, w), own_h)
     } else {
         (fixed_or(width, w), fixed_or(height, h))
+    };
+    // 一部だけ見せる物は、見せる高さだけを親に伝え、元の高さは並べる時のために覚える
+    let m = match nodes[i].reveal {
+        Some(t) => {
+            nodes[i].full_h = m.1;
+            (m.0, (m.1 * t.clamp(0.0, 1.0)).round())
+        }
+        None => m,
     };
     nodes[i].measured = m;
     m
@@ -240,6 +255,8 @@ fn cross(size: Size, measured: f32, avail: f32, align: Align) -> (f32, f32) {
 pub(crate) fn arrange(nodes: &mut [LayoutNode], i: usize, rect: Rect) {
     nodes[i].rect = rect;
     let n = nodes[i].clone();
+    // 一部だけ見せる物の子は、元の高さの中に並べる（見せない所は描く時に切り取る）
+    let rect = if n.reveal.is_some() { Rect::new(rect.x, rect.y, rect.w, rect.h.max(n.full_h)) } else { rect };
     let inner = Rect::new(rect.x + n.pad.0, rect.y + n.pad.1, (rect.w - 2.0 * n.pad.0).max(0.0), (rect.h - 2.0 * n.pad.1).max(0.0));
     let gaps = n.gap * n.children.len().saturating_sub(1) as f32;
     match n.dir {
@@ -413,6 +430,19 @@ mod tests {
         assert_eq!((r.x, r.y), (150.0, 125.0));
         let r = place_center(500.0, 50.0, Rect::new(0.0, 0.0, 400.0, 300.0));
         assert_eq!(r.x, 0.0);
+    }
+
+    #[test]
+    fn reveal_takes_part_of_the_height_and_keeps_the_children_at_full_size() {
+        // 縦の並び [上から 4 分の 1 だけ見せる列（中に高さ 40 と 60 の子）][下の部品 20]
+        let mut nodes = vec![LayoutNode::new(Dir::Column), LayoutNode::new(Dir::Column), leaf(50.0, 40.0), leaf(50.0, 60.0), leaf(50.0, 20.0)];
+        nodes[0].children = vec![1, 4];
+        nodes[1].children = vec![2, 3];
+        nodes[1].reveal = Some(0.25);
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 200.0, 300.0));
+        assert_eq!(nodes[1].rect.h, 25.0, "100 の 4 分の 1");
+        assert_eq!(nodes[4].rect.y, 25.0, "下の部品は、見せる高さのすぐ下");
+        assert_eq!((nodes[2].rect.h, nodes[3].rect.y, nodes[3].rect.h), (40.0, 40.0, 60.0), "中は元の大きさで並ぶ");
     }
 
     fn leaf(w: f32, h: f32) -> LayoutNode {

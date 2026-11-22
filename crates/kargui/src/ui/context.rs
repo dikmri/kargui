@@ -144,6 +144,33 @@ pub(crate) struct Dnd {
 /// ほかのアプリからの引っ張りの、元の部品の代わりの名前
 pub(crate) const EXTERNAL_SOURCE: Id = Id(0x6669_6c65_7300); // "files"
 
+/// 動いている値（Ui::animate）: from から to へ、start から dur の間に、減速の曲線で動く
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Anim {
+    pub from: f32,
+    pub to: f32,
+    pub start: Instant,
+    pub dur: Duration,
+    /// 最後に使ったフレームの番号（使われなくなった物をフレームの終わりで捨てる）
+    pub seen: u64,
+}
+
+impl Anim {
+    /// now の値。曲線は WinUI と同じく「速く始まってゆっくり止まる」（3 乗の減速）
+    pub fn value(&self, now: Instant) -> f32 {
+        if self.done(now) {
+            return self.to;
+        }
+        let t = (now.saturating_duration_since(self.start).as_secs_f32() / self.dur.as_secs_f32()).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+
+    pub fn done(&self, now: Instant) -> bool {
+        self.dur.is_zero() || now >= self.start + self.dur
+    }
+}
+
 /// 離した所で受け取る物。荷物はビューで元の部品から受け取り（押す・動かす・離すが 1 回に届いた時はここで初めて
 /// 入る）、そろったら Handle::dropped が渡す。フレームの終わりまでに受け取られなければ捨てる
 pub(crate) struct PendingDrop {
@@ -293,6 +320,12 @@ pub(crate) struct Context {
     /// ファイル（Vec<PathBuf>）を受け取る部品がある。窓の処理はこれを見て、OS にファイルを落とせる窓だと届け出る
     /// （使わないアプリは届け出ず、OLE の準備をしない）
     pub wants_files: bool,
+    /// 動いている値（Ui::animate。部品の id か、アプリの鍵から作った id → 動き）
+    pub anims: HashMap<Id, Anim>,
+    /// 利用者が OS で動きを減らしている（Windows の「アニメーション効果」が切）。動きは目標へ飛ぶ
+    pub reduce_motion: bool,
+    /// フレームの番号（Runtime が数える。使われなくなった動きを捨てるのに使う）
+    pub frame_no: u64,
     /// ポインターが乗っているスクロールの棒（一覧の id）
     pub bar_hover: Option<Id>,
     /// つかんでいるスクロールの棒のつまみ
@@ -391,6 +424,9 @@ impl Context {
             dnd: None,
             drop: None,
             wants_files: false,
+            anims: HashMap::new(),
+            reduce_motion: false,
+            frame_no: 0,
             bar_hover: None,
             drag: None,
             focus_visible: false,
@@ -509,6 +545,27 @@ impl Context {
             Some(t) => self.epoch + t,
             None => Instant::now() + self.skew,
         }
+    }
+
+    /// id の値を target へ dur かけて動かし、今の値を返す。初めての時と、動きを減らす設定の時は target をそのまま返す。
+    /// target が変わったら、今いる所から動き直す。動いている間は次のフレームを頼む（止まれば何も描かない）
+    pub fn animate(&mut self, id: Id, target: f32, dur: Duration) -> f32 {
+        let (now, frame) = (self.now, self.frame_no);
+        if self.reduce_motion || dur.is_zero() {
+            self.anims.insert(id, Anim { from: target, to: target, start: now, dur: Duration::ZERO, seen: frame });
+            return target;
+        }
+        let a = self.anims.entry(id).or_insert(Anim { from: target, to: target, start: now, dur, seen: frame });
+        if a.to != target {
+            let at = a.value(now);
+            *a = Anim { from: at, to: target, start: now, dur, seen: frame };
+        }
+        a.seen = frame;
+        let v = a.value(now);
+        if !a.done(now) {
+            self.want_frame = true;
+        }
+        v
     }
 
     /// t までに起こしてもらう（早い方を残す）

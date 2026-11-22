@@ -181,6 +181,15 @@ impl Clipboard for SystemClipboard {
     }
 }
 
+/// OS の「アニメーション効果」が切られているか（設定 > アクセシビリティ > 視覚効果）。読めなければ切られていない扱い
+fn system_reduce_motion() -> bool {
+    let mut on = BOOL(1);
+    let r = unsafe {
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some((&mut on as *mut BOOL).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
+    };
+    r.is_ok() && !on.as_bool()
+}
+
 /// OS が暗いテーマか（設定 > 個人用設定 > 色 > アプリ モード）
 fn system_dark() -> bool {
     let mut value = 1u32;
@@ -1176,6 +1185,16 @@ impl State {
                 self.need_frame = true;
                 Some(LRESULT(0))
             }
+            // OS の設定が変わった（アニメーション効果の入り切りもここに来る）
+            WM_SETTINGCHANGE => {
+                let reduce = system_reduce_motion();
+                if reduce != self.rt.cx.reduce_motion {
+                    self.rt.cx.reduce_motion = reduce;
+                    log::event("motion.setting", &format!("key={:?} spi={:#x}", self.key, wp.0), &format!("reduce={reduce}"));
+                    self.need_frame = true;
+                }
+                None
+            }
             WM_MOVE | WM_EXITSIZEMOVE | WM_DISPLAYCHANGE => {
                 self.forget_output();
                 self.last_caret = None;
@@ -1645,6 +1664,8 @@ fn create_window(
         let _ = PostMessageW(Some(HWND(target as *mut _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
     });
     rt.resize(cw as f32, ch as f32, dpi as f32 / 96.0);
+    rt.cx.reduce_motion = system_reduce_motion();
+    log::event("motion.setting", &format!("key={key:?}"), &format!("reduce={}", rt.cx.reduce_motion));
     let actions = Arc::new(Mutex::new(VecDeque::new()));
     let focused = unsafe { GetForegroundWindow() } == hwnd;
     let adapter = Adapter::new(hwnd, focused, ActionSink { hwnd: hwnd.0 as isize, queue: actions.clone() });
