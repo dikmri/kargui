@@ -378,6 +378,27 @@ mod tests {
         assert_eq!(f.get(FontId(99)), &Font::Ui, "知らない番号は UI の書体");
     }
 
+    /// 行の間が狭い書体（BIZ UD ゴシックは行の高さが文字の大きさと同じ）も、UI の書体より詰めない。
+    /// 作者がメモ帳を等幅にした時、行の高さが 19 から 14 ピクセルになり、行がくっついた（2026-11-22 の記録）
+    #[test]
+    fn fonts_with_tight_lines_get_at_least_the_ui_fonts_line_height() {
+        let mut t = Text::new().unwrap();
+        let ui = styled(&mut t, Font::Ui);
+        let step = |l: &Laid| l.lines[1].top - l.lines[0].top;
+        let ui_step = step(&t.layout("a\n漢", ui, None));
+        for font in [Font::Monospace, Font::family("BIZ UDPGothic")] {
+            let st = styled(&mut t, font.clone());
+            let laid = t.layout("a\n漢", st, None);
+            assert!(step(&laid) >= ui_step - 0.5, "{font:?}: 行の間 {} < UI の書体の {ui_step}", step(&laid));
+            assert!(laid.height >= 2.0 * ui_step - 1.0, "{font:?}: 高さ {}", laid.height);
+            // 字は広げた行の中に収まる（上下にはみ出さない）
+            for g in &laid.glyphs {
+                let (top, bottom) = (g.y + g.slot.top as f32, g.y + g.slot.top as f32 + g.slot.h as f32);
+                assert!(top >= -1.0 && bottom <= laid.height + 1.0, "{font:?}: 字 {top}..{bottom} 高さ {}", laid.height);
+            }
+        }
+    }
+
     /// 等幅の書体では、細い字も太い字も同じ幅。UI の書体では違う
     #[test]
     fn monospace_letters_all_have_the_same_width() {

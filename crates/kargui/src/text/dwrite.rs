@@ -329,8 +329,28 @@ impl Text {
         let format = unsafe {
             self.factory.CreateTextFormat(&family, collection.as_ref(), weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("ja-jp"))?
         };
+        // 行の間が UI の書体より狭い書体（BIZ UD ゴシックは行の高さが文字の大きさと同じ）は、UI の書体の行の高さに広げ、
+        // 字は広げた行の真ん中に置く。書体を変えても、行の間と入力欄の高さが変わらないように
+        if font != FontId(0) {
+            let ui = self.format(size, bold, FontId(0))?;
+            let ((ui_h, _), (h, baseline)) = (self.natural_line(&ui)?, self.natural_line(&format)?);
+            if h + 0.01 < ui_h {
+                unsafe { format.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, ui_h, baseline + (ui_h - h) / 2.0)? };
+                log::event("font.line_height", &format!("family={family} size={size}"), &format!("natural={h:.2} ui={ui_h:.2}"));
+            }
+        }
         self.formats.insert(key, format.clone());
         Ok(format)
+    }
+
+    /// その書式の 1 行の、書体どおりの高さとベースラインの位置
+    fn natural_line(&self, format: &IDWriteTextFormat) -> Result<(f32, f32)> {
+        let wide: Vec<u16> = "あ".encode_utf16().collect();
+        let layout = unsafe { self.factory.CreateTextLayout(&wide, format, 1.0e6, 1.0e6)? };
+        let mut lm = [DWRITE_LINE_METRICS::default()];
+        let mut count = 0u32;
+        unsafe { layout.GetLineMetrics(Some(&mut lm), &mut count)? };
+        Ok((lm[0].height, lm[0].baseline))
     }
 
     /// 文字列を並べる。max_width を渡すとその幅で折り返す。結果は覚えておき、同じ物には同じ結果を返す

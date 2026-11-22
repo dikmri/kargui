@@ -9,7 +9,7 @@ use std::sync::Arc;
 use parley::editing::Cursor;
 use parley::fontique::{Blob, Language};
 use parley::layout::Affinity;
-use parley::style::{FontFamily, FontWeight, StyleProperty};
+use parley::style::{FontFamily, FontWeight, LineHeight, StyleProperty};
 use parley::{Alignment, AlignmentOptions, FontContext, FontData, Layout, LayoutContext, PositionedLayoutItem};
 use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
@@ -117,6 +117,8 @@ pub(crate) struct Text {
     pub fonts: FontTable,
     /// 書体の番号ごとに決めた、parley に渡すファミリーの並び（CSS の font-family の形）
     families: HashMap<u16, String>,
+    /// ファミリーの並び・大きさ・太字ごとの、1 行の書体どおりの高さ
+    natural_lines: HashMap<(String, u32, bool), f32>,
     layout_cx: LayoutContext<()>,
     scale: ScaleContext,
     glyphs: HashMap<GlyphKey, Option<Slot>>,
@@ -132,6 +134,7 @@ impl Text {
             font_cx: FontContext::new(),
             fonts: FontTable::new(),
             families: HashMap::new(),
+            natural_lines: HashMap::new(),
             layout_cx: LayoutContext::new(),
             scale: ScaleContext::new(),
             glyphs: HashMap::new(),
@@ -216,12 +219,22 @@ impl Text {
         }
         self.layouts_made += 1;
         let family = self.family(style.font);
+        // 行の間が UI の書体より狭い書体（BIZ UD ゴシックなど）は、UI の書体の行の高さに広げる（字は行の真ん中に来る）
+        let line = if style.font != FontId(0) {
+            let (ui_h, h) = (self.natural_line(FONTS, style.size, style.bold), self.natural_line(&family, style.size, style.bold));
+            (h + 0.01 < ui_h).then_some(ui_h)
+        } else {
+            None
+        };
         let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, s, 1.0, true);
         b.push_default(StyleProperty::FontFamily(FontFamily::Source(family.into())));
         b.push_default(StyleProperty::FontSize(style.size));
         b.push_default(StyleProperty::Locale(Language::parse("ja-JP").ok()));
         if style.bold {
             b.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
+        }
+        if let Some(h) = line {
+            b.push_default(StyleProperty::LineHeight(LineHeight::Absolute(h)));
         }
         let mut layout: Layout<()> = b.build(s);
         layout.break_all_lines(max_width);
@@ -255,6 +268,26 @@ impl Text {
         let height = lines.last().map_or(layout.height(), |l| layout.height().max(l.top + l.height));
         // 幅は行末の空白も含める（入力欄のキャレットが空白の後ろへ進むように。DirectWrite と同じ）
         Laid { glyphs, width: layout.full_width(), height, lines, text: s.to_string(), layout: Some(layout) }
+    }
+
+    /// そのファミリーの並びの、1 行の書体どおりの高さ（覚えておく）
+    fn natural_line(&mut self, family: &str, size: f32, bold: bool) -> f32 {
+        let key = (family.to_string(), (size * 64.0) as u32, bold);
+        if let Some(h) = self.natural_lines.get(&key) {
+            return *h;
+        }
+        let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, "あ", 1.0, true);
+        b.push_default(StyleProperty::FontFamily(FontFamily::Source(family.to_string().into())));
+        b.push_default(StyleProperty::FontSize(size));
+        b.push_default(StyleProperty::Locale(Language::parse("ja-JP").ok()));
+        if bold {
+            b.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
+        }
+        let mut layout: Layout<()> = b.build("あ");
+        layout.break_all_lines(None);
+        let h = layout.height();
+        self.natural_lines.insert(key, h);
+        h
     }
 
     fn glyph(&mut self, font: &FontData, glyph: u32, size: f32, coords: &[i16], embolden: bool) -> Option<Slot> {
