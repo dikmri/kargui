@@ -798,7 +798,8 @@ impl Context {
                         continue;
                     }
                     self.press_source = None;
-                    if let Some(d) = self.dnd.take() {
+                    // ほかのアプリからの引っ張りは、OS の「落とした」（FileDrop）で終える
+                    if let Some(d) = self.dnd.take_if(|d| !d.external) {
                         self.finish_drag(d, x, y);
                         self.pressed = None;
                         continue;
@@ -830,7 +831,13 @@ impl Context {
                         self.pointer = Some((x, y));
                     }
                 }
-                Event::PointerCancel => self.cancel_drag("capture lost"),
+                // マウスのつかみが外れたら、窓の中の引っ張りだけをやめる。ほかのアプリからの引っ張りは、マウスをつかんで
+                // いるのがそのアプリなので関係ない（落とす直前に、ボタンの離れたマウスの動きが届くことがある）
+                Event::PointerCancel => {
+                    if !self.dnd.as_ref().is_some_and(|d| d.external) {
+                        self.cancel_drag("capture lost");
+                    }
+                }
                 Event::FileDragEnter { x, y, paths } => self.enter_files(x, y, paths),
                 Event::FileDragOver { x, y } => {
                     if self.dnd.as_ref().is_some_and(|d| d.external) {

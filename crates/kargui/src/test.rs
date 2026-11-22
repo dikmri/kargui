@@ -4573,6 +4573,17 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_pointer_does_not_cancel_files_from_another_app() {
+        // 作者の記録（2026-11-22 06:48:29）: エクスプローラーから落とす直前に、ボタンの離れたマウスの動きが窓に届き、
+        // 「つかみが外れた」として取り消していた。マウスをつかんでいるのはエクスプローラーなので、取り消さない
+        let mut h = shelf(true);
+        let (sx, sy) = mid_of(&h, "Drop files here");
+        h.send(vec![Event::FileDragEnter { x: sx, y: sy, paths: vec!["C:\\a.txt".into()] }]);
+        h.send(vec![Event::PointerCancel, Event::FileDrop { x: sx, y: sy }]);
+        assert_eq!(h.app().opened, [std::path::PathBuf::from("C:\\a.txt")]);
+    }
+
+    #[test]
     fn a_window_without_file_targets_does_not_ask_for_files() {
         let h = shelf(false);
         assert!(!h.cur().cx.wants_files, "使わないアプリは OS に届け出ない（起動を遅くしない）");

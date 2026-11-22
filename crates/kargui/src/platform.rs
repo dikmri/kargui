@@ -256,7 +256,7 @@ fn accept_files(hwnd: HWND) {
     // 引っ張っている物の絵（エクスプローラーのファイルの絵）を、この窓の上でも OS に描いてもらう係
     let helper: Option<IDropTargetHelper> = unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) }.ok();
     let has_helper = helper.is_some();
-    let target: IDropTarget = DropTarget { hwnd, helper, files: std::cell::Cell::new(false) }.into();
+    let target: IDropTarget = DropTarget { hwnd, helper, files: std::cell::Cell::new(false), last_effect: std::cell::Cell::new(u32::MAX) }.into();
     let res = unsafe { RegisterDragDrop(hwnd, &target) };
     log::event("files.accept", &format!("ole={init:?} helper={has_helper}"), &format!("{res:?}"));
     if res.is_ok() {
@@ -305,6 +305,8 @@ struct DropTarget {
     helper: Option<windows::Win32::UI::Shell::IDropTargetHelper>,
     /// 今の引っ張りがファイルを運んでいる（DragEnter で決め、出たか落としたら戻す）
     files: std::cell::Cell<bool>,
+    /// 最後に OS に返したポインターの形（DROPEFFECT。変わった時だけ記録する）
+    last_effect: std::cell::Cell<u32>,
 }
 
 impl DropTarget {
@@ -323,6 +325,9 @@ impl DropTarget {
         let e = if ok { DROPEFFECT_COPY } else { DROPEFFECT_NONE };
         if !effect.is_null() {
             unsafe { *effect = e };
+        }
+        if self.last_effect.replace(e.0) != e.0 {
+            log::event("files.effect", &format!("x={x} y={y}"), if ok { "copy" } else { "none (not allowed)" });
         }
         e
     }
@@ -1201,7 +1206,10 @@ impl State {
                     self.drag_cursor = None;
                 }
                 let cx = &self.rt.cx;
-                if cx.drag.is_some() || cx.pressed.is_some() || cx.press_source.is_some() || cx.dnd.is_some() {
+                // ほかのアプリからの引っ張りは、マウスをつかんでいるのがそのアプリなので、ここでは扱わない（OLE の
+                // IDropTarget が扱う）。落とす直前にボタンの離れた動きが届いても、取り消さない
+                let inner_drag = cx.dnd.as_ref().is_some_and(|d| !d.external);
+                if cx.drag.is_some() || cx.pressed.is_some() || cx.press_source.is_some() || inner_drag {
                     // つまみをつかんでいる間・部品を押している間・引っ張り出せる部品を押している間と引っ張っている間は、
                     // 移動を渡す。左のボタンが離れていたら（捕まえを失って WM_LBUTTONUP が届かなかった）、押すのを終える。
                     // 引っ張っている途中なら、そこへは落とさずに取り消す
@@ -1220,7 +1228,7 @@ impl State {
                             });
                             self.drag_cursor = shape;
                         }
-                    } else if self.rt.cx.dnd.is_some() || self.rt.cx.press_source.is_some() {
+                    } else if inner_drag || self.rt.cx.press_source.is_some() {
                         log::event("drag.lost", &format!("x={x} y={y}"), "cancel");
                         self.push(Event::PointerCancel);
                         set_cursor(IDC_ARROW);
