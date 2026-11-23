@@ -102,6 +102,8 @@ pub(crate) struct LayoutNode {
     pub reveal: Option<f32>,
     /// reveal の時の、元の高さ（物理ピクセル）
     pub full_h: f32,
+    /// 中身を自分の範囲で切り取る（CSS の overflow: hidden）。Fill の向きでは中身より狭くできる（min-width: 0）。表の升
+    pub clip: bool,
     // 結果
     pub measured: (f32, f32),
     pub rect: Rect,
@@ -126,6 +128,7 @@ impl LayoutNode {
             columns: Vec::new(),
             reveal: None,
             full_h: 0.0,
+            clip: false,
             measured: (0.0, 0.0),
             rect: Rect::default(),
         }
@@ -171,6 +174,12 @@ pub(crate) fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
         (fixed_or(width, w), own_h)
     } else {
         (fixed_or(width, w), fixed_or(height, h))
+    };
+    // 切り取る物の Fill の向きは、中身の長さを親に伝えない（親の取り分より広がらない。はみ出す所は描く時に切り取る）
+    let m = if nodes[i].clip {
+        (if matches!(width, Size::Fill(_)) { 0.0 } else { m.0 }, if matches!(height, Size::Fill(_)) { 0.0 } else { m.1 })
+    } else {
+        m
     };
     // 一部だけ見せる物は、見せる高さだけを親に伝え、元の高さは並べる時のために覚える
     let m = match nodes[i].reveal {
@@ -514,6 +523,22 @@ mod tests {
         // 全部が入りきらない時は、どれも中身の幅（前と同じくはみ出す）
         layout(&mut nodes, 0, Rect::new(0.0, 0.0, 400.0, 10.0));
         assert_eq!([nodes[1].rect.w, nodes[2].rect.w, nodes[3].rect.w], [500.0, 80.0, 0.0]);
+    }
+
+    #[test]
+    fn a_clipping_fill_can_be_narrower_than_its_content() {
+        // 表の升: 中身（500）より狭い取り分でも、取り分の幅にする（はみ出す所は描く時に切り取る）
+        let mut nodes = vec![LayoutNode::new(Dir::Row), leaf(500.0, 10.0), leaf(80.0, 10.0)];
+        nodes[0].children = vec![1, 2];
+        nodes[1].width = Size::Fill(1.0);
+        nodes[1].clip = true;
+        nodes[2].width = Size::Fixed(80.0);
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 300.0, 10.0));
+        assert_eq!((nodes[1].rect.w, nodes[2].rect.x), (220.0, 220.0));
+        // 切り取らない物は今までどおり中身の幅
+        nodes[1].clip = false;
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 300.0, 10.0));
+        assert_eq!(nodes[1].rect.w, 500.0);
     }
 
     #[test]

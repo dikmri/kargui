@@ -42,6 +42,9 @@
   XWayland). IBus is not there yet. New Linux-only dependencies: wayland-client,
   wayland-protocols, xkbcommon-dl, rustix, accesskit_unix, zbus and x11rb (89 crates in all; 71 of
   them come with accesskit_unix, that is zbus and AT-SPI).
+- Tables: in a narrow table, a cell whose text is wider than its column no longer pushes the
+  cells after it to the right (the columns of every row stay under their headings); the text is
+  cut at the edge of the cell. Header cells do the same.
 - Icons: `Icon::Maximize` (a square) and `Icon::Restore` (two squares). `Icon::ALL` now has 21
   icons.
 - Screen readers: text fields and text areas now expose their text as text runs (one per line)

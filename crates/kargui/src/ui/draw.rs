@@ -751,8 +751,8 @@ impl Painter<'_> {
                 self.prev.drop_targets.push((id, c, t, order));
             }
         }
-        if tree.layout[i].reveal.is_some() {
-            // 一部だけ見せる物: 見せる範囲の外を切り取る。外に出た子は押せず、Tab でも移らない
+        if tree.layout[i].reveal.is_some() || tree.layout[i].clip {
+            // 一部だけ見せる物と切り取る物（表の升）: 範囲の外を切り取る。外に出た子は押せず、Tab でも移らない
             self.d.push_clip(IRect::covering(r), None);
             let outer = self.clip;
             self.clip = intersect(r, outer).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));

@@ -3319,6 +3319,30 @@ mod tests {
         assert!(a11y_nodes(&h).iter().all(|n| n.value() != Some("pw")));
     }
 
+    /// 名前の長い行がある表（名前の列は残りの幅、大きさの列は固定で右寄せ）
+    struct Narrow;
+
+    impl App for Narrow {
+        fn view(&mut self, ui: &mut Ui) {
+            let columns = [crate::ui::TableColumn::new("Name").fill(), crate::ui::TableColumn::new("Size").width(80.0).right()];
+            let rows = [("a.txt", "1 KB"), ("a-file-name-much-wider-than-its-column.md", "25 KB")];
+            ui.table(&columns, rows.len(), 28.0).show(|row, i| {
+                row.text(rows[i].0);
+                row.text(rows[i].1);
+            });
+        }
+    }
+
+    #[test]
+    fn table_columns_stay_aligned_when_a_name_is_wider_than_its_column() {
+        let h = Harness::with_size(Narrow, 260.0, 200.0, 1.0);
+        // 右寄せの大きさの升は、どの行でも同じ所で終わる（名前の長い行だけ右へずれない）
+        let (short, long, head) = (h.find("1 KB").unwrap(), h.find("25 KB").unwrap(), h.find("Size").unwrap());
+        assert_eq!(short.x + short.w, long.x + long.w, "{short:?} {long:?}");
+        // 見出しの列とも並ぶ（升の右の端は窓の中）
+        assert!(long.x + long.w <= 260.0 && (long.x + long.w - (head.x + head.w)).abs() <= 12.0, "{long:?} {head:?}");
+    }
+
     #[derive(Default)]
     struct Titled {
         clicks: u32,

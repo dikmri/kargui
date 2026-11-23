@@ -6285,6 +6285,8 @@ impl<'u> Table<'u, '_> {
                 let dir = current.filter(|&(col, _)| col == k).map(|(_, asc)| asc);
                 let (h, _) = hui.push(hid, Kind::ColumnHeader { text: c.title.clone(), sort: dir, right: c.right, sortable, column: k }, Dir::Leaf);
                 hui.tree.layout[h].width = px_widths[k].map_or(Size::Fill(1.0), Size::Fixed);
+                // 見出しの文字が列より広い時は切り取る（行の升と同じ幅を保つ）
+                hui.tree.layout[h].clip = true;
                 hui.tree.info[h].skip_tab = k != 0;
                 heads.push(hid);
                 if sortable && !hui.disabled && hui.cx.clicked == Some(hid) {
@@ -6389,6 +6391,8 @@ impl TableRow<'_, '_> {
         let pad = (CELL_PAD * self.ui.cx.scale).round();
         let l = &mut self.ui.tree.layout[c];
         l.width = self.widths.get(k).copied().flatten().map_or(Size::Fill(1.0), Size::Fixed);
+        // 中身が列より広い時は切り取る。名前の長い行だけ後ろの列が右へずれないように、残りの幅の列も中身より狭くできる
+        l.clip = true;
         // 升の内側の左右の余白（右寄せの列と左寄せの列が詰まらないように。見出しも同じだけ内側に描く）
         l.pad = (pad, 0.0);
         l.align = if self.rights.get(k).copied().unwrap_or(false) { Align::End } else { Align::Start };
