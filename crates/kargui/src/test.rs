@@ -1435,21 +1435,21 @@ impl<A: App> Harness<A> {
         Image { width: w as u32, height: h as u32, pixels }
     }
 
-    /// 最後のフレームで文字の形を描いた四角（x, y, 幅, 高さ。画素）。
-    /// xtask の写真の比べが、PC ごとに入っている書体の違いによる文字の形の違いだけを見分けるのに使う
+    /// 最後のフレームで、文字から位置の決まる四角（x, y, 幅, 高さ。画素）: 文字の形の四角と、書式付きの文字の段落の四角。
+    /// xtask の写真の比べが、PC ごとに入っている書体の違いによる違いだけを見分けるのに使う。書式付きの文字は、書体が
+    /// 変わると後ろの文字と一緒に下線・取り消し線・コードの背景も動く（文字の形の外の画素も変わる）ので、段落ごと入れる
     #[doc(hidden)]
     pub fn glyph_boxes(&mut self) -> Vec<[i32; 4]> {
         let rt = self.cur();
-        rt.draw
-            .quads
-            .iter()
-            .filter(|q| q.is_glyph())
-            .map(|q| {
-                let b = q.bounds();
-                let (x, y) = (b.x.floor() as i32, b.y.floor() as i32);
-                [x, y, (b.right().ceil() as i32) - x, (b.bottom().ceil() as i32) - y]
-            })
-            .collect()
+        let snap = |b: Rect| {
+            let (x, y) = (b.x.floor() as i32, b.y.floor() as i32);
+            [x, y, (b.right().ceil() as i32) - x, (b.bottom().ceil() as i32) - y]
+        };
+        let glyphs = rt.draw.quads.iter().filter(|q| q.is_glyph()).map(|q| snap(q.bounds()));
+        let paragraphs = (0..rt.tree.info.len())
+            .filter(|&i| matches!(rt.tree.info[i].kind, crate::ui::Kind::RichText { .. }))
+            .map(|i| snap(rt.tree.layout[i].rect));
+        glyphs.chain(paragraphs).collect()
     }
 }
 
