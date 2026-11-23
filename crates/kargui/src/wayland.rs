@@ -5,20 +5,28 @@
 //! 論理の大きさに合わせる。キー配列は libxkbcommon を動く時に読む（xkbcommon-dl。組み立てに開発用の部品が要らない）。
 //! 待つのは poll の 1 か所（Wayland の接続・ほかのスレッドから起こす eventfd・時間）。
 //!
-//! まだ無い物（次の区切り）: 日本語入力（text-input-v3）・OS のクリップボード・読み上げ・ファイルのダイアログ・
-//! 複数の窓・ドラッグ＆ドロップ・題の帯（GNOME の CSD）。クリップボードは今はアプリの中だけで持つ。
+//! クリップボードは wl_data_device（文字だけ）。地元の日付と時刻は C の localtime_r で読む。
+//!
+//! まだ無い物（次の区切り）: 日本語入力（text-input-v3）・読み上げ・ファイルのダイアログ・明暗の設定・
+//! 複数の窓・ドラッグ＆ドロップ・題の帯（GNOME の CSD）。
 
+use std::cell::RefCell;
 use std::ffi::c_char;
 use std::os::fd::{AsFd, OwnedFd};
-use std::sync::Arc;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec, eventfd, poll};
 use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
 use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
+use rustix::pipe::{PipeFlags, pipe_with};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::{wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
+use wayland_client::protocol::{
+    wl_buffer, wl_callback, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_keyboard, wl_pointer, wl_registry, wl_seat,
+    wl_shm, wl_shm_pool, wl_surface,
+};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop, event_created_child};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{self, Shape};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
 use wayland_protocols::wp::fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1};
@@ -50,18 +58,141 @@ fn error(what: &str, e: impl std::fmt::Display) -> crate::Error {
     crate::Error(format!("wayland: {what}: {e}"))
 }
 
-/// アプリの中だけのクリップボード（OS のクリップボードは次の区切りで wl_data_device につなぐ）
-struct LocalClipboard(Option<String>);
+/// 文字の形（mime）。上ほど優先する
+const TEXT_MIMES: [&str; 4] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT"];
+/// ほかのアプリが貼る物を書き終えるのを待つ長さ
+const PASTE_TIMEOUT: Duration = Duration::from_secs(1);
 
-impl Clipboard for LocalClipboard {
-    fn get(&mut self) -> Option<String> {
-        self.0.clone()
-    }
+/// 窓（合成からの知らせ）とクリップボードの係が分け合う状態
+struct Clip {
+    conn: Connection,
+    qh: QueueHandle<State>,
+    manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    device: Option<wl_data_device::WlDataDevice>,
+    /// 最後の入力の番号。選択を取る時に合成へ見せる（キー・ボタン・キーボードが入った時の知らせから）
+    serial: u32,
+    /// 自分が出している物。ほかのアプリが選択を取ると、合成が cancelled を送るので消す
+    ours: Option<(wl_data_source::WlDataSource, String)>,
+    /// 今の選択（ほかのアプリの物も自分の物も、合成が offer として知らせる）
+    offer: Option<wl_data_offer::WlDataOffer>,
+    /// wl_data_device が無い合成では、アプリの中だけで持つ
+    local: Option<String>,
+}
 
+/// OS のクリップボード（文字だけ）
+struct WaylandClipboard(Rc<RefCell<Clip>>);
+
+impl Clipboard for WaylandClipboard {
     fn set(&mut self, text: &str) {
-        log::event("clipboard.set", &format!("chars={}", text.chars().count()), "local only (no OS clipboard on linux yet)");
-        self.0 = Some(text.to_string());
+        let mut c = self.0.borrow_mut();
+        let (Some(manager), Some(device)) = (c.manager.clone(), c.device.clone()) else {
+            log::event("clipboard.set", &format!("chars={}", text.chars().count()), "local only (no wl_data_device)");
+            c.local = Some(text.to_string());
+            return;
+        };
+        let source = manager.create_data_source(&c.qh, ());
+        for mime in TEXT_MIMES {
+            source.offer(mime.to_string());
+        }
+        device.set_selection(Some(&source), c.serial);
+        if let Some((old, _)) = c.ours.replace((source, text.to_string())) {
+            old.destroy();
+        }
+        let _ = c.conn.flush();
+        log::event("clipboard.set", &format!("chars={} serial={}", text.chars().count(), c.serial), "selection");
     }
+
+    fn get(&mut self) -> Option<String> {
+        let c = self.0.borrow();
+        // 自分が出している物は、合成を通さずに返す（自分あての送れの知らせを、読む間は扱えないため）
+        if let Some((_, text)) = &c.ours {
+            log::event("clipboard.get", &format!("chars={}", text.chars().count()), "own selection");
+            return Some(text.clone());
+        }
+        let Some(offer) = c.offer.as_ref() else {
+            log::event("clipboard.get", "", if c.local.is_some() { "local" } else { "empty" });
+            return c.local.clone();
+        };
+        let mimes = offer.data::<Mutex<Vec<String>>>().map(|m| m.lock().map(|v| v.clone()).unwrap_or_default()).unwrap_or_default();
+        let Some(mime) = TEXT_MIMES.into_iter().find(|t| mimes.iter().any(|m| m == t)) else {
+            log::event("clipboard.get", &format!("mimes={mimes:?}"), "no text");
+            return None;
+        };
+        let t = Instant::now();
+        let (read_end, write_end) = pipe_with(PipeFlags::CLOEXEC).ok()?;
+        offer.receive(mime.to_string(), write_end.as_fd());
+        drop(write_end);
+        let _ = c.conn.flush();
+        // ほかのアプリが書き終える（書く口を閉じる）まで読む。止まったアプリで固まらないよう、待つのは 1 秒まで
+        let mut bytes = Vec::new();
+        let mut timed_out = false;
+        loop {
+            let left = PASTE_TIMEOUT.saturating_sub(t.elapsed());
+            let ts = Timespec { tv_sec: left.as_secs() as _, tv_nsec: left.subsec_nanos() as _ };
+            let mut fds = [PollFd::new(&read_end, PollFlags::IN)];
+            match poll(&mut fds, Some(&ts)) {
+                Ok(0) => {
+                    timed_out = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(_) => break,
+            }
+            let mut chunk = [0u8; 8192];
+            match rustix::io::read(&read_end, &mut chunk) {
+                Ok(0) => break,
+                Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => break,
+            }
+        }
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        log::event(
+            "clipboard.get",
+            &format!("mime={mime} chars={}", text.chars().count()),
+            &format!("ms={:.1}{}", t.elapsed().as_secs_f64() * 1000.0, if timed_out { " timeout" } else { "" }),
+        );
+        Some(text)
+    }
+}
+
+/// 地元の日付と時刻（C の localtime_r。/etc/localtime と TZ に従う）
+#[repr(C)]
+struct Tm {
+    tm_sec: i32,
+    tm_min: i32,
+    tm_hour: i32,
+    tm_mday: i32,
+    tm_mon: i32,
+    tm_year: i32,
+    tm_wday: i32,
+    tm_yday: i32,
+    tm_isdst: i32,
+    tm_gmtoff: std::ffi::c_long,
+    tm_zone: *const c_char,
+}
+
+unsafe extern "C" {
+    fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+}
+
+fn local_tm() -> Option<Tm> {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    let mut tm = Tm { tm_sec: 0, tm_min: 0, tm_hour: 0, tm_mday: 0, tm_mon: 0, tm_year: 0, tm_wday: 0, tm_yday: 0, tm_isdst: 0, tm_gmtoff: 0, tm_zone: std::ptr::null() };
+    // SAFETY: secs と tm はこの関数の中の値。localtime_r は tm に書くだけで、ほかのスレッドと分け合わない
+    let ok = unsafe { !localtime_r(&secs, &mut tm).is_null() };
+    ok.then_some(tm)
+}
+
+/// 地元の今日（年・月・日）
+pub(crate) fn local_date() -> Option<(i32, u32, u32)> {
+    local_tm().map(|t| (t.tm_year + 1900, (t.tm_mon + 1) as u32, t.tm_mday as u32))
+}
+
+/// 地元の今の時刻（時・分）
+pub(crate) fn local_time() -> Option<(u32, u32)> {
+    local_tm().map(|t| (t.tm_hour as u32, t.tm_min as u32))
 }
 
 /// 共有メモリの絵 2 枚。合成が読んでいる（busy）間は描かない
@@ -300,6 +431,8 @@ struct State {
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     xkb: Option<Keyboard>,
+    /// クリップボード（WaylandClipboard と分け合う）
+    clip: Rc<RefCell<Clip>>,
     buffers: Option<Shm>,
     /// CPU の道の絵（前のフレームの絵。変わった所だけ描き直す）と、その要約と背景の色
     pixels: Vec<u32>,
@@ -557,15 +690,17 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let frac_mgr: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let cursor_mgr: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let deco_mgr: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
+    let data_mgr: Option<wl_data_device_manager::WlDataDeviceManager> = globals.bind(&qh, 1..=3, ()).ok();
     log::event(
         "wayland.globals",
         &format!(
-            "seat={} viewporter={} fractional_scale={} cursor_shape={} decoration={}",
+            "seat={} viewporter={} fractional_scale={} cursor_shape={} decoration={} data_device={}",
             seat.is_some(),
             viewporter.is_some(),
             frac_mgr.is_some(),
             cursor_mgr.is_some(),
-            deco_mgr.is_some()
+            deco_mgr.is_some(),
+            data_mgr.is_some()
         ),
         &format!("ms={:.1}", started.elapsed().as_secs_f64() * 1000.0),
     );
@@ -588,9 +723,16 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let _fractional = frac_mgr.as_ref().map(|m| m.get_fractional_scale(&surface, &qh, ()));
     surface.commit();
 
+    // クリップボード（座席ごとに 1 つの data device）
+    let device = match (&data_mgr, &seat) {
+        (Some(m), Some(s)) => Some(m.get_data_device(s, &qh, ())),
+        _ => None,
+    };
+    let clip = Rc::new(RefCell::new(Clip { conn: conn.clone(), qh: qh.clone(), manager: data_mgr, device, serial: 0, ours: None, offer: None, local: None }));
+
     let text = Text::new()?;
     let dark = options.dark.unwrap_or(false);
-    let mut rt = Runtime::new(text, dark, Box::new(LocalClipboard(None)), options.title.clone());
+    let mut rt = Runtime::new(text, dark, Box::new(WaylandClipboard(clip.clone())), options.title.clone());
     // ほかのスレッドから起こされたら、eventfd に書いて poll を起こす
     let wake_fd = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).map_err(|e| error("eventfd", e))?);
     let writer = wake_fd.clone();
@@ -600,7 +742,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     rt.cx.text.load_fonts(&options.fonts);
     rt.cx.font = rt.cx.text.fonts.id(&options.font);
     let logical = (options.size.0.round().max(1.0) as i32, options.size.1.round().max(1.0) as i32);
-    log::event("window.create", &format!("title={:?} size={}x{} app_id={}", options.title, logical.0, logical.1, app_id()), "ok");
+    let local = local_date().zip(local_time()).map_or("unknown".to_string(), |((y, m, d), (h, min))| format!("{y}-{m:02}-{d:02} {h:02}:{min:02}"));
+    log::event("window.create", &format!("title={:?} size={}x{} app_id={} local={local}", options.title, logical.0, logical.1, app_id()), "ok");
 
     let mut st = State {
         rt,
@@ -614,6 +757,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         pointer: None,
         keyboard: None,
         xkb: Keyboard::new(),
+        clip,
         buffers: None,
         pixels: Vec::new(),
         summary: Summary::default(),
@@ -892,8 +1036,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
             wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
                 st.pointer_motion(surface_x as f32 * s, surface_y as f32 * s);
             }
-            wl_pointer::Event::Button { time, button, state, .. } => {
+            wl_pointer::Event::Button { serial, time, button, state } => {
                 let pressed = state == WEnum::Value(wl_pointer::ButtonState::Pressed);
+                st.clip.borrow_mut().serial = serial;
                 let (x, y) = (st.px, st.py);
                 if button != BTN_LEFT {
                     log::event("button", &format!("button=0x{button:x} pressed={pressed} x={x} y={y}"), "ok");
@@ -964,7 +1109,8 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 let ok = st.xkb.as_mut().is_some_and(|k| k.set_keymap(fd, size));
                 log::event("keyboard.keymap", &format!("size={size}"), if ok { "ok" } else { "error" });
             }
-            wl_keyboard::Event::Enter { .. } => {
+            wl_keyboard::Event::Enter { serial, .. } => {
+                st.clip.borrow_mut().serial = serial;
                 log::event("keyboard.enter", "", "ok");
             }
             wl_keyboard::Event::Leave { .. } => {
@@ -985,7 +1131,8 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 }
                 log::event("keyboard.repeat_info", &format!("rate={rate} delay={delay}"), "ok");
             }
-            wl_keyboard::Event::Key { key, state, .. } => {
+            wl_keyboard::Event::Key { serial, key, state, .. } => {
+                st.clip.borrow_mut().serial = serial;
                 // xkb のキーの番号は、evdev の番号 + 8
                 let code = key + 8;
                 if state == WEnum::Value(wl_keyboard::KeyState::Pressed) {
@@ -1001,6 +1148,75 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 {
                     k.stop_repeat("released");
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(State: wl_data_device_manager::WlDataDeviceManager);
+
+impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
+    fn event(st: &mut Self, _: &wl_data_device::WlDataDevice, event: wl_data_device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        match event {
+            // 選択が変わった（ほかのアプリが写した、自分が写した、空になった）。前の offer は片付ける
+            wl_data_device::Event::Selection { id } => {
+                let mut c = st.clip.borrow_mut();
+                let mimes = id.as_ref().and_then(|o| o.data::<Mutex<Vec<String>>>()).map(|m| m.lock().map(|v| v.len()).unwrap_or(0)).unwrap_or(0);
+                if let Some(old) = std::mem::replace(&mut c.offer, id) {
+                    old.destroy();
+                }
+                log::event("clipboard.selection", &format!("mimes={mimes} ours={}", c.ours.is_some()), if c.offer.is_some() { "offer" } else { "empty" });
+            }
+            // ほかのアプリからの引っ張り（まだ受け取らない。offer は片付ける）
+            wl_data_device::Event::Enter { id: Some(offer), .. } => {
+                offer.destroy();
+            }
+            _ => {}
+        }
+    }
+
+    event_created_child!(State, wl_data_device::WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (wl_data_offer::WlDataOffer, Mutex::new(Vec::<String>::new())),
+    ]);
+}
+
+impl Dispatch<wl_data_offer::WlDataOffer, Mutex<Vec<String>>> for State {
+    fn event(_: &mut Self, _: &wl_data_offer::WlDataOffer, event: wl_data_offer::Event, mimes: &Mutex<Vec<String>>, _: &Connection, _: &QueueHandle<Self>) {
+        // offer が持てる形（mime）を貯める（selection の知らせより先に届く）
+        if let wl_data_offer::Event::Offer { mime_type } = event
+            && let Ok(mut m) = mimes.lock()
+        {
+            m.push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<wl_data_source::WlDataSource, ()> for State {
+    fn event(st: &mut Self, source: &wl_data_source::WlDataSource, event: wl_data_source::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        match event {
+            // ほかのアプリが貼る: 渡された口へ文字を書いて閉じる
+            wl_data_source::Event::Send { mime_type, fd } => {
+                let c = st.clip.borrow();
+                let text = c.ours.as_ref().filter(|(s, _)| s == source).map(|(_, t)| t.clone()).unwrap_or_default();
+                let mut rest = text.as_bytes();
+                while !rest.is_empty() {
+                    match rustix::io::write(&fd, rest) {
+                        Ok(n) => rest = &rest[n..],
+                        Err(rustix::io::Errno::INTR) => {}
+                        Err(_) => break,
+                    }
+                }
+                log::event("clipboard.send", &format!("mime={mime_type} chars={}", text.chars().count()), if rest.is_empty() { "ok" } else { "error" });
+            }
+            // ほかのアプリが選択を取った（または自分で取り直した）
+            wl_data_source::Event::Cancelled => {
+                let mut c = st.clip.borrow_mut();
+                if c.ours.as_ref().is_some_and(|(s, _)| s == source) {
+                    c.ours = None;
+                    log::event("clipboard.cancelled", "", "another app took the selection");
+                }
+                source.destroy();
             }
             _ => {}
         }

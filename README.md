@@ -143,10 +143,10 @@ Every push runs the tests on Windows, Linux and macOS (GitHub Actions).
 
 On Linux, apps open a Wayland window (`wayland.rs`, work in progress): the CPU picture through
 shared memory, fractional scaling, the mouse (double and triple clicks, wheel, right click, pointer
-shapes) and the keyboard (the system key map through libxkbcommon, loaded at run time, and key
-repeat). Not there yet: the input method, the system clipboard (copy and paste stay inside the app),
-screen readers, file dialogs, more than one window, drag and drop from other apps, title bars on
-GNOME and X11. It is checked on Hyprland. On macOS, `kargui::run` still returns an `Err` saying the
+shapes), the keyboard (the system key map through libxkbcommon, loaded at run time, and key
+repeat), the system clipboard (text) and the local date and time. Not there yet: the input method,
+screen readers, file dialogs, the system dark mode, more than one window, drag and drop from other
+apps, title bars on GNOME and X11. It is checked on Hyprland. On macOS, `kargui::run` still returns an `Err` saying the
 system is not supported.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).

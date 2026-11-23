@@ -44,6 +44,10 @@ impl Time {
         if let Some(t) = crate::platform::local_time().and_then(|(h, m)| Time::new(h, m)) {
             return t;
         }
+        #[cfg(target_os = "linux")]
+        if let Some(t) = crate::wayland::local_time().and_then(|(h, m)| Time::new(h, m)) {
+            return t;
+        }
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         Time::from_minutes(secs.div_euclid(60))
     }
@@ -165,6 +169,10 @@ impl Date {
         // 地元の日付は OS に聞く（OS を呼ぶのは境目のファイルだけ）
         #[cfg(windows)]
         if let Some(d) = crate::platform::local_date().and_then(|(y, m, d)| Date::new(y, m, d)) {
+            return d;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(d) = crate::wayland::local_date().and_then(|(y, m, d)| Date::new(y, m, d)) {
             return d;
         }
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);

@@ -40,7 +40,7 @@ swash = "=0.2.10"
 wayland-client = "=0.31.15"
 wayland-protocols = { version = "=0.32.13", features = ["client", "staging", "unstable"] }
 xkbcommon-dl = "=0.4.2"
-rustix = { version = "=1.1.6", features = ["fs", "mm", "event"] }
+rustix = { version = "=1.1.6", features = ["fs", "mm", "event", "pipe"] }
 
 # OS との境目（窓・入力・日本語入力・文字・画面に出す・クリップボード・読み上げの橋渡し）の Windows の版
 [target.'cfg(windows)'.dependencies]
