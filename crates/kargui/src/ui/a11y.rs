@@ -544,6 +544,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 }
                 n
             }
+            Kind::TitleBar { .. } => Node::new(Role::TitleBar),
             Kind::Toolbar => {
                 let mut n = Node::new(Role::Toolbar);
                 if let Some(l) = &info.label {

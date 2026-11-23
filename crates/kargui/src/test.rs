@@ -3319,6 +3319,110 @@ mod tests {
         assert!(a11y_nodes(&h).iter().all(|n| n.value() != Some("pw")));
     }
 
+    #[derive(Default)]
+    struct Titled {
+        clicks: u32,
+        about: bool,
+    }
+
+    impl App for Titled {
+        fn view(&mut self, ui: &mut Ui) {
+            if ui.button("Count").clicked() {
+                self.clicks += 1;
+            }
+            ui.dialog(&mut self.about, "About", |ui| {
+                ui.label("Hello");
+            });
+        }
+    }
+
+    #[test]
+    fn client_side_title_bar_puts_the_app_below_it_and_asks_the_window() {
+        use crate::ui::context::{Csd, CsdButton as B, CsdRequest as R};
+        let mut h = Harness::new(Titled::default());
+        // 合成が帯を描く時（Windows・Hyprland）は帯が無い
+        assert!(h.find("Close").is_none());
+        let plain = h.find("Count").unwrap();
+        h.rt.cx.csd = Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Minimize, B::Maximize, B::Close] });
+        h.frame();
+        // 浮いた窓は縁に線を引く（合成が影も縁も描かないので、重なった窓の境が分かるように）
+        let edge = |h: &mut Harness<Titled>| {
+            let image = h.render();
+            (image.rgb(0, 300), image.rgb(899, 300), image.rgb(450, 639), image.rgb(6, 300))
+        };
+        let (left, right, bottom, inside) = edge(&mut h);
+        assert!(left != inside && left == right && left == bottom, "{left:06x} {right:06x} {bottom:06x} {inside:06x}");
+        let (min, max, close, title, count) = (h.find("Minimize").unwrap(), h.find("Maximize").unwrap(), h.find("Close").unwrap(), h.find("Notes").unwrap(), h.find("Count").unwrap());
+        // ボタンは右端に設定の順で並ぶ。題は窓の真ん中。帯は上端から 40 画素で、本文はその下にいつもの余白で置く
+        assert!(min.x < max.x && max.x < close.x, "{min:?} {max:?} {close:?}");
+        assert!(close.x + close.w > 900.0 - 12.0, "{close:?}");
+        assert!(close.y > 0.0 && close.y + close.h < 40.0, "{close:?}");
+        assert!((title.x + title.w / 2.0 - 450.0).abs() <= 1.0, "{title:?}");
+        assert_eq!((count.x, count.y), (plain.x, plain.y + 40.0));
+        assert!(a11y_nodes(&h).iter().any(|n| n.role() == accesskit::Role::TitleBar));
+        // ボタンは窓の処理に頼む
+        for (name, want) in [("Maximize", R::ToggleMaximize), ("Minimize", R::Minimize), ("Close", R::Close)] {
+            h.click(name);
+            assert_eq!(h.rt.cx.csd_request.take(), Some(want), "{name}");
+        }
+        // 帯の何も無い所を押して動かすと、窓を動かす（少し動いただけでは動かさない）
+        let (x, y) = (300.0, 20.0);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerMove { x: x + 2.0, y }]);
+        assert_eq!(h.rt.cx.csd_request.take(), None);
+        h.send(vec![Event::PointerMove { x: x + 20.0, y }]);
+        assert_eq!(h.rt.cx.csd_request.take(), Some(R::Move));
+        h.send(vec![Event::PointerUp { x: x + 20.0, y }]);
+        // 2 回押すと最大化を切り替え、右クリックは窓のメニュー
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerUp { x, y }]);
+        assert_eq!(h.rt.cx.csd_request.take(), None);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 2 }, Event::PointerUp { x, y }]);
+        assert_eq!(h.rt.cx.csd_request.take(), Some(R::ToggleMaximize));
+        h.send(vec![Event::ContextMenu { x, y }]);
+        assert_eq!(h.rt.cx.csd_request.take(), Some(R::Menu { x, y }));
+        // 本文の部品は今までどおり。本文の何も無い所を押して動かしても窓は動かない
+        h.click("Count");
+        assert_eq!(h.app().clicks, 1);
+        h.send(vec![Event::PointerDown { x, y: 300.0, shift: false, count: 1 }, Event::PointerMove { x: x + 40.0, y: 300.0 }, Event::PointerUp { x: x + 40.0, y: 300.0 }]);
+        assert_eq!(h.rt.cx.csd_request.take(), None);
+        // 最大化した窓では「元に戻す」。焦点の無い窓でも題は出す
+        let c = h.rt.cx.csd.as_mut().unwrap();
+        c.maximized = true;
+        c.tiled = true;
+        c.focused = false;
+        h.frame();
+        assert!(h.find("Restore").is_some() && h.find("Maximize").is_none() && h.find("Notes").is_some());
+        // 最大化・敷き詰めの窓は画面の端に付くので、縁の線を引かない
+        let (left, _, _, inside) = edge(&mut h);
+        assert_eq!(left, inside);
+        // ダイアログを出している間も、題の帯は暗くせず押せる（Windows で OS の題の帯が使えるのと同じ）。
+        // ダイアログは帯の下の真ん中に出す
+        let c = h.rt.cx.csd.as_mut().unwrap();
+        c.maximized = false;
+        c.tiled = false;
+        h.frame();
+        let bar = h.render().rgb(300, 20);
+        h.app_mut().about = true;
+        h.frame();
+        assert_eq!(h.render().rgb(300, 20), bar);
+        let about = h.find("About").unwrap();
+        let csd = h.rt.cx.csd.take();
+        h.frame();
+        let plain = h.find("About").unwrap();
+        h.rt.cx.csd = csd;
+        h.frame();
+        assert_eq!((about.x, about.y), (plain.x, plain.y + 20.0), "帯の 40 の下の真ん中");
+        h.click("Maximize");
+        assert_eq!(h.rt.cx.csd_request.take(), Some(R::ToggleMaximize));
+        assert!(h.app().about, "題の帯を押してもダイアログは閉じない");
+        h.app_mut().about = false;
+        // 左にも並べられる（GNOME の button-layout が「close:」の時）
+        let c = h.rt.cx.csd.as_mut().unwrap();
+        c.left = vec![B::Close];
+        c.right = vec![];
+        h.frame();
+        assert!(h.find("Close").unwrap().x < 12.0);
+    }
+
     /// 1 群の A 組の見本: ラジオ・区切り線・進み具合・枠・開閉・リンク・押したままのボタン・パスワード
     #[derive(Default)]
     struct Parts {

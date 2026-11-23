@@ -285,13 +285,18 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
 /// 重ねて出す物を置く（ふつうの配置の後。出す元の部品の場所が決まってから）
 fn place_overlays(tree: &mut Tree, cx: &Context, window: Rect) {
     let (margin, gap) = (px(cx, 8.0), px(cx, 4.0));
+    // ダイアログは、kargui が描く題の帯の下の真ん中に出す
+    let body = tree.info.iter().position(|n| matches!(n.kind, Kind::TitleBar { .. })).map_or(window, |i| {
+        let top = tree.layout[i].rect.bottom();
+        Rect::new(window.x, top, window.w, (window.bottom() - top).max(0.0))
+    });
     for o in tree.overlays.clone() {
         let (w, h) = layout::measure(&mut tree.layout, o.idx);
         let w = w.min((window.w - 2.0 * margin).max(0.0));
         let h = h.min((window.h - 2.0 * margin).max(0.0));
         let anchor = o.anchor.and_then(|a| tree.info.iter().position(|n| n.id == a)).map(|i| tree.layout[i].rect);
         let rect = match (o.kind, o.place, anchor) {
-            (OverlayKind::Dialog, ..) => layout::place_center(w, h, window),
+            (OverlayKind::Dialog, ..) => layout::place_center(w, h.min((body.h - 2.0 * margin).max(0.0)), body),
             (_, Place::At(x, y), _) => layout::place_near(Rect::new(x, y, 0.0, 0.0), w, h, window, margin, 0.0),
             (_, Place::Beside, Some(a)) => layout::place_beside(a, w, h, window, margin, px(cx, 4.0)),
             (_, _, Some(a)) => layout::place_near(a, w, h, window, margin, gap),
@@ -349,6 +354,11 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
         p.overlay(tree, o);
     }
     p.drag_ghost();
+    // kargui が題の帯を描く浮いた窓は、合成が影も縁も描かないので、窓の縁に線を引く（重なった窓の境が分かるように）
+    if p.cx.csd.as_ref().is_some_and(|c| !c.tiled) {
+        let (line, color) = (p.line(), p.cx.theme.border);
+        p.outline(window.to_rect(), color, line);
+    }
     p.d.finish();
     let prev = std::mem::take(&mut p.prev);
     cx.prev = prev;
@@ -1303,6 +1313,20 @@ impl Painter<'_> {
                 self.canvas(r, ops);
                 self.hit(tree, i, false, false);
             }
+            // 合成が題の帯を描かない時に kargui が描く帯。焦点が無い窓は背景と同じ色にする（GNOME と同じ）。
+            // ボタンはツールバーと同じく平らに描く。何も無い所は窓を動かす場所なので四角を覚える
+            Kind::TitleBar { focused } => {
+                let t = self.cx.theme.clone();
+                self.d.fill(r, if *focused { t.button } else { t.background }, 0.0);
+                self.d.fill(Rect::new(r.x, r.y + r.h - line, r.w, line), t.separator, 0.0);
+                self.prev.title_bar = Some(r);
+                let was = self.toolbar;
+                self.toolbar = true;
+                for &c in &tree.layout[i].children {
+                    self.node(tree, c);
+                }
+                self.toolbar = was;
+            }
             Kind::Toolbar => {
                 let was = self.toolbar;
                 self.toolbar = true;
@@ -1604,8 +1628,10 @@ impl Painter<'_> {
         };
         let radius = self.px(if o.kind == OverlayKind::Tooltip { 4.0 } else { 8.0 });
         if o.kind == OverlayKind::Dialog {
-            self.d.fill(window, [0.0, 0.0, 0.0, if self.cx.dark { 0.55 } else { 0.35 }], 0.0);
-            block(self, window);
+            // kargui が描く題の帯は暗くせず押せるままにする（OS が描く題の帯と同じく、窓を動かす・閉じるに使える）
+            let below = self.prev.title_bar.map_or(window, |b| Rect::new(0.0, b.bottom(), window.w, (window.h - b.bottom()).max(0.0)));
+            self.d.fill(below, [0.0, 0.0, 0.0, if self.cx.dark { 0.55 } else { 0.35 }], 0.0);
+            block(self, below);
         }
         // 影（少し下にずらした薄い黒）と、背景の箱
         if o.kind != OverlayKind::Tooltip {

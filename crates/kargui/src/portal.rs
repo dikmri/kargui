@@ -1,4 +1,4 @@
-//! xdg-desktop-portal（D-Bus のセッションバス）を使う物: OS の明暗の設定と、ファイルのダイアログ。
+//! xdg-desktop-portal（D-Bus のセッションバス）を使う物: OS の設定（明暗・題の帯のボタンの並び）と、ファイルのダイアログ。
 //!
 //! どちらも別のスレッドで呼び、窓の処理を待たせない。D-Bus は zbus（読み上げの accesskit_unix が使うのと同じ物）の
 //! 同期の呼び方で使う。ダイアログはポータルが出す（Hyprland では GTK の物）。答えは Request の Response の知らせで届く。
@@ -18,23 +18,33 @@ use crate::log;
 const DEST: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 
+/// OS の設定を 1 つ読む（org.freedesktop.portal.Settings）。ポータルが無い時、その設定が無い時は Err
+fn read_setting(namespace: &str, key: &str) -> zbus::Result<OwnedValue> {
+    let conn = Connection::session()?;
+    let p = Proxy::new(&conn, DEST, PATH, "org.freedesktop.portal.Settings")?;
+    match p.call("ReadOne", &(namespace, key)) {
+        Ok(v) => Ok(v),
+        // 古いポータル（ReadOne が無い）は Read で、値をもう 1 枚の箱に入れて返す
+        Err(_) => {
+            let outer: OwnedValue = p.call("Read", &(namespace, key))?;
+            Ok(match &*outer {
+                Value::Value(inner) => inner.try_to_owned()?,
+                _ => outer,
+            })
+        }
+    }
+}
+
 /// OS の明暗の設定（org.freedesktop.appearance の color-scheme。1 暗い・2 明るい・0 好みなし）を読む。
 /// 暗い方なら true。ポータルが無い時などは Err
 pub(crate) fn read_dark() -> zbus::Result<bool> {
-    let conn = Connection::session()?;
-    let p = Proxy::new(&conn, DEST, PATH, "org.freedesktop.portal.Settings")?;
-    let v: OwnedValue = match p.call("ReadOne", &("org.freedesktop.appearance", "color-scheme")) {
-        Ok(v) => v,
-        // 古いポータル（ReadOne が無い）は Read で、値をもう 1 枚の箱に入れて返す
-        Err(_) => {
-            let outer: OwnedValue = p.call("Read", &("org.freedesktop.appearance", "color-scheme"))?;
-            match &*outer {
-                Value::Value(inner) => inner.try_to_owned()?,
-                _ => outer,
-            }
-        }
-    };
-    Ok(u32::try_from(v)? == 1)
+    Ok(u32::try_from(read_setting("org.freedesktop.appearance", "color-scheme")?)? == 1)
+}
+
+/// 題の帯のボタンの並び（GNOME の button-layout。「appmenu:minimize,maximize,close」の形）を読む。
+/// kargui が題の帯を描く時（合成が描かない時）に使う
+pub(crate) fn read_button_layout() -> zbus::Result<String> {
+    Ok(String::try_from(read_setting("org.gnome.desktop.wm.preferences", "button-layout")?)?)
 }
 
 /// 頼みの番号（handle_token）を作るための数

@@ -55,6 +55,10 @@ pub enum Icon {
     Calendar,
     /// A clock face.
     Clock,
+    /// A square (maximizing a window).
+    Maximize,
+    /// Two overlapping squares (restoring a maximized window).
+    Restore,
 }
 
 impl Icon {
@@ -69,7 +73,7 @@ impl Icon {
     /// });
     /// # });
     /// ```
-    pub const ALL: [Icon; 19] = [
+    pub const ALL: [Icon; 21] = [
         Icon::Check,
         Icon::Close,
         Icon::ChevronDown,
@@ -89,6 +93,8 @@ impl Icon {
         Icon::ArrowRight,
         Icon::Calendar,
         Icon::Clock,
+        Icon::Maximize,
+        Icon::Restore,
     ];
 }
 
@@ -129,6 +135,12 @@ fn shapes(icon: Icon) -> Vec<Vec<Pt>> {
             line(&[(16.0, 3.5), (16.0, 7.0)]),
         ]),
         Icon::Clock => join(vec![ring((12.0, 12.0), 8.5), line(&[(12.0, 7.5), (12.0, 12.0), (15.0, 14.0)])]),
+        Icon::Maximize => line(&[(6.0, 6.0), (18.0, 6.0), (18.0, 18.0), (6.0, 18.0), (6.0, 6.0)]),
+        // 後ろの四角は、前の四角に隠れる所を描かない
+        Icon::Restore => join(vec![
+            line(&[(5.0, 9.0), (15.0, 9.0), (15.0, 19.0), (5.0, 19.0), (5.0, 9.0)]),
+            line(&[(9.0, 9.0), (9.0, 5.0), (19.0, 5.0), (19.0, 15.0), (15.0, 15.0)]),
+        ]),
     }
 }
 

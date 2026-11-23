@@ -57,7 +57,7 @@ use crate::log;
 use crate::runtime::Runtime;
 use crate::text::Text;
 use crate::ui::Id;
-use crate::ui::context::Clipboard;
+use crate::ui::context::{Clipboard, Csd, CsdButton, CsdRequest};
 
 /// ホイールの 1 刻み（物理ピクセル。Windows の platform.rs と同じ）
 const WHEEL_STEP: f32 = 96.0;
@@ -67,6 +67,57 @@ const DOUBLE_CLICK_DIST: f32 = 4.0;
 /// マウスのボタン（linux/input-event-codes.h）
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+/// kargui が題の帯を描く窓で、大きさを変えられる窓の縁の幅と、角とみなす長さ（論理ピクセル）。窓の外に
+/// 影の余白を持たないので、縁は窓の内側に取る（部品・スクロールの棒の上は除く）
+const RESIZE_BORDER: f32 = 6.0;
+const RESIZE_CORNER: f32 = 20.0;
+
+/// 窓の大きさ w×h の中の位置 (x, y) が、大きさを変える縁・角なら、その向き（どれも同じ単位）
+fn resize_edge(x: f32, y: f32, w: f32, h: f32, border: f32, corner: f32) -> Option<xdg_toplevel::ResizeEdge> {
+    use xdg_toplevel::ResizeEdge as E;
+    let (left, right, top, bottom) = (x < border, x >= w - border, y < border, y >= h - border);
+    let (near_left, near_right, near_top, near_bottom) = (x < corner, x >= w - corner, y < corner, y >= h - corner);
+    Some(if (top && near_left) || (left && near_top) {
+        E::TopLeft
+    } else if (top && near_right) || (right && near_top) {
+        E::TopRight
+    } else if (bottom && near_left) || (left && near_bottom) {
+        E::BottomLeft
+    } else if (bottom && near_right) || (right && near_bottom) {
+        E::BottomRight
+    } else if top {
+        E::Top
+    } else if bottom {
+        E::Bottom
+    } else if left {
+        E::Left
+    } else if right {
+        E::Right
+    } else {
+        return None;
+    })
+}
+
+/// 大きさを変える向きのポインターの形
+fn resize_shape(edge: xdg_toplevel::ResizeEdge) -> Shape {
+    use xdg_toplevel::ResizeEdge as E;
+    match edge {
+        E::Top => Shape::NResize,
+        E::Bottom => Shape::SResize,
+        E::Left => Shape::WResize,
+        E::Right => Shape::EResize,
+        E::TopLeft => Shape::NwResize,
+        E::TopRight => Shape::NeResize,
+        E::BottomLeft => Shape::SwResize,
+        _ => Shape::SeResize,
+    }
+}
+
+/// ポータルから読んだ OS の設定（読まなかった物・読めなかった物は None）
+struct PortalSettings {
+    dark: Option<bool>,
+    button_layout: Option<String>,
+}
 
 fn error(what: &str, e: impl std::fmt::Display) -> crate::Error {
     crate::Error(format!("wayland: {what}: {e}"))
@@ -561,6 +612,13 @@ struct Win {
     wake_at: Option<Instant>,
     focused: bool,
     shown: bool,
+    /// 窓の題（kargui が題の帯を描く時に出す）
+    title: String,
+    /// 題の帯を kargui が描く（合成が描かない。GNOME は xdg-decoration を持たない）
+    csd: bool,
+    /// 最大化している。constrained は最大化・全画面・敷き詰め（大きさを合成が決めるので、縁で大きさを変えない）
+    maximized: bool,
+    constrained: bool,
     /// 窓を作った時（主の窓はアプリの起動の時。出るまでの時間を記録に書く）
     created: Instant,
 }
@@ -609,6 +667,23 @@ impl Win {
         self.need_frame = true;
         self.why = "size";
         log::event("window.size", &format!("logical={}x{} scale={:.3}{}", self.logical.0, self.logical.1, self.scale(), self.tag()), &format!("physical={w}x{h}"));
+    }
+
+    /// 題の帯の様子を Runtime に渡す（変わった時だけ描き直す）
+    fn sync_csd(&mut self, buttons: &(Vec<CsdButton>, Vec<CsdButton>)) {
+        let want = self.csd.then(|| Csd {
+            title: self.title.clone(),
+            focused: self.focused,
+            maximized: self.maximized,
+            tiled: self.constrained,
+            left: buttons.0.clone(),
+            right: buttons.1.clone(),
+        });
+        if self.rt.cx.csd != want {
+            log::event("title_bar.state", &format!("csd={} focused={} maximized={}{}", self.csd, self.focused, self.maximized, self.tag()), "ok");
+            self.rt.cx.csd = want;
+            self.need_frame = true;
+        }
     }
 
     fn push(&mut self, e: Event) {
@@ -703,6 +778,10 @@ struct State {
     viewporter: Option<wp_viewporter::WpViewporter>,
     frac_mgr: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     deco_mgr: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+    /// 座席（窓を動かす・大きさを変える・窓のメニューを頼む時に渡す）
+    seat: Option<wl_seat::WlSeat>,
+    /// kargui が描く題の帯のボタンの並び（左, 右）。ポータルから読めるまでは GNOME の既定（閉じるだけ）
+    buttons: (Vec<CsdButton>, Vec<CsdButton>),
     /// 開いている窓。0 番はいつも主の窓
     windows: Vec<Win>,
     next_id: WinId,
@@ -729,8 +808,8 @@ struct State {
     last_folder: Option<PathBuf>,
     /// ほかのアプリから引っ張ってきている物
     drag: Option<Drag>,
-    /// OS の明暗の設定の答え（Options::dark が無い時だけ聞く。届いたら None にする）
-    dark_rx: Option<Receiver<Option<bool>>>,
+    /// OS の設定（明暗・題の帯のボタンの並び）の答え。届いたら None にする
+    settings_rx: Option<Receiver<PortalSettings>>,
     running: bool,
     /// ポインターとキーボードの焦点がある窓
     pointer_win: Option<WinId>,
@@ -740,6 +819,8 @@ struct State {
     py: f32,
     left_down: bool,
     pointer_serial: u32,
+    /// 最後にマウスのボタンを押した時の番号（窓を動かす・窓のメニューを頼む時に渡す）
+    press_serial: u32,
     shape: Option<Shape>,
     /// 前に押した時（ms, x, y, 何回目か）
     last_press: Option<(u32, f32, f32, u8)>,
@@ -775,6 +856,10 @@ impl State {
 
     /// 窓を作る（主の窓は run、ほかの窓は主の窓のフレームの後）。最初の configure が来てから描く
     fn new_window(&mut self, key: Option<String>, title: &str, size: (f32, f32), min_size: Option<(f32, f32)>, rt: Runtime) -> WinId {
+        // 合成が題の帯を描かない時は kargui が描く。アプリが頼んだ大きさは中身の大きさ（Windows と同じ）なので、帯の分を足す
+        let csd = self.deco_mgr.is_none();
+        let bar = if csd { crate::ui::TITLE_BAR_H } else { 0.0 };
+        let (size, min_size) = ((size.0, size.1 + bar), min_size.map(|(w, h)| (w, h + bar)));
         let id = self.next_id;
         self.next_id += 1;
         let qh = &self.qh;
@@ -786,9 +871,9 @@ impl State {
         if let Some((w, h)) = min_size {
             toplevel.set_min_size(w.round() as i32, h.round() as i32);
         }
-        // 合成が題の帯を描けるなら頼む（KDE・sway など。Hyprland と GNOME には無い）
+        // 合成が題の帯を描けるなら頼む（KDE・sway・Hyprland など。GNOME には無い）。断られたら kargui が描く
         let decoration = self.deco_mgr.as_ref().map(|m| {
-            let d = m.get_toplevel_decoration(&toplevel, qh, ());
+            let d = m.get_toplevel_decoration(&toplevel, qh, id);
             d.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
             d
         });
@@ -830,11 +915,86 @@ impl State {
             wake_at: None,
             focused: false,
             shown: false,
+            title: title.to_string(),
+            csd,
+            maximized: false,
+            constrained: false,
             created: if self.windows.is_empty() { self.started } else { Instant::now() },
         };
         w.apply_size();
+        w.sync_csd(&self.buttons);
+        log::event("window.decoration", &format!("csd={csd}{}", w.tag()), if csd { "kargui draws the title bar" } else { "asked the compositor (server side)" });
         self.windows.push(w);
         id
+    }
+
+    /// 窓の閉じるボタン（合成の物か、kargui の題の帯の物）
+    fn close_requested(&mut self, id: WinId) {
+        let key = self.win(id).and_then(|w| w.key.clone());
+        match key {
+            // 主の窓: アプリに聞いてから終える
+            None => {
+                let ok = self.app.close_requested();
+                log::event("window.close_requested", "", &format!("allowed={ok}"));
+                if ok {
+                    self.running = false;
+                } else if let Some(w) = self.windows.first_mut() {
+                    w.need_frame = true;
+                }
+            }
+            // ほかの窓: 閉じるボタンは、Ui::window の open を false にする（窓は主の窓のフレームの後で閉じる）
+            Some(key) => {
+                log::event("window.close_requested", &format!("key={key}"), "closed by the user");
+                if let Some(main) = self.windows.first_mut() {
+                    main.rt.cx.closed_windows.insert(key);
+                    main.need_frame = true;
+                    main.why = "input";
+                }
+            }
+        }
+    }
+
+    /// kargui の題の帯から頼まれた事を合成に頼む
+    fn title_bar_request(&mut self, id: WinId, r: CsdRequest) {
+        let (seat, serial) = (self.seat.clone(), self.press_serial);
+        let Some(w) = self.win(id) else { return };
+        let tag = w.tag();
+        let scale = w.scale();
+        match r {
+            CsdRequest::Move => {
+                // 押したままのボタンは合成が引き取る（離した知らせは来ない）
+                if let Some(seat) = &seat {
+                    w.toplevel._move(seat, serial);
+                }
+                self.left_down = false;
+            }
+            CsdRequest::ToggleMaximize if w.maximized => w.toplevel.unset_maximized(),
+            CsdRequest::ToggleMaximize => w.toplevel.set_maximized(),
+            CsdRequest::Minimize => w.toplevel.set_minimized(),
+            CsdRequest::Menu { x, y } => {
+                if let Some(seat) = &seat {
+                    w.toplevel.show_window_menu(seat, serial, (x / scale).round() as i32, (y / scale).round() as i32);
+                }
+            }
+            CsdRequest::Close => {}
+        }
+        let needs_seat = matches!(r, CsdRequest::Move | CsdRequest::Menu { .. });
+        log::event("title_bar.request", &format!("{r:?} serial={serial}{tag}"), if seat.is_none() && needs_seat { "no seat" } else { "sent" });
+        if r == CsdRequest::Close {
+            self.close_requested(id);
+        }
+    }
+
+    /// 窓 i の (x, y)（物理ピクセル）が、大きさを変える縁なら、その向き。kargui が題の帯を描く浮いた窓だけで、
+    /// 部品とスクロールの棒の上は除く
+    fn resize_edge_at(&self, i: usize, x: f32, y: f32) -> Option<xdg_toplevel::ResizeEdge> {
+        let w = &self.windows[i];
+        if !w.csd || w.constrained || w.rt.cx.hit(x, y).is_some() || w.rt.cx.scrollbar_at(x, y).is_some() {
+            return None;
+        }
+        let (pw, ph) = w.physical();
+        let s = w.scale();
+        resize_edge(x, y, pw as f32, ph as f32, RESIZE_BORDER * s, RESIZE_CORNER * s)
     }
 
     /// 窓ごとの Runtime を作る（日付の書き方などは窓ごと。書体・明暗は主の窓と同じにする）
@@ -942,16 +1102,29 @@ impl State {
                 w.need_frame = true;
             }
         }
-        if let Some(rx) = &self.dark_rx
-            && let Ok(dark) = rx.try_recv()
+        if let Some(rx) = &self.settings_rx
+            && let Ok(s) = rx.try_recv()
         {
-            self.dark_rx = None;
-            if let Some(d) = dark {
-                log::event("theme.system", &format!("dark={d}"), "late (after the first frame)");
-                for w in &mut self.windows {
-                    w.rt.cx.set_dark(d);
-                    w.need_frame = true;
-                }
+            self.settings_rx = None;
+            self.apply_settings(s, "late (after the first frame)");
+        }
+    }
+
+    /// ポータルから読んだ OS の設定を窓に渡す
+    fn apply_settings(&mut self, s: PortalSettings, when: &str) {
+        if let Some(d) = s.dark {
+            log::event("theme.system", &format!("dark={d}"), when);
+            for w in &mut self.windows {
+                w.rt.cx.set_dark(d);
+                w.need_frame = true;
+            }
+        }
+        if let Some(layout) = s.button_layout {
+            self.buttons = Csd::buttons(&layout);
+            log::event("title_bar.buttons", &format!("layout={layout:?}"), &format!("left={:?} right={:?} {when}", self.buttons.0, self.buttons.1));
+            let buttons = self.buttons.clone();
+            for w in &mut self.windows {
+                w.sync_csd(&buttons);
             }
         }
     }
@@ -992,6 +1165,10 @@ impl State {
     fn update_shape(&mut self) {
         let Some(i) = self.pointer_index() else { return };
         let (x, y) = (self.px, self.py);
+        if let Some(edge) = self.resize_edge_at(i, x, y) {
+            self.set_shape(resize_shape(edge));
+            return;
+        }
         let cx = &self.windows[i].rt.cx;
         let hit = cx.hit(x, y).cloned();
         let shape = match hit.as_ref().and_then(|h| cx.prev.split_bars.get(&h.id).copied()) {
@@ -1012,7 +1189,7 @@ impl State {
         let w = &mut self.windows[i];
         let cx = &w.rt.cx;
         let inner_drag = cx.dnd.as_ref().is_some_and(|d| !d.external);
-        if cx.drag.is_some() || cx.pressed.is_some() || cx.press_source.is_some() || inner_drag {
+        if cx.drag.is_some() || cx.pressed.is_some() || cx.press_source.is_some() || cx.title_press.is_some() || inner_drag {
             // つまみをつかんでいる・部品を押している・引っ張っている間は、移動を渡す（Windows の platform.rs と同じ）
             let mut shape = None;
             if left_down {
@@ -1174,6 +1351,7 @@ impl State {
         let (id, is_main) = (w.id, w.key.is_none());
         let quit = std::mem::take(&mut w.rt.cx.quit);
         let dialog = w.rt.cx.file_dialog_request.take();
+        let title_bar = w.rt.cx.csd_request.take();
         let requested = is_main.then(|| w.rt.cx.windows.clone());
         w.wake_at = out.wake_after.map(|d| Instant::now() + d);
         w.animating = out.want_frame;
@@ -1184,6 +1362,13 @@ impl State {
         }
         if let Some((key, d)) = dialog {
             self.open_file_dialog(id, key, d);
+        }
+        if let Some(r) = title_bar {
+            self.title_bar_request(id, r);
+            // 閉じた（主の窓を閉じて終える）時は描かない
+            if !self.running || self.index(id) != Some(i) {
+                return;
+            }
         }
         // 文字を打つ位置は、絵と同じ wl_surface.commit で合成に届くように、絵より先に知らせる
         self.update_ime(i);
@@ -1229,23 +1414,6 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let started = Instant::now();
     // ほかのスレッドから起こされたら、eventfd に書いて poll を起こす
     let wake_fd = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).map_err(|e| error("eventfd", e))?);
-    // OS の明暗の設定は、窓の準備と並べてポータルに聞く（最初の絵の前に少しだけ待つ）
-    let dark_rx = options.dark.is_none().then(|| {
-        let (tx, rx) = channel();
-        let wake = wake_fd.clone();
-        let _ = std::thread::Builder::new().name("kargui-portal-settings".into()).spawn(move || {
-            let t = Instant::now();
-            let r = crate::portal::read_dark();
-            let ms = t.elapsed().as_secs_f64() * 1000.0;
-            match &r {
-                Ok(d) => log::event("portal.color_scheme", "", &format!("dark={d} ms={ms:.1}")),
-                Err(e) => log::event("portal.color_scheme", "", &format!("error={e} ms={ms:.1}")),
-            }
-            let _ = tx.send(r.ok());
-            let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
-        });
-        rx
-    });
     let conn = Connection::connect_to_env().map_err(|e| error("connect (WAYLAND_DISPLAY)", e))?;
     let (globals, mut queue) = registry_queue_init::<State>(&conn).map_err(|e| error("registry", e))?;
     let qh = queue.handle();
@@ -1274,6 +1442,31 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         &format!("ms={:.1}", started.elapsed().as_secs_f64() * 1000.0),
     );
 
+    // OS の設定（明暗と、kargui が題の帯を描く時のボタンの並び）は、窓の準備と並べてポータルに聞く（最初の絵の前に少しだけ待つ）
+    let (want_dark, want_buttons) = (options.dark.is_none(), deco_mgr.is_none());
+    let settings_rx = (want_dark || want_buttons).then(|| {
+        let (tx, rx) = channel();
+        let wake = wake_fd.clone();
+        let _ = std::thread::Builder::new().name("kargui-portal-settings".into()).spawn(move || {
+            let t = Instant::now();
+            let dark = want_dark.then(crate::portal::read_dark);
+            let button_layout = want_buttons.then(crate::portal::read_button_layout);
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            match &dark {
+                Some(Ok(d)) => log::event("portal.color_scheme", "", &format!("dark={d} ms={ms:.1}")),
+                Some(Err(e)) => log::event("portal.color_scheme", "", &format!("error={e} ms={ms:.1}")),
+                None => {}
+            }
+            match &button_layout {
+                Some(Ok(l)) => log::event("portal.button_layout", "", &format!("layout={l:?} ms={ms:.1}")),
+                Some(Err(e)) => log::event("portal.button_layout", "", &format!("error={e} ms={ms:.1}")),
+                None => {}
+            }
+            let _ = tx.send(PortalSettings { dark: dark.and_then(Result::ok), button_layout: button_layout.and_then(Result::ok) });
+            let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
+        });
+        rx
+    });
     // クリップボード（座席ごとに 1 つの data device）
     let device = match (&data_mgr, &seat) {
         (Some(m), Some(s)) => Some(m.get_data_device(s, &qh, ())),
@@ -1295,6 +1488,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         viewporter,
         frac_mgr,
         deco_mgr,
+        seat: seat.clone(),
+        buttons: Csd::buttons(""),
         windows: Vec::new(),
         next_id: 1,
         font_files: options.fonts.clone(),
@@ -1313,7 +1508,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         dialog_open: false,
         last_folder: None,
         drag: None,
-        dark_rx,
+        settings_rx,
         running: true,
         pointer_win: None,
         keyboard_win: None,
@@ -1321,6 +1516,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         py: 0.0,
         left_down: false,
         pointer_serial: 0,
+        press_serial: 0,
         shape: None,
         last_press: None,
         axis_source: None,
@@ -1338,17 +1534,15 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     st.new_window(None, &options.title, options.size, options.min_size, rt);
     // 最初の configure（と、出せれば倍率）を待つ
     queue.roundtrip(&mut st).map_err(|e| error("roundtrip", e))?;
-    // OS の明暗の答えを、最初の絵の前に 150 ms まで待つ。間に合わなければ明るい方で描き、届いた時に切り替える
-    let answer = st.dark_rx.as_ref().map(|rx| rx.recv_timeout(Duration::from_millis(150)));
+    // OS の設定の答えを、最初の絵の前に 150 ms まで待つ。間に合わなければ明るい方・閉じるボタンだけで描き、届いた時に切り替える
+    let answer = st.settings_rx.as_ref().map(|rx| rx.recv_timeout(Duration::from_millis(150)));
     match answer {
-        Some(Ok(dark)) => {
-            st.dark_rx = None;
-            if let Some(d) = dark {
-                st.windows[0].rt.cx.set_dark(d);
-            }
-            log::event("theme.system", &format!("dark={dark:?}"), &format!("waited_ms={:.1}", started.elapsed().as_secs_f64() * 1000.0));
+        Some(Ok(s)) => {
+            st.settings_rx = None;
+            let when = format!("waited_ms={:.1}", started.elapsed().as_secs_f64() * 1000.0);
+            st.apply_settings(s, &when);
         }
-        Some(Err(_)) => log::event("theme.system", "", "not answered in 150 ms (light until it is)"),
+        Some(Err(_)) => log::event("portal.settings", "", "not answered in 150 ms (light, close button only until it is)"),
         None => {}
     }
 
@@ -1452,7 +1646,20 @@ delegate_noop!(State: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1
 delegate_noop!(State: wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
 delegate_noop!(State: wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);
 delegate_noop!(State: zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
-delegate_noop!(State: ignore zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1);
+
+impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, WinId> for State {
+    fn event(st: &mut Self, _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, event: zxdg_toplevel_decoration_v1::Event, id: &WinId, _: &Connection, _: &QueueHandle<Self>) {
+        // 合成が題の帯を描くと決めたか、アプリに描かせると決めたか（頼んでも合成が決める）
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+            let buttons = st.buttons.clone();
+            let Some(w) = st.win(*id) else { return };
+            let csd = mode == WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ClientSide);
+            log::event("window.decoration", &format!("mode={mode:?}{}", w.tag()), &format!("csd={csd}"));
+            w.csd = csd;
+            w.sync_csd(&buttons);
+        }
+    }
+}
 
 impl Dispatch<xdg_wm_base::XdgWmBase, ()> for State {
     fn event(_: &mut Self, base: &xdg_wm_base::XdgWmBase, event: xdg_wm_base::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
@@ -1509,31 +1716,14 @@ impl Dispatch<xdg_toplevel::XdgToplevel, WinId> for State {
                     w.a11y.update_window_focus_state(activated);
                     w.need_frame = true;
                 }
-            }
-            xdg_toplevel::Event::Close => {
-                let key = st.win(*id).and_then(|w| w.key.clone());
-                match key {
-                    // 主の窓: アプリに聞いてから終える
-                    None => {
-                        let ok = st.app.close_requested();
-                        log::event("window.close_requested", "", &format!("allowed={ok}"));
-                        if ok {
-                            st.running = false;
-                        } else if let Some(w) = st.windows.first_mut() {
-                            w.need_frame = true;
-                        }
-                    }
-                    // ほかの窓: 閉じるボタンは、Ui::window の open を false にする（窓は主の窓のフレームの後で閉じる）
-                    Some(key) => {
-                        log::event("window.close_requested", &format!("key={key}"), "closed by the user");
-                        if let Some(main) = st.windows.first_mut() {
-                            main.rt.cx.closed_windows.insert(key);
-                            main.need_frame = true;
-                            main.why = "input";
-                        }
-                    }
+                w.maximized = has(S::Maximized);
+                w.constrained = constrained;
+                let buttons = st.buttons.clone();
+                if let Some(w) = st.win(*id) {
+                    w.sync_csd(&buttons);
                 }
             }
+            xdg_toplevel::Event::Close => st.close_requested(*id),
             _ => {}
         }
     }
@@ -1651,6 +1841,20 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                 let shift = st.mods().shift;
                 let last_press = st.last_press;
                 let Some(i) = st.pointer_index() else { return };
+                if pressed {
+                    st.press_serial = serial;
+                }
+                // kargui が題の帯を描く浮いた窓の縁: 大きさを変えるのを合成に頼む（押したボタンは合成が引き取る）
+                if button == BTN_LEFT
+                    && pressed
+                    && let Some(edge) = st.resize_edge_at(i, x, y)
+                {
+                    if let Some(seat) = &st.seat {
+                        st.windows[i].toplevel.resize(seat, serial, edge);
+                    }
+                    log::event("window.resize_edge", &format!("x={x} y={y} edge={edge:?}{}", st.windows[i].tag()), if st.seat.is_some() { "sent" } else { "no seat" });
+                    return;
+                }
                 match button {
                     BTN_LEFT if pressed => {
                         st.left_down = true;
@@ -1959,5 +2163,32 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xdg_toplevel::ResizeEdge as E;
+
+    #[test]
+    fn window_edges_resize_and_corners_take_both_sides() {
+        let at = |x: f32, y: f32| resize_edge(x, y, 800.0, 600.0, 6.0, 20.0);
+        // 真ん中と、縁から離れた所は何もしない
+        assert_eq!(at(400.0, 300.0), None);
+        assert_eq!(at(6.0, 300.0), None);
+        // 縁
+        assert_eq!(at(0.0, 300.0), Some(E::Left));
+        assert_eq!(at(799.0, 300.0), Some(E::Right));
+        assert_eq!(at(400.0, 2.0), Some(E::Top));
+        assert_eq!(at(400.0, 595.0), Some(E::Bottom));
+        // 角は縁に沿って 20 まで（細い縁だけでは角をつかみにくい）
+        assert_eq!(at(1.0, 1.0), Some(E::TopLeft));
+        assert_eq!(at(15.0, 2.0), Some(E::TopLeft));
+        assert_eq!(at(2.0, 15.0), Some(E::TopLeft));
+        assert_eq!(at(790.0, 3.0), Some(E::TopRight));
+        assert_eq!(at(3.0, 590.0), Some(E::BottomLeft));
+        assert_eq!(at(797.0, 585.0), Some(E::BottomRight));
+        assert_eq!(resize_shape(E::BottomRight), Shape::SeResize);
     }
 }

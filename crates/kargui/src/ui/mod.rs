@@ -181,6 +181,8 @@ pub(crate) enum Kind {
     SpinButton { up: bool },
     /// ツールバー
     Toolbar,
+    /// アプリが描く題の帯（合成が描かない時。Ui::with_title_bar が作る）
+    TitleBar { focused: bool },
     /// 格子の入れ物
     Grid,
     /// 仕切りで分けた 2 つの区画の入れ物（stacked なら上下）
@@ -420,6 +422,67 @@ impl<'a> Ui<'a> {
 
     fn px(&self, logical: f32) -> f32 {
         (logical * self.cx.scale).round()
+    }
+
+    /// 題の帯をアプリが描く時（cx.csd がある時）の画面。根の下に題の帯と本文を置き、アプリのビューは本文の中で作る。
+    /// 帯は窓の端まで描くので、根の余白と間は 0 にし、いつもの余白と間は本文に付ける
+    pub(crate) fn with_title_bar(&mut self, view: &mut dyn FnMut(&mut Ui)) {
+        let Some(csd) = self.cx.csd.clone() else {
+            view(self);
+            return;
+        };
+        let (pad, gap) = (self.tree.layout[0].pad, self.tree.layout[0].gap);
+        self.tree.layout[0].pad = (0.0, 0.0);
+        self.tree.layout[0].gap = 0.0;
+        let (bar, _) = self.add(Kind::TitleBar { focused: csd.focused }, Dir::Row);
+        let (h, side, between) = (self.px(TITLE_BAR_H), self.px(6.0), self.px(4.0));
+        let l = &mut self.tree.layout[bar];
+        l.height = Size::Fixed(h);
+        l.pad = (side, 0.0);
+        l.gap = between;
+        l.align = Align::Center;
+        // 左右のボタンを同じ幅の入れ物に入れて、題を窓の真ん中に置く（GNOME と同じ）
+        let mut ui = self.child(bar);
+        for (side, buttons) in [(0, &csd.left), (1, &csd.right)] {
+            if side == 1 {
+                let title = ui.label(&csd.title).bold();
+                if !csd.focused {
+                    title.weak();
+                }
+            }
+            let (group, _) = ui.add(Kind::Row, Dir::Row);
+            let l = &mut ui.tree.layout[group];
+            l.width = Size::Fill(1.0);
+            l.gap = between;
+            let mut g = ui.child(group);
+            if side == 1 {
+                g.fill();
+            }
+            for &b in buttons {
+                g.title_button(b, csd.maximized);
+            }
+        }
+        let (body, _) = self.add(Kind::Column, Dir::Column);
+        let l = &mut self.tree.layout[body];
+        l.pad = pad;
+        l.gap = gap;
+        l.align = Align::Stretch;
+        l.height = Size::Fill(1.0);
+        view(&mut self.child(body));
+    }
+
+    /// 題の帯のボタン。押したら窓の処理に頼む（Ui::with_title_bar）
+    fn title_button(&mut self, b: context::CsdButton, maximized: bool) {
+        use context::{CsdButton as B, CsdRequest as R};
+        let (icon, name, request) = match b {
+            B::Minimize => (Icon::Minus, "Minimize", R::Minimize),
+            B::Maximize if maximized => (Icon::Restore, "Restore", R::ToggleMaximize),
+            B::Maximize => (Icon::Maximize, "Maximize", R::ToggleMaximize),
+            B::Close => (Icon::Close, "Close", R::Close),
+        };
+        if self.icon_button(icon, name).clicked() {
+            self.cx.csd_request = Some(request);
+        }
     }
 
     #[track_caller]
@@ -4838,6 +4901,9 @@ fn move_focus_with_arrows(cx: &mut Context, items: &[Id]) {
         cx.focus_visible = true;
     }
 }
+
+/// アプリが描く題の帯の高さ（論理の画素。GNOME の題の帯（libadwaita の header bar）と同じくらい）
+pub(crate) const TITLE_BAR_H: f32 = 40.0;
 
 /// ポインターが入れ子のメニューの項目に止まってから開く（ほかの項目なら閉じる）までの時間
 const SUBMENU_DELAY: Duration = Duration::from_millis(400);

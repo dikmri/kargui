@@ -23,10 +23,18 @@
   redraws the others once; a window's close button sets its `open` flag to false (the position, the
   icon and whether it comes to the front are left to the compositor). Files dragged in from other
   apps arrive as on Windows (`dropped::<Vec<PathBuf>>`; the text/uri-list is read when the drag
-  enters, and the compositor is told whether the widget under the pointer takes files). Not there
-  yet: title bars on GNOME, and X11. New Linux-only dependencies: wayland-client,
+  enters, and the compositor is told whether the widget under the pointer takes files). Where the
+  compositor does not draw title bars (GNOME has no xdg-decoration), kargui draws one: the title in
+  the middle and the buttons that GNOME's button-layout setting names (read from the portal; close
+  only by default), a move when the empty part is dragged, maximize on a double click, the window
+  menu on a right click, resizing from the window's edges and corners, and a one-pixel border while
+  the window floats. The app's size is the size of its content, as on Windows (the title bar is
+  added). A dialog darkens only the content, so the title bar can still move or close the window.
+  Not there yet: X11. New Linux-only dependencies: wayland-client,
   wayland-protocols, xkbcommon-dl, rustix, accesskit_unix and zbus (84 crates in all; 71 of them
   come with accesskit_unix, that is zbus and AT-SPI).
+- Icons: `Icon::Maximize` (a square) and `Icon::Restore` (two squares). `Icon::ALL` now has 21
+  icons.
 - Screen readers: text fields and text areas now expose their text as text runs (one per line)
   with the caret and the selection, so a screen reader can read the text and follow the caret.
   On Linux, Orca needs this to read a field at all; on Windows, fields gain the UI Automation

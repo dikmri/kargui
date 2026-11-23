@@ -148,8 +148,8 @@ repeat), the system clipboard (text), the local date and time, and the input met
 the composition with its clause being converted, and the candidate window under the caret; checked
 with fcitx5 and Mozc), screen readers (AT-SPI through accesskit_unix, with the same tree as on
 Windows; checked with Orca), file dialogs and the system dark mode (xdg-desktop-portal), more
-than one window (`ui.window`), and files dragged in from other apps. Not there yet: title bars on
-GNOME and X11. It is checked on Hyprland. On macOS, `kargui::run` still returns an `Err` saying the
+than one window (`ui.window`), files dragged in from other apps, and a title bar drawn by kargui
+where the compositor draws none (GNOME). Not there yet: X11. It is checked on Hyprland and GNOME. On macOS, `kargui::run` still returns an `Err` saying the
 system is not supported.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).

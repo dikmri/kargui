@@ -69,6 +69,74 @@ pub(crate) struct OverlayInfo {
     pub focus: Vec<Id>,
 }
 
+/// アプリが描く題の帯の様子。合成が題の帯を描かない時（Wayland の GNOME など）に、窓の処理が入れる
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Csd {
+    pub title: String,
+    /// 窓が前面にある（題を濃く描く）
+    pub focused: bool,
+    /// 最大化している（最大化のボタンを「元に戻す」にする）
+    pub maximized: bool,
+    /// 最大化・全画面・敷き詰め（窓の縁が画面の端や隣の窓に付くので、縁の線を引かない）
+    pub tiled: bool,
+    /// 左と右に並べるボタン（OS の設定の順。GNOME の既定は右に閉じるだけ）
+    pub left: Vec<CsdButton>,
+    pub right: Vec<CsdButton>,
+}
+
+// 題の帯を kargui が描くのは、今は Linux（Wayland）だけ
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl Csd {
+    /// GNOME の button-layout（org.gnome.desktop.wm.preferences。「appmenu:minimize,maximize,close」の形）を
+    /// 左と右のボタンに分ける。「:」の前が左、後が右。kargui に無い名前（appmenu・icon・spacer など）は飛ばす
+    pub fn buttons(layout: &str) -> (Vec<CsdButton>, Vec<CsdButton>) {
+        if layout.trim().is_empty() {
+            return (vec![], vec![CsdButton::Close]);
+        }
+        let mut seen = Vec::new();
+        let mut side = |part: &str| {
+            let mut out = Vec::new();
+            for name in part.split(',') {
+                let b = match name.trim() {
+                    "minimize" => CsdButton::Minimize,
+                    "maximize" => CsdButton::Maximize,
+                    "close" => CsdButton::Close,
+                    _ => continue,
+                };
+                if !seen.contains(&b) {
+                    seen.push(b);
+                    out.push(b);
+                }
+            }
+            out
+        };
+        let (left, right) = layout.split_once(':').unwrap_or((layout, ""));
+        (side(left), side(right))
+    }
+}
+
+/// 題の帯のボタン
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) enum CsdButton {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+/// 題の帯の操作で、窓の処理に頼む事
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CsdRequest {
+    /// 窓を動かす（押したまま動かした）
+    Move,
+    /// 最大化と元の大きさを切り替える（ボタンか、帯を 2 回押した）
+    ToggleMaximize,
+    Minimize,
+    Close,
+    /// 窓のメニュー（帯を右クリックした位置。物理ピクセル）
+    Menu { x: f32, y: f32 },
+}
+
 /// 開くように頼まれた窓（Ui::window）
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WindowRequest {
@@ -210,6 +278,8 @@ pub(crate) struct Prev {
     pub context_regions: Vec<(Id, Rect)>,
     /// メニューバーの見出し（並んだ順）
     pub menubar: Vec<Id>,
+    /// アプリが描く題の帯の範囲（Csd がある時。空いた所を押すと窓を動かす）
+    pub title_bar: Option<Rect>,
     /// 数の入力欄の刻み（Up・Down で使う。NumberInput::step は作った後で付くので、前のフレームの値を使う）
     pub steps: HashMap<Id, f64>,
     /// 数の入力欄の小さいボタン → 欄（押しても焦点を欄に残す）
@@ -308,6 +378,12 @@ pub(crate) struct Context {
     pub file_results: HashMap<String, Vec<std::path::PathBuf>>,
     /// アプリを終える（Ui::quit。窓の処理が主の窓を閉じる）
     pub quit: bool,
+    /// アプリが描く題の帯（合成が描かない時。Linux の GNOME など。窓の処理が毎フレーム入れる）
+    pub csd: Option<Csd>,
+    /// 題の帯の操作で、窓の処理に頼む事（動かす・最大化など。窓の処理がフレームの後で取り出す）
+    pub csd_request: Option<CsdRequest>,
+    /// 題の帯の空いた所を押した位置（動かしたら「窓を動かす」を頼む）
+    pub title_press: Option<(f32, f32)>,
     /// この回の clicked はキー（Enter・Space）か読み上げソフトから来た（ポインターの位置を見ない）
     pub clicked_by_key: bool,
     /// ビューの途中で、前に作った部品が見た状態を変えた（メニューを開いた・閉じた）。もう一度回す
@@ -435,6 +511,9 @@ impl Context {
             file_dialog_request: None,
             file_results: HashMap::new(),
             quit: false,
+            csd: None,
+            csd_request: None,
+            title_press: None,
             clicked_by_key: false,
             again: false,
             rested: None,
@@ -851,6 +930,17 @@ impl Context {
                     }
                     // 押せない部品の上では、何も無い所を押したのと同じ（下の部品にも届かない）
                     let hit = self.hit(x, y).cloned().filter(|h| h.enabled);
+                    // 題の帯の何も無い所: 2 回押したら最大化を切り替え、1 回なら押したまま動かした時に窓を動かす
+                    if hit.is_none() && self.prev.title_bar.is_some_and(|r| r.contains(x, y)) {
+                        if count >= 2 {
+                            self.csd_request = Some(CsdRequest::ToggleMaximize);
+                        } else {
+                            self.title_press = Some((x, y));
+                        }
+                        self.pressed = None;
+                        log::event("title_bar.press", &format!("x={x} y={y} count={count}"), "");
+                        continue;
+                    }
                     // メニューバーの見出しを押した時は、元の焦点を覚える（項目を選んだら戻す）
                     let on_bar = hit.as_ref().is_some_and(|h| self.prev.menubar.contains(&h.id));
                     if on_bar && !self.focus.is_some_and(|f| self.prev.menubar.contains(&f) || self.in_menu(f)) {
@@ -878,6 +968,9 @@ impl Context {
                     }
                 }
                 Event::PointerUp { x, y } => {
+                    if self.title_press.take().is_some() {
+                        continue;
+                    }
                     if let Some(d) = self.drag.take() {
                         let v = self.scrolls.get(&d.list).copied().unwrap_or(0.0);
                         log::event("scrollbar.release", &format!("y={y} moves={}", d.moves), &format!("scroll={v:.0}"));
@@ -903,6 +996,15 @@ impl Context {
                     self.press_text = None;
                 }
                 Event::PointerMove { x, y } => {
+                    // 題の帯を押したまま、引っ張りと同じだけ動いたら窓を動かす（その先は合成が動かす）
+                    if let Some((x0, y0)) = self.title_press {
+                        if (x - x0).abs().max((y - y0).abs()) > DRAG_START * self.scale {
+                            self.title_press = None;
+                            self.csd_request = Some(CsdRequest::Move);
+                            log::event("title_bar.move", &format!("x={x} y={y}"), "");
+                        }
+                        continue;
+                    }
                     if let Some(d) = self.drag.as_mut() {
                         d.moves += 1;
                         let d = *d;
@@ -926,6 +1028,7 @@ impl Context {
                 // マウスのつかみが外れたら、窓の中の引っ張りだけをやめる。ほかのアプリからの引っ張りは、マウスをつかんで
                 // いるのがそのアプリなので関係ない（落とす直前に、ボタンの離れたマウスの動きが届くことがある）
                 Event::PointerCancel => {
+                    self.title_press = None;
                     if !self.dnd.as_ref().is_some_and(|d| d.external) {
                         self.cancel_drag("capture lost");
                     }
@@ -1017,6 +1120,12 @@ impl Context {
                         }
                     }
                     if self.top_dialog().is_some_and(|d| !d.rect.contains(x, y)) {
+                        continue;
+                    }
+                    // 題の帯の何も無い所は、窓のメニュー（OS が出す）
+                    if self.hit(x, y).is_none() && self.prev.title_bar.is_some_and(|r| r.contains(x, y)) {
+                        self.csd_request = Some(CsdRequest::Menu { x, y });
+                        log::event("title_bar.menu", &format!("x={x} y={y}"), "");
                         continue;
                     }
                     let target = self.prev.context_regions.iter().rev().find(|(_, r)| r.contains(x, y)).map(|&(t, _)| t);
@@ -1182,6 +1291,22 @@ fn arrows_take(key: Key, m: Mods) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_bar_buttons_follow_the_gnome_button_layout() {
+        use CsdButton::*;
+        // GNOME の既定（appmenu は kargui には無いので飛ばす）
+        assert_eq!(Csd::buttons("appmenu:close"), (vec![], vec![Close]));
+        assert_eq!(Csd::buttons(":minimize,maximize,close"), (vec![], vec![Minimize, Maximize, Close]));
+        // 左に並べる設定。知らない名前と空白・重なりは飛ばす
+        assert_eq!(Csd::buttons("close,minimize:"), (vec![Close, Minimize], vec![]));
+        assert_eq!(Csd::buttons(" close , spacer, icon:maximize,maximize"), (vec![Close], vec![Maximize]));
+        // 「:」が無ければ全部左（GTK と同じ）
+        assert_eq!(Csd::buttons("close"), (vec![Close], vec![]));
+        // 設定に無いボタンは出さない（GTK と同じ）。設定を読めなかった時（空）は GNOME の既定と同じく閉じるだけ
+        assert_eq!(Csd::buttons("minimize:"), (vec![Minimize], vec![]));
+        assert_eq!(Csd::buttons(""), (vec![], vec![Close]));
+    }
 
     #[test]
     fn text_fields_keep_editing_keys_and_pass_the_rest() {
