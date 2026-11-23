@@ -569,6 +569,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gallery-kargui"
+version = "0.0.0"
+dependencies = [
+ "kargui",
+ "taskcore",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

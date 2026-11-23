@@ -42,6 +42,19 @@
   XWayland). IBus is not there yet. New Linux-only dependencies: wayland-client,
   wayland-protocols, xkbcommon-dl, rustix, accesskit_unix, zbus and x11rb (89 crates in all; 71 of
   them come with accesskit_unix, that is zbus and AT-SPI).
+- Password fields turn the input method off (on Windows, Wayland and X11): what is typed there is
+  not sent to the input method's conversion or learning, as with Windows' own password boxes.
+- Number fields: holding a small step button steps once at once, then every 60 ms after 400 ms
+  (counted from the time held, so slow frames do not slow it down).
+- Tables: Shift+Left and Shift+Right on a focused heading change that column's width (by 10).
+  Headings of a table with resizable columns can now take the focus even when it does not sort;
+  screen readers hear how to resize.
+- Lists and tables: `List::type_ahead(|i| text)` and `Table::type_ahead(|i| text)` let the user
+  jump to the next row that starts with a typed letter or digit (wrapping, ignoring case). Rows off
+  screen are not built, so the app gives their text.
+- The Direct3D 11 renderer (`Renderer::Gpu`) now draws images (they were left out before), with
+  the same linear filtering as the CPU renderer.
+- A new example, `examples/gallery`, shows every widget on its own page with its disabled state.
 - Tables: in a narrow table, a cell whose text is wider than its column no longer pushes the
   cells after it to the right (the columns of every row stay under their headings); the text is
   cut at the edge of the cell. Header cells do the same.

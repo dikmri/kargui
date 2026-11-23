@@ -10,6 +10,9 @@ cbuffer Frame : register(b0)
 
 Texture2D<float> atlas : register(t0);
 SamplerState point_sampler : register(s0);
+// 画像（乗算済みの RGBA）。画像の四角を描く時だけ、その画像を t1 に置く。拡大縮小は線形補間（CPU の道と同じ）
+Texture2D<float4> picture : register(t1);
+SamplerState linear_sampler : register(s1);
 
 struct VertexOut
 {
@@ -18,7 +21,7 @@ struct VertexOut
     float2 uv : TEXCOORD0;         // 文字の形の表の中の位置（0〜1）
     nointerpolation float4 color : COLOR;
     nointerpolation float2 size : SIZE;      // 四角の幅と高さ（画素）
-    nointerpolation float2 params : PARAMS;  // x: 角の丸み、y: 1 なら文字の形
+    nointerpolation float2 params : PARAMS;  // x: 角の丸み、y: 0 は四角、1 は文字の形、2 は画像
 };
 
 VertexOut vs_main(uint vertex_id : SV_VertexID,
@@ -33,15 +36,22 @@ VertexOut vs_main(uint vertex_id : SV_VertexID,
     VertexOut o;
     o.position = float4(pixel / viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
     o.local = corner * rect.zw;
-    o.uv = (uv.xy + corner * uv.zw) / atlas_size;
+    // 画像（extra.y が画像の番号 + 1）は画像の全体（0〜1）、文字の形は表の中の位置
+    bool image = extra.y > 0.0;
+    o.uv = image ? corner : (uv.xy + corner * uv.zw) / atlas_size;
     o.color = color;
     o.size = rect.zw;
-    o.params = float2(extra.x, uv.z > 0.0 ? 1.0 : 0.0);
+    o.params = float2(extra.x, image ? 2.0 : (uv.z > 0.0 ? 1.0 : 0.0));
     return o;
 }
 
 float4 ps_main(VertexOut i) : SV_Target
 {
+    if (i.params.y > 1.5)
+    {
+        // 画像は乗算済みの色をそのまま返す
+        return picture.Sample(linear_sampler, i.uv);
+    }
     float coverage;
     if (i.params.y > 0.5)
     {

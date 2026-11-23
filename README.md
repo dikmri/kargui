@@ -82,6 +82,7 @@ cargo run --release -p notepad-kargui                     # a text editor (menus
 cargo run --release -p expenses-kargui                    # a household budget (form, table, tabs, chart)
 cargo run --release -p files-kargui                       # a file browser (tree, split panes, another window)
 cargo run --release -p board-kargui                       # a card board (drag and drop, with a "Move" menu too)
+cargo run --release -p gallery-kargui                     # every widget, one page each (`-- --renderer gpu` for Direct3D 11)
 ```
 
 Each app writes one line per event to `logs/<app>.log` (time, event, arguments, result).

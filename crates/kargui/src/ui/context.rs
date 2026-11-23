@@ -264,6 +264,8 @@ pub(crate) struct Prev {
     pub lists: Vec<ListInfo>,
     /// 入力欄の場所と、文字の左端の x（物理ピクセル）
     pub inputs: HashMap<Id, (Rect, f32)>,
+    /// パスワードの欄（inputs の中で、日本語入力を切る物）
+    pub passwords: HashSet<Id>,
     /// 複数行の入力欄の、文字の左上（スクロールを入れた窓の座標）、折り返しの幅、見える高さ（物理ピクセル）
     pub areas: HashMap<Id, (f32, f32, f32, f32)>,
     /// 一覧の行の中の、焦点を持てる部品 → (一覧の id, 行の範囲)
@@ -345,6 +347,8 @@ pub(crate) struct Context {
     /// 開いているメニューの列（一番外のメニューから入れ子の順）。メニューは同時に 1 列だけ開く
     pub menus: Vec<Id>,
     /// 数の入力欄で打っている途中の文字（焦点がある間だけ。外れたら決めて消す）
+    /// 数の入力の小さいボタンを押したままの間: 欄 → （押しているボタン, 次に進める時）
+    pub spin_hold: HashMap<Id, (Id, Instant)>,
     pub number_text: HashMap<Id, String>,
     /// ツールバー → 最後に焦点があったボタン（Tab はそこにだけ止まる）
     pub toolbar_last: HashMap<Id, Id>,
@@ -494,6 +498,7 @@ impl Context {
             overlay_focus_hint: HashMap::new(),
             open: HashSet::new(),
             menus: Vec::new(),
+            spin_hold: HashMap::new(),
             number_text: HashMap::new(),
             toolbar_last: HashMap::new(),
             expanded: HashMap::new(),
@@ -726,6 +731,12 @@ impl Context {
     /// 一番上のダイアログ（焦点を中に閉じ込める）
     fn top_dialog(&self) -> Option<&OverlayInfo> {
         self.prev.overlays.iter().rev().find(|o| o.kind == OverlayKind::Dialog)
+    }
+
+    /// 日本語入力（IME）を向ける入力欄: 焦点のある入力欄。パスワードの欄では IME を切る（打った字を IME の変換や
+    /// 学習に渡さない。Windows のパスワードの欄（ES_PASSWORD）と同じ）。窓の処理はこれで IME を入れるか決める
+    pub fn ime_target(&self) -> Option<Id> {
+        self.focus.filter(|f| self.prev.inputs.contains_key(f) && !self.prev.passwords.contains(f))
     }
 
     /// 前のフレームで (x, y) にあった、押せる部品（上に重なっている物）。

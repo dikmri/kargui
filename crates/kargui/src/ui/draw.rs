@@ -1257,7 +1257,7 @@ impl Painter<'_> {
                     self.node(tree, c);
                 }
             }
-            Kind::ColumnHeader { text, sort, right, sortable, .. } => {
+            Kind::ColumnHeader { text, sort, right, sortable, focusable, .. } => {
                 let t = self.cx.theme.clone();
                 let off = tree.info[i].disabled;
                 let radius = self.px(4.0);
@@ -1275,7 +1275,7 @@ impl Painter<'_> {
                     let icon = if *asc { Icon::ArrowUp } else { Icon::ArrowDown };
                     self.icon(icon, (x + laid.width + self.px(4.0)).round(), (r.y + (r.h - s) / 2.0).round(), s, color);
                 }
-                self.hit(tree, i, *sortable, false);
+                self.hit(tree, i, *focusable, false);
             }
             Kind::ColumnGrip => {
                 self.prev.split_bars.insert(id, false);
@@ -1821,6 +1821,9 @@ impl Painter<'_> {
             }
         }
         self.d.pop_clip();
+        if password {
+            self.prev.passwords.insert(id);
+        }
         self.prev.inputs.insert(id, (r, x0));
         self.hit(tree, i, true, true);
     }

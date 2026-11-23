@@ -33,6 +33,10 @@ pub(crate) struct Gpu {
     atlas: ID3D11Texture2D,
     atlas_view: ID3D11ShaderResourceView,
     sampler: ID3D11SamplerState,
+    /// 画像を拡大縮小して読む（線形補間。CPU の道と同じ）
+    linear: ID3D11SamplerState,
+    /// 画像ごとの GPU の絵（画像の id → 絵と読み口）。そのフレームで使わなかった物は捨てる
+    images: std::collections::HashMap<u64, (ID3D11Texture2D, ID3D11ShaderResourceView)>,
     blend: ID3D11BlendState,
     raster: ID3D11RasterizerState,
     output: Option<IDXGIOutput>,
@@ -139,6 +143,7 @@ impl Gpu {
         let mut atlas = None;
         let mut atlas_view = None;
         let mut sampler = None;
+        let mut linear = None;
         let mut blend = None;
         let mut raster = None;
         unsafe {
@@ -153,6 +158,8 @@ impl Gpu {
                 ..Default::default()
             };
             device.CreateSamplerState(&sd, Some(&mut sampler))?;
+            let ld = D3D11_SAMPLER_DESC { Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR, ..sd };
+            device.CreateSamplerState(&ld, Some(&mut linear))?;
             let mut bd = D3D11_BLEND_DESC::default();
             bd.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
                 BlendEnable: true.into(),
@@ -193,6 +200,8 @@ impl Gpu {
             atlas: atlas.unwrap(),
             atlas_view: atlas_view.unwrap(),
             sampler: sampler.unwrap(),
+            linear: linear.unwrap(),
+            images: std::collections::HashMap::new(),
             blend: blend.unwrap(),
             raster: raster.unwrap(),
             output: None,
@@ -233,21 +242,52 @@ impl Gpu {
         unsafe { self.context.UpdateSubresource(&self.atlas, 0, Some(&b), src.cast(), atlas.size, 0) };
     }
 
+    /// 画像の GPU の絵を用意する（無ければ作る）。乗算済みの RGBA をそのまま写す
+    fn image_view(&mut self, image: &crate::image::Image) -> Option<ID3D11ShaderResourceView> {
+        let d = &image.0;
+        if let Some((_, view)) = self.images.get(&d.id) {
+            return Some(view.clone());
+        }
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: d.width.max(1),
+            Height: d.height.max(1),
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_IMMUTABLE,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let data = D3D11_SUBRESOURCE_DATA { pSysMem: d.pixels.as_ptr().cast(), SysMemPitch: d.width * 4, SysMemSlicePitch: 0 };
+        let mut tex = None;
+        let mut view = None;
+        // SAFETY: 画素の並び（幅 × 高さ × 4 バイト）を渡して、変えない絵を作る
+        let made = unsafe {
+            self.device.CreateTexture2D(&desc, Some(&data), Some(&mut tex)).and_then(|_| self.device.CreateShaderResourceView(tex.as_ref().unwrap(), None, Some(&mut view)))
+        };
+        match (made, tex, view) {
+            (Ok(()), Some(t), Some(v)) => {
+                log::event("gpu.image", &format!("id={} size={}x{}", d.id, d.width, d.height), "uploaded");
+                self.images.insert(d.id, (t, v.clone()));
+                Some(v)
+            }
+            (r, ..) => {
+                log::event("gpu.image", &format!("id={} size={}x{}", d.id, d.width, d.height), &format!("error={r:?}"));
+                None
+            }
+        }
+    }
+
     /// 一覧を全部描き、画面に出す（Present）。sync が 0 なら待たずに出す
     pub fn render(&mut self, list: &DrawList, atlas: &mut Atlas, background: Color, sync: u32) -> Result<()> {
         self.upload_atlas(atlas);
-        // 画像はまだ GPU の道では描かない（シェーダーが画像を読めない）。番号の並びは崩さずに透明にする
-        let hidden: Vec<Quad>;
-        let quads: &[Quad] = if list.images.is_empty() {
-            &list.quads
-        } else {
-            static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                crate::log::event("gpu.image", &format!("images={}", list.images.len()), "not drawn on the Direct3D 11 renderer yet");
-            }
-            hidden = list.quads.iter().map(|q| if q.image_index().is_some() { Quad { color: [0.0; 4], uv: [0.0; 4], extra: [0.0; 4], ..*q } } else { *q }).collect();
-            &hidden
-        };
+        // 画像の GPU の絵（一覧の番号の順）。このフレームで使わない画像の絵は捨てる
+        let views: Vec<Option<ID3D11ShaderResourceView>> = list.images.iter().map(|img| self.image_view(img)).collect();
+        let used: std::collections::HashSet<u64> = list.images.iter().map(|img| img.0.id).collect();
+        self.images.retain(|id, _| used.contains(id));
+        let quads: &[Quad] = &list.quads;
         let n = quads.len();
         if n > self.capacity {
             self.capacity = n.next_power_of_two();
@@ -289,7 +329,7 @@ impl Gpu {
             c.VSSetConstantBuffers(0, Some(&[Some(self.frame.clone())]));
             c.PSSetShader(&self.ps, None);
             c.PSSetShaderResources(0, Some(&[Some(self.atlas_view.clone())]));
-            c.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+            c.PSSetSamplers(0, Some(&[Some(self.sampler.clone()), Some(self.linear.clone())]));
             c.OMSetBlendState(&self.blend, None, 0xffff_ffff);
             // 層ごとに切り取り範囲（シザー矩形）を決めて描く
             for layer in &list.layers {
@@ -299,7 +339,24 @@ impl Gpu {
                 let r = layer.clip;
                 let scissor = windows::Win32::Foundation::RECT { left: r.x, top: r.y, right: r.right(), bottom: r.bottom() };
                 c.RSSetScissorRects(Some(&[scissor]));
-                c.DrawInstanced(4, (layer.end - layer.start) as u32, 0, layer.start as u32);
+                // 画像の四角は、その画像の絵を t1 に置いて 1 つずつ描く。続く画像でない物はまとめて描く
+                let mut at = layer.start;
+                while at < layer.end {
+                    match quads[at].image_index() {
+                        Some(k) => {
+                            if let Some(Some(v)) = views.get(k) {
+                                c.PSSetShaderResources(1, Some(&[Some(v.clone())]));
+                                c.DrawInstanced(4, 1, 0, at as u32);
+                            }
+                            at += 1;
+                        }
+                        None => {
+                            let end = (at..layer.end).find(|&j| quads[j].image_index().is_some()).unwrap_or(layer.end);
+                            c.DrawInstanced(4, (end - at) as u32, 0, at as u32);
+                            at = end;
+                        }
+                    }
+                }
             }
             let hr = self.swapchain.Present(sync, DXGI_PRESENT(0));
             if hr.is_err() {

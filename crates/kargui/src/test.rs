@@ -3319,6 +3319,125 @@ mod tests {
         assert!(a11y_nodes(&h).iter().all(|n| n.value() != Some("pw")));
     }
 
+    #[test]
+    fn password_fields_turn_the_input_method_off() {
+        let mut h = Harness::new(TextFields::default());
+        // ふつうの入力欄は IME を使う
+        h.click("Name");
+        let name = h.rt.cx.focus;
+        assert!(name.is_some() && h.rt.cx.ime_target() == name);
+        // パスワードの欄では IME を切る（打った字を IME の変換や学習に渡さない。Windows の ES_PASSWORD と同じ）
+        h.click("Password");
+        assert!(h.rt.cx.focus.is_some());
+        assert_eq!(h.rt.cx.ime_target(), None);
+        // 複数行の欄は使う
+        h.click("Body");
+        assert_eq!(h.rt.cx.ime_target(), h.rt.cx.focus);
+    }
+
+    #[test]
+    fn shift_and_arrows_on_a_column_heading_change_its_width() {
+        let mut h = Harness::with_size(Narrow, 600.0, 200.0, 1.0);
+        let before = h.find("Size").unwrap().w;
+        // 見出しに焦点を置く（Tab で表の最初の見出し、右矢印で次の見出し）
+        h.press(Key::Tab).press(Key::Right);
+        assert_eq!(focused_name(&h).as_deref(), Some("Size"));
+        h.press_with(Key::Right, Mods::SHIFT).press_with(Key::Right, Mods::SHIFT);
+        assert_eq!(h.find("Size").unwrap().w, before + 20.0, "Shift+→ で 10 ずつ広げる");
+        h.press_with(Key::Left, Mods::SHIFT);
+        assert_eq!(h.find("Size").unwrap().w, before + 10.0);
+        // Shift の無い矢印は今までどおり見出しを移る（幅は変えない）
+        h.press(Key::Left);
+        assert_eq!(h.find("Size").unwrap().w, before + 10.0);
+        // 残りの幅の列（幅を決めていない）は変えない
+        h.press_with(Key::Right, Mods::SHIFT);
+        assert_eq!(h.find("Size").unwrap().w, before + 10.0);
+    }
+
+    /// 文字で飛べる一覧と表（行は見えている所しか作らないので、行の文字はアプリが渡す）
+    struct Fruits {
+        list: Option<usize>,
+        table: Option<usize>,
+        names: Vec<String>,
+    }
+
+    impl App for Fruits {
+        fn view(&mut self, ui: &mut Ui) {
+            let names = &self.names;
+            ui.list(names.len(), 28.0).height(crate::Size::Fixed(200.0)).selection(&mut self.list).type_ahead(|i| names[i].clone()).show(|ui, i| {
+                ui.label(&names[i]);
+            });
+            let columns = [crate::ui::TableColumn::new("Name").fill()];
+            ui.table(&columns, names.len(), 28.0).selection(&mut self.table).type_ahead(|i| names[i].clone()).label("Table").show(|row, i| {
+                row.text(format!("{} (t)", names[i]));
+            });
+        }
+    }
+
+    #[test]
+    fn lists_and_tables_jump_to_the_next_row_that_starts_with_the_typed_letter() {
+        let mut names: Vec<String> = (0..200).map(|i| format!("apple {i}")).collect();
+        names[150] = "Cherry".into();
+        names[180] = "cranberry".into();
+        let mut h = Harness::new(Fruits { list: None, table: None, names });
+        h.frame();
+        h.click("apple 0");
+        assert_eq!(h.app().list, Some(0));
+        // 見えていない行（150 行目）へ飛び、見えるようにスクロールする。大文字と小文字は区別しない
+        h.press(Key::C);
+        assert_eq!(h.app().list, Some(150));
+        assert!(h.find("Cherry").is_some());
+        // もう一度同じ文字で、次に c で始まる行。最後まで行ったら先頭から探す
+        h.press(Key::C);
+        assert_eq!(h.app().list, Some(180));
+        h.press(Key::C);
+        assert_eq!(h.app().list, Some(150));
+        // 当てはまる行が無い文字では動かない
+        h.press(Key::Z);
+        assert_eq!(h.app().list, Some(150));
+        // 表も同じ
+        h.click("apple 1 (t)");
+        assert_eq!(h.app().table, Some(1));
+        h.press(Key::C);
+        assert_eq!(h.app().table, Some(150));
+    }
+
+    #[derive(Default)]
+    struct Copies {
+        n: i32,
+    }
+
+    impl App for Copies {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.number(&mut self.n, 0..=1000).label("Copies");
+        }
+    }
+
+    #[test]
+    fn holding_a_spin_button_keeps_stepping() {
+        use std::time::Duration;
+        let mut h = Harness::new(Copies::default());
+        let r = h.find("Increase").unwrap();
+        let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        // 押した時に 1 つ進む
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }]);
+        assert_eq!(h.app().n, 1);
+        // 押したまま 400 ms までは進まない。その後は 60 ms ごと（フレームの数によらず、たった時間で数える）
+        h.wait(Duration::from_millis(390));
+        assert_eq!(h.app().n, 1);
+        h.wait(Duration::from_millis(250));
+        assert_eq!(h.app().n, 1 + 1 + 4, "400 ms で 1 つ、その後 60 ms ごとに 4 つ（640 ms まで）");
+        // 離しても増えず、その後も増えない
+        h.send(vec![Event::PointerUp { x, y }]);
+        h.wait(Duration::from_millis(500));
+        assert_eq!(h.app().n, 6);
+        // すぐ離すクリックは 1 つだけ
+        h.click("Increase");
+        assert_eq!(h.app().n, 7);
+        h.click("Decrease");
+        assert_eq!(h.app().n, 6);
+    }
+
     /// 名前の長い行がある表（名前の列は残りの幅、大きさの列は固定で右寄せ）
     struct Narrow;
 

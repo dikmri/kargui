@@ -63,6 +63,7 @@ cargo run --release -p notepad-kargui                     # メモ帳（メニ�
 cargo run --release -p expenses-kargui                    # 家計簿（入力の格子・表・タブ・グラフ）
 cargo run --release -p files-kargui                       # ファイルの閲覧（木の表示・仕切り・別の窓）
 cargo run --release -p board-kargui                       # カードの板（ドラッグ＆ドロップと、代わりの「移す」メニュー）
+cargo run --release -p gallery-kargui                     # 全部の部品を 1 部品 1 ページで（`-- --renderer gpu` で Direct3D 11）
 ```
 
 記録は `logs/<アプリ>.log` に 1 行ずつ書く（時刻・出来事・引数・結果）。

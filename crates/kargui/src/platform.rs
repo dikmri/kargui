@@ -939,8 +939,10 @@ impl State {
         if std::mem::take(&mut self.rt.cx.ime_cancel) {
             self.post.push(Post::ImeCancel(self.hwnd));
         }
-        let was_input = focus_before.is_some_and(|f| self.rt.cx.prev.inputs.contains_key(&f));
-        let is_input = self.rt.cx.focus.is_some_and(|f| self.rt.cx.prev.inputs.contains_key(&f));
+        // パスワードの欄は IME を外す（Context::ime_target）
+        let prev = &self.rt.cx.prev;
+        let was_input = focus_before.is_some_and(|f| prev.inputs.contains_key(&f) && !prev.passwords.contains(&f));
+        let is_input = self.rt.cx.ime_target().is_some();
         if was_input != is_input || self.rt.frames == 1 {
             self.post.push(Post::AssociateIme(self.hwnd, is_input));
         }

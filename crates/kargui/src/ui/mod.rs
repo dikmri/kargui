@@ -198,7 +198,9 @@ pub(crate) enum Kind {
     /// 表の見出しの行
     TableHeader,
     /// 表の列の見出し（sort は並べ替えている列なら昇順か、sortable は押して並べ替えられるか）
-    ColumnHeader { text: String, sort: Option<bool>, right: bool, sortable: bool, column: usize },
+    /// 表の見出し。focusable は焦点を持てるか（並べ替えられる表か、幅を変えられる列がある表）、resizable はこの列の
+    /// 幅を変えられるか（Shift+左右）
+    ColumnHeader { text: String, sort: Option<bool>, right: bool, sortable: bool, focusable: bool, resizable: bool, column: usize },
     /// 列の幅を変えるつまみ（読み上げの木には出さない）
     ColumnGrip,
     /// 日付の欄（text は出す文字、empty は日付が無い）
@@ -1664,11 +1666,35 @@ impl<'a> Ui<'a> {
         };
         if !self.disabled {
             let mut steps = 0.0;
-            if self.cx.clicked == Some(up) {
-                steps += 1.0;
-            }
-            if self.cx.clicked == Some(down) {
-                steps -= 1.0;
+            // 小さいボタン: 押した時に 1 つ進め、押したままなら SPIN_DELAY の後 SPIN_INTERVAL ごとに進める（Windows の
+            // スピンボタンと同じ）。進める数はたった時間で数える（フレームが遅れても速さが変わらない）
+            let now = self.cx.now;
+            let held = [up, down].into_iter().find(|&b| self.cx.pressed == Some(b));
+            let before = self.cx.spin_hold.remove(&id);
+            let dir = |b: Id| if b == up { 1.0 } else { -1.0 };
+            if let Some(b) = held {
+                let next = match before {
+                    Some((pb, next)) if pb == b => {
+                        if now >= next {
+                            let n = 1 + ((now - next).as_millis() / SPIN_INTERVAL.as_millis()) as u32;
+                            steps += dir(b) * n as f64;
+                            next + SPIN_INTERVAL * n
+                        } else {
+                            next
+                        }
+                    }
+                    _ => {
+                        steps += dir(b);
+                        now + SPIN_DELAY
+                    }
+                };
+                self.cx.spin_hold.insert(id, (b, next));
+                self.request_frame_after(next.saturating_duration_since(now));
+            } else if let Some(b) = [up, down].into_iter().find(|&b| self.cx.clicked == Some(b))
+                && before.is_none_or(|(pb, _)| pb != b)
+            {
+                // 押してすぐ離した（押した時の 1 つを数えていない）
+                steps += dir(b);
             }
             if focused {
                 self.cx.keys.retain(|e| match e {
@@ -2064,7 +2090,9 @@ impl<'a> Ui<'a> {
     /// tall, whose cells line up with the headings. Set it up with [`Table::sort`],
     /// [`Table::selection`], [`Table::label`] and [`Table::grow`], then build the rows with
     /// [`Table::show`]. Drag the small grip at the right of a heading to change a column's width
-    /// (kargui remembers it). Without `.grow()` the table shows up to 8 rows and scrolls.
+    /// (kargui remembers it), or press Shift+Left and Shift+Right while the heading has the focus.
+    /// Text wider than its column is cut at the edge of the cell. Without `.grow()` the table
+    /// shows up to 8 rows and scrolls.
     ///
     /// ```
     /// use kargui::ui::TableColumn;
@@ -2082,7 +2110,7 @@ impl<'a> Ui<'a> {
     #[track_caller]
     pub fn table<'u>(&'u mut self, columns: &'u [TableColumn], count: usize, row_height: f32) -> Table<'u, 'a> {
         let loc = std::panic::Location::caller();
-        Table { ui: self, loc, columns, count, row_h: row_height, sort: None, selection: None, label: None, grow: false }
+        Table { ui: self, loc, columns, count, row_h: row_height, sort: None, selection: None, label: None, grow: false, type_ahead: None }
     }
 
     /// A field for a date that opens a month calendar below it when clicked (or with Enter, Space,
@@ -3325,7 +3353,7 @@ impl<'a> Ui<'a> {
         let (idx, id) = self.add(Kind::List { count, separators: true, view_h: 0.0, table: false }, Dir::List);
         let row_h = self.px(row_height).max(1.0);
         self.tree.layout[idx].row_h = row_h;
-        List { ui: self, idx, id, count, row_h, scroll_to: None, selection: None }
+        List { ui: self, idx, id, count, row_h, scroll_to: None, selection: None, type_ahead: None }
     }
 
     // ---- そのほか ----
@@ -4905,6 +4933,13 @@ fn move_focus_with_arrows(cx: &mut Context, items: &[Id]) {
 /// アプリが描く題の帯の高さ（論理の画素。GNOME の題の帯（libadwaita の header bar）と同じくらい）
 pub(crate) const TITLE_BAR_H: f32 = 40.0;
 
+/// キーボードで表の列の幅を変える 1 回の量（論理ピクセル。仕切りの矢印と同じ）
+const COLUMN_KEY_STEP: f32 = 10.0;
+
+/// 数の入力の小さいボタンを押したまま、繰り返し始めるまでの時間と、繰り返す間
+const SPIN_DELAY: Duration = Duration::from_millis(400);
+const SPIN_INTERVAL: Duration = Duration::from_millis(60);
+
 /// ポインターが入れ子のメニューの項目に止まってから開く（ほかの項目なら閉じる）までの時間
 const SUBMENU_DELAY: Duration = Duration::from_millis(400);
 
@@ -5342,8 +5377,12 @@ fn take_letters(cx: &mut Context) -> Vec<char> {
 
 /// from の次から一周して、c で始まる項目（大文字と小文字は区別しない）
 fn next_starting(texts: &[&str], from: usize, c: char) -> Option<usize> {
-    let n = texts.len();
-    (1..=n).map(|s| (from + s) % n).find(|&j| texts[j].chars().next().is_some_and(|f| f.to_lowercase().eq(c.to_lowercase())))
+    next_starting_by(texts.len(), from, c, &|j| texts[j].to_string())
+}
+
+/// next_starting の、n 個の項目の文字を text で受け取る形（見えない行を作らない一覧で使う）
+fn next_starting_by(n: usize, from: usize, c: char, text: &dyn Fn(usize) -> String) -> Option<usize> {
+    (1..=n).map(|s| (from + s) % n).find(|&j| text(j).chars().next().is_some_and(|f| f.to_lowercase().eq(c.to_lowercase())))
 }
 
 /// 焦点が items のどれかにある時、打った文字で始まる次の項目へ焦点を移す（メニュー・選択の一覧）
@@ -6133,9 +6172,29 @@ pub struct Table<'u, 'a> {
     selection: Option<&'u mut Option<usize>>,
     label: Option<String>,
     grow: bool,
+    type_ahead: Option<Box<dyn Fn(usize) -> String + 'u>>,
 }
 
 impl<'u> Table<'u, '_> {
+    /// Lets the user jump to a row by typing, as [`List::type_ahead`] does (`text` gives the text a
+    /// row is found by, usually its first cell). It needs [`Table::selection`].
+    ///
+    /// ```
+    /// use kargui::ui::TableColumn;
+    /// # let names = vec!["Apple".to_string(), "Cherry".to_string()];
+    /// # let mut selected = None;
+    /// # kargui::test::example(|ui| {
+    /// let columns = [TableColumn::new("Name").fill()];
+    /// ui.table(&columns, names.len(), 28.0).selection(&mut selected).type_ahead(|i| names[i].clone()).show(|row, i| {
+    ///     row.text(&names[i]);
+    /// });
+    /// # });
+    /// ```
+    pub fn type_ahead(mut self, text: impl Fn(usize) -> String + 'u) -> Self {
+        self.type_ahead = Some(Box::new(text));
+        self
+    }
+
     /// Makes the headings sortable: clicking a heading (or Enter or Space on it) sets `*sort` to
     /// `Some((column, true))` (ascending), and again to `Some((column, false))`. Sorting the rows is
     /// up to you; the heading shows an arrow and screen readers hear the order.
@@ -6233,7 +6292,7 @@ impl<'u> Table<'u, '_> {
     /// # });
     /// ```
     pub fn show_keyed<K: Hash>(self, key: impl Fn(usize) -> K, mut row: impl FnMut(&mut TableRow, usize)) -> Id {
-        let Table { ui, loc, columns, count, row_h, mut sort, selection, label, grow } = self;
+        let Table { ui, loc, columns, count, row_h, mut sort, selection, label, grow, type_ahead } = self;
         let id = ui.id_here(loc);
         let parent_dir = ui.parent_dir();
         let (idx, _) = ui.push(id, Kind::Table { columns: columns.len(), rows: count }, Dir::Column);
@@ -6247,6 +6306,30 @@ impl<'u> Table<'u, '_> {
         }
         let scale = ui.cx.scale;
         let grip_w = (GRIP_W * scale).round();
+        // 見出しに焦点がある時: Shift+左右でその列の幅を COLUMN_KEY_STEP ずつ変える（キーボードだけでも幅を変えられる。
+        // 仕切りの矢印と同じ 10。幅を決めていない列は変えない）。Shift の無い左右は見出しを移る（下で使う）
+        if let Some(k) = (0..columns.len()).find(|&k| ui.cx.focus == Some(Id(hash_of((id.0, k, "heading")))))
+            && let Some(start) = columns[k].width
+            && !ui.disabled
+        {
+            let mut d = 0.0;
+            ui.cx.keys.retain(|e| match e {
+                Event::Key { key: Key::Left, mods } if mods.shift && !mods.ctrl && !mods.alt => {
+                    d -= COLUMN_KEY_STEP;
+                    false
+                }
+                Event::Key { key: Key::Right, mods } if mods.shift && !mods.ctrl && !mods.alt => {
+                    d += COLUMN_KEY_STEP;
+                    false
+                }
+                _ => true,
+            });
+            if d != 0.0 {
+                let w = ui.cx.column_widths.entry((id, k)).or_insert(start);
+                *w = (*w + d).max(MIN_COLUMN_W);
+                crate::log::event("table.column_width", &format!("column={k} by={d}"), &format!("width={w}"));
+            }
+        }
         // 列の幅（論理ピクセル）。つまみをつかんで動かすと変わり、kargui が覚える
         let mut widths: Vec<Option<f32>> = Vec::with_capacity(columns.len());
         for (k, c) in columns.iter().enumerate() {
@@ -6283,7 +6366,9 @@ impl<'u> Table<'u, '_> {
             for (k, c) in columns.iter().enumerate() {
                 let hid = Id(hash_of((id.0, k, "heading")));
                 let dir = current.filter(|&(col, _)| col == k).map(|(_, asc)| asc);
-                let (h, _) = hui.push(hid, Kind::ColumnHeader { text: c.title.clone(), sort: dir, right: c.right, sortable, column: k }, Dir::Leaf);
+                // 幅を変えられる列がある表では、並べ替えられなくても見出しに焦点を置ける（キーボードで幅を変えるため）
+                let focusable = sortable || px_widths.iter().any(Option::is_some);
+                let (h, _) = hui.push(hid, Kind::ColumnHeader { text: c.title.clone(), sort: dir, right: c.right, sortable, focusable, resizable: px_widths[k].is_some(), column: k }, Dir::Leaf);
                 hui.tree.layout[h].width = px_widths[k].map_or(Size::Fill(1.0), Size::Fixed);
                 // 見出しの文字が列より広い時は切り取る（行の升と同じ幅を保つ）
                 hui.tree.layout[h].clip = true;
@@ -6341,6 +6426,7 @@ impl<'u> Table<'u, '_> {
         if let Some(s) = selection {
             list = list.selection(s);
         }
+        list.type_ahead = type_ahead;
         list.show_keyed(key, |rui, i| {
             let mut tr = TableRow { ui: rui, widths: &px_widths, rights: &rights, col: 0 };
             row(&mut tr, i);
@@ -6635,9 +6721,30 @@ pub struct List<'u, 'a> {
     row_h: f32,
     scroll_to: Option<f32>,
     selection: Option<&'u mut Option<usize>>,
+    /// 文字で飛ぶ時の、行の文字（見えない行は作らないので、アプリが渡す）
+    type_ahead: Option<Box<dyn Fn(usize) -> String + 'u>>,
 }
 
 impl<'u> List<'u, '_> {
+    /// Lets the user jump to a row by typing: while the list has the focus, a letter or digit
+    /// selects the next row whose text (from `text`) starts with it, wrapping around and ignoring
+    /// case, and scrolls it into view. Rows off screen are not built, so the text comes from
+    /// `text`. It needs [`List::selection`].
+    ///
+    /// ```
+    /// # let names = vec!["Apple".to_string(), "Cherry".to_string()];
+    /// # let mut selected = None;
+    /// # kargui::test::example(|ui| {
+    /// ui.list(names.len(), 28.0).selection(&mut selected).type_ahead(|i| names[i].clone()).show(|ui, i| {
+    ///     ui.label(&names[i]);
+    /// });
+    /// # });
+    /// ```
+    pub fn type_ahead(mut self, text: impl Fn(usize) -> String + 'u) -> Self {
+        self.type_ahead = Some(Box::new(text));
+        self
+    }
+
     /// Takes the remaining space. See [`Handle::grow`].
     ///
     /// ```
@@ -6773,7 +6880,7 @@ impl<'u> List<'u, '_> {
     /// # });
     /// ```
     pub fn show_keyed<K: Hash>(self, key: impl Fn(usize) -> K, mut row: impl FnMut(&mut Ui, usize)) -> Id {
-        let List { ui, idx, id, count, row_h, scroll_to, mut selection } = self;
+        let List { ui, idx, id, count, row_h, scroll_to, mut selection, type_ahead } = self;
         let row_id = |i: usize| Id(hash_of((id.0, key(i))));
         let cx = &mut *ui.cx;
         // 見えている範囲は前のフレームの一覧の高さで決める（初めてなら窓の高さ）
@@ -6801,6 +6908,14 @@ impl<'u> List<'u, '_> {
                             Key::End => count - 1,
                             _ => next,
                         };
+                    }
+                }
+                // 文字で飛ぶ（List::type_ahead）: 打った文字で始まる次の行。見えない行の文字もアプリから受け取る
+                if let Some(text) = &type_ahead {
+                    for c in take_letters(cx) {
+                        if let Some(j) = next_starting_by(count, next, c, &|i| text(i)) {
+                            next = j;
+                        }
                     }
                 }
                 if next != start {

@@ -235,7 +235,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.set_row_index(0);
                 n
             }
-            Kind::ColumnHeader { sort, sortable, column, .. } => {
+            Kind::ColumnHeader { sort, sortable, focusable, resizable, column, .. } => {
                 let mut n = Node::new(Role::ColumnHeader);
                 n.set_column_index(*column);
                 n.set_row_index(0);
@@ -244,7 +244,12 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 }
                 if *sortable {
                     n.add_action(Action::Click);
+                }
+                if *focusable {
                     n.add_action(Action::Focus);
+                }
+                if *resizable {
+                    n.set_description("Shift+Left and Shift+Right change the width".to_string());
                 }
                 n
             }

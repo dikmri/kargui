@@ -565,7 +565,9 @@ A table: column headings over a virtual list of `count` rows, `row_height` logic
 tall, whose cells line up with the headings. Set it up with [`Table::sort`],
 [`Table::selection`], [`Table::label`] and [`Table::grow`], then build the rows with
 [`Table::show`]. Drag the small grip at the right of a heading to change a column's width
-(kargui remembers it). Without `.grow()` the table shows up to 8 rows and scrolls.
+(kargui remembers it), or press Shift+Left and Shift+Right while the heading has the focus.
+Text wider than its column is cut at the edge of the cell. Without `.grow()` the table
+shows up to 8 rows and scrolls.
 
 ```
 use kargui::ui::TableColumn;
@@ -1513,6 +1515,19 @@ if let Some(kana) = field.composing() {
 ```
 
 ## Lists (`List`, from `ui.list`)
+
+### `pub fn type_ahead(mut self, text: impl Fn(usize) -> String + 'u) -> Self`
+
+Lets the user jump to a row by typing: while the list has the focus, a letter or digit
+selects the next row whose text (from `text`) starts with it, wrapping around and ignoring
+case, and scrolls it into view. Rows off screen are not built, so the text comes from
+`text`. It needs [`List::selection`].
+
+```
+ui.list(names.len(), 28.0).selection(&mut selected).type_ahead(|i| names[i].clone()).show(|ui, i| {
+    ui.label(&names[i]);
+});
+```
 
 ### `pub fn grow(self) -> Self`
 

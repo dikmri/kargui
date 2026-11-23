@@ -983,7 +983,8 @@ impl State {
         }
         let keyboard = self.keyboard_win == Some(id);
         let w = &self.windows[i];
-        let focus = w.rt.cx.focus.filter(|f| keyboard && w.rt.cx.prev.inputs.contains_key(f));
+        // パスワードの欄では IME を有効にしない（Context::ime_target）
+        let focus = w.rt.cx.ime_target().filter(|_| keyboard);
         let s = w.scale();
         let rect = w.rt.cx.caret.map(|c| ((c.x / s).floor() as i32, (c.y / s).floor() as i32, (c.w / s).ceil().max(1.0) as i32, (c.h / s).ceil().max(1.0) as i32));
         if focus != self.ime.enabled || (cancel && focus.is_some()) {

@@ -860,7 +860,8 @@ impl State {
         let cancel = std::mem::take(&mut self.windows[i].rt.cx.ime_cancel);
         let Some(m) = self.ime.as_ref().filter(|m| m.ready) else { return };
         let cx = &self.windows[i].rt.cx;
-        let focus = cx.focus.filter(|f| keyboard && cx.prev.inputs.contains_key(f));
+        // パスワードの欄では IME に焦点を置かない（Context::ime_target）
+        let focus = cx.ime_target().filter(|_| keyboard);
         // ほかの窓が IME の焦点を持っていて、この窓の入力欄に焦点が無ければ触らない
         if m.win.is_some_and(|w| w != id) && focus.is_none() {
             return;
