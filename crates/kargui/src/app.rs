@@ -312,15 +312,20 @@ pub fn run(options: Options, app: impl App) -> Result<(), crate::Error> {
     {
         crate::platform::run(options, Box::new(app))
     }
-    // Linux は Wayland の窓（まだ無い物は wayland.rs の冒頭）
+    // Linux は Wayland か X11 の窓（KARGUI_BACKEND で選べる。決め方は linux::choose_backend）
     #[cfg(target_os = "linux")]
     {
-        crate::wayland::run(options, Box::new(app))
+        let backend = crate::linux::choose_backend(|k| std::env::var(k).ok(), |p| p.exists());
+        crate::log::event("backend", "", &format!("{backend:?}"));
+        match backend {
+            crate::linux::Backend::Wayland => crate::wayland::run(options, Box::new(app)),
+            crate::linux::Backend::X11 => crate::x11::run(options, Box::new(app)),
+        }
     }
     // macOS の窓はまだ無い（部品・並べ方・描き方・試験台は動く）
     #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (options, app);
-        Err(crate::Error("kargui cannot open windows on this operating system yet: Windows and Linux (Wayland) are supported (macOS is planned)".into()))
+        Err(crate::Error("kargui cannot open windows on this operating system yet: Windows and Linux (Wayland and X11) are supported (macOS is planned)".into()))
     }
 }

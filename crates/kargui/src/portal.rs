@@ -50,8 +50,9 @@ pub(crate) fn read_button_layout() -> zbus::Result<String> {
 /// 頼みの番号（handle_token）を作るための数
 static NEXT: AtomicU32 = AtomicU32::new(1);
 
-/// ファイルのダイアログを出し、選んだファイルを返す（取り消しは空）。終わるまで戻らないので、別のスレッドで呼ぶ
-pub(crate) fn choose_files(d: &FileDialog) -> zbus::Result<Vec<PathBuf>> {
+/// ファイルのダイアログを出し、選んだファイルを返す（取り消しは空）。終わるまで戻らないので、別のスレッドで呼ぶ。
+/// parent は親の窓（X11 は「x11:16 進の番号」。ダイアログを親の上に置き、親を操作できなくする。無ければ空）
+pub(crate) fn choose_files(d: &FileDialog, parent: &str) -> zbus::Result<Vec<PathBuf>> {
     let conn = Connection::session()?;
     // 答えを取りこぼさないよう、頼む前に Request の知らせを待ち始める（場所は自分の名前と handle_token で決まる）
     let token = format!("kargui{}", NEXT.fetch_add(1, Ordering::Relaxed));
@@ -87,7 +88,7 @@ pub(crate) fn choose_files(d: &FileDialog) -> zbus::Result<Vec<PathBuf>> {
     let chooser = Proxy::new(&conn, DEST, PATH, "org.freedesktop.portal.FileChooser")?;
     let title = d.title.clone().unwrap_or_default();
     let method = if d.save { "SaveFile" } else { "OpenFile" };
-    let handle: OwnedObjectPath = chooser.call(method, &("", title.as_str(), opts))?;
+    let handle: OwnedObjectPath = chooser.call(method, &(parent, title.as_str(), opts))?;
     // 古いポータルは別の場所を返すことがある。その時はそちらで待ち直す
     if handle.as_str() != request_path {
         log::event("portal.request", &format!("expected={request_path}"), &format!("got={}", handle.as_str()));

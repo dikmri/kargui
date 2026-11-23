@@ -30,9 +30,18 @@
   menu on a right click, resizing from the window's edges and corners, and a one-pixel border while
   the window floats. The app's size is the size of its content, as on Windows (the title bar is
   added). A dialog darkens only the content, so the title bar can still move or close the window.
-  Not there yet: X11. New Linux-only dependencies: wayland-client,
-  wayland-protocols, xkbcommon-dl, rustix, accesskit_unix and zbus (84 crates in all; 71 of them
-  come with accesskit_unix, that is zbus and AT-SPI).
+  Apps also open X11 windows: kargui uses Wayland when the compositor's socket is there and X11
+  (`DISPLAY`) otherwise, and `KARGUI_BACKEND=x11` or `wayland` chooses one. The X11 window draws
+  through MIT-SHM (PutImage where it is missing), scales by `Xft.dpi`, reads the server's key map
+  with libxkbcommon-x11 (loaded at run time, like libxcb), lets the server repeat keys, and has the
+  same clipboard, screen reader tree, file dialogs (now attached to their window), second windows
+  (with their position and icon) and files dropped from other apps (XDND) as on Wayland. The input
+  method on X11 is fcitx5 through its D-Bus interface: keys go to the input method first, and only
+  the keys it does not use reach the app; the composition, the clause being converted and the
+  candidate window under the caret work as on Wayland (checked with fcitx5 and Mozc under
+  XWayland). IBus is not there yet. New Linux-only dependencies: wayland-client,
+  wayland-protocols, xkbcommon-dl, rustix, accesskit_unix, zbus and x11rb (89 crates in all; 71 of
+  them come with accesskit_unix, that is zbus and AT-SPI).
 - Icons: `Icon::Maximize` (a square) and `Icon::Restore` (two squares). `Icon::ALL` now has 21
   icons.
 - Screen readers: text fields and text areas now expose their text as text runs (one per line)

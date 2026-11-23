@@ -42,11 +42,17 @@ mod platform;
 // 画像のファイルを読む Windows の道
 #[cfg(windows)]
 mod wic;
-// OS との境目の Linux の版（Wayland の窓と入力）
+// OS との境目の Linux の版（Wayland と X11 の窓と入力。分け合う物は linux.rs、ポータルは portal.rs）
+#[cfg(target_os = "linux")]
+mod fcitx;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "linux")]
 mod portal;
 #[cfg(target_os = "linux")]
 mod wayland;
+#[cfg(target_os = "linux")]
+mod x11;
 mod raster;
 mod runtime;
 pub mod test;

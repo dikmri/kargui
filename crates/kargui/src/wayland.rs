@@ -15,10 +15,10 @@
 //! 引っ張り）は State に持つ。面と xdg の窓の知らせには窓の番号（WinId）を添え、マウス・キーボード・日本語入力・引っ張りは
 //! enter の面で窓を決める。2 つ目からの窓は、Windows と同じく主の窓のフレームの後で、頼まれた窓とそろえる。
 //!
-//! まだ無い物（次の区切り）: 題の帯（GNOME の CSD）・X11。
+//! 合成が題の帯を描かない時（GNOME）は kargui が描く（cx.csd）。キー配列・読み上げの係・ポータルのスレッドは linux.rs と分け合う。
 
 use std::cell::RefCell;
-use std::ffi::{OsString, c_char};
+use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use accesskit::{ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate};
+use accesskit::ActionRequest;
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec, eventfd, poll};
 use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
 use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
@@ -45,25 +45,20 @@ use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, 
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::decoration::zv1::client::{zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
-use xkbcommon_dl as xkb;
 
 use crate::app::{App, Frame, Options};
 use crate::cpu_frame;
 use crate::damage::Summary;
 use crate::geom::Color;
 use crate::ime;
-use crate::input::{A11yAction, Event, Key, Mods};
+use crate::input::{A11yAction, Event, Mods};
 use crate::log;
 use crate::runtime::Runtime;
 use crate::text::Text;
 use crate::ui::Id;
 use crate::ui::context::{Clipboard, Csd, CsdButton, CsdRequest};
+use crate::linux::{A11ySink, DOUBLE_CLICK_DIST, DOUBLE_CLICK_MS, Keyboard, PortalSettings, WHEEL_STEP, app_id, key_of, local_date, local_time};
 
-/// ホイールの 1 刻み（物理ピクセル。Windows の platform.rs と同じ）
-const WHEEL_STEP: f32 = 96.0;
-/// 2 回押しの時間と距離（論理ピクセル）。Wayland には OS の設定を聞く道が無いので、GNOME の既定に合わせる
-const DOUBLE_CLICK_MS: u32 = 400;
-const DOUBLE_CLICK_DIST: f32 = 4.0;
 /// マウスのボタン（linux/input-event-codes.h）
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -113,11 +108,6 @@ fn resize_shape(edge: xdg_toplevel::ResizeEdge) -> Shape {
     }
 }
 
-/// ポータルから読んだ OS の設定（読まなかった物・読めなかった物は None）
-struct PortalSettings {
-    dark: Option<bool>,
-    button_layout: Option<String>,
-}
 
 fn error(what: &str, e: impl std::fmt::Display) -> crate::Error {
     crate::Error(format!("wayland: {what}: {e}"))
@@ -246,43 +236,6 @@ impl Clipboard for WaylandClipboard {
     }
 }
 
-/// 地元の日付と時刻（C の localtime_r。/etc/localtime と TZ に従う）
-#[repr(C)]
-struct Tm {
-    tm_sec: i32,
-    tm_min: i32,
-    tm_hour: i32,
-    tm_mday: i32,
-    tm_mon: i32,
-    tm_year: i32,
-    tm_wday: i32,
-    tm_yday: i32,
-    tm_isdst: i32,
-    tm_gmtoff: std::ffi::c_long,
-    tm_zone: *const c_char,
-}
-
-unsafe extern "C" {
-    fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
-}
-
-fn local_tm() -> Option<Tm> {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
-    let mut tm = Tm { tm_sec: 0, tm_min: 0, tm_hour: 0, tm_mday: 0, tm_mon: 0, tm_year: 0, tm_wday: 0, tm_yday: 0, tm_isdst: 0, tm_gmtoff: 0, tm_zone: std::ptr::null() };
-    // SAFETY: secs と tm はこの関数の中の値。localtime_r は tm に書くだけで、ほかのスレッドと分け合わない
-    let ok = unsafe { !localtime_r(&secs, &mut tm).is_null() };
-    ok.then_some(tm)
-}
-
-/// 地元の今日（年・月・日）
-pub(crate) fn local_date() -> Option<(i32, u32, u32)> {
-    local_tm().map(|t| (t.tm_year + 1900, (t.tm_mon + 1) as u32, t.tm_mday as u32))
-}
-
-/// 地元の今の時刻（時・分）
-pub(crate) fn local_time() -> Option<(u32, u32)> {
-    local_tm().map(|t| (t.tm_hour as u32, t.tm_min as u32))
-}
 
 /// 共有メモリの絵 2 枚。合成が読んでいる（busy）間は描かない
 struct Shm {
@@ -334,179 +287,6 @@ impl Drop for Shm {
     }
 }
 
-/// キー配列（libxkbcommon）と押し続け
-struct Keyboard {
-    xkb: &'static xkb::XkbCommon,
-    ctx: *mut xkb::xkb_context,
-    keymap: *mut xkb::xkb_keymap,
-    state: *mut xkb::xkb_state,
-    /// 押し続けの速さ（1 秒あたり）と、始まるまでの時間（ms）
-    rate: i32,
-    delay: i32,
-    /// 押し続けているキー（xkb のキー番号）と、次に繰り返す時
-    repeat: Option<(u32, Instant)>,
-    /// 今の押し続けで繰り返した回数（記録用）
-    repeat_count: u32,
-}
-
-impl Keyboard {
-    fn new() -> Option<Keyboard> {
-        let xkb = xkb::xkbcommon_option()?;
-        // SAFETY: libxkbcommon の関数を、決まった引数で呼ぶ
-        let ctx = unsafe { (xkb.xkb_context_new)(xkb::xkb_context_flags::XKB_CONTEXT_NO_FLAGS) };
-        if ctx.is_null() {
-            return None;
-        }
-        Some(Keyboard { xkb, ctx, keymap: std::ptr::null_mut(), state: std::ptr::null_mut(), rate: 25, delay: 600, repeat: None, repeat_count: 0 })
-    }
-
-    /// 合成から届いたキー配列（文字列の fd）を読む
-    fn set_keymap(&mut self, fd: OwnedFd, size: u32) -> bool {
-        // SAFETY: 合成が渡した fd を読むだけで写す（MAP_PRIVATE）。文字列は NUL で終わる（size に NUL を含む）
-        unsafe {
-            let Ok(p) = mmap(std::ptr::null_mut(), size as usize, ProtFlags::READ, MapFlags::PRIVATE, &fd, 0) else {
-                return false;
-            };
-            let keymap = (self.xkb.xkb_keymap_new_from_string)(
-                self.ctx,
-                p as *const c_char,
-                xkb::xkb_keymap_format::XKB_KEYMAP_FORMAT_TEXT_V1,
-                xkb::xkb_keymap_compile_flags::XKB_KEYMAP_COMPILE_NO_FLAGS,
-            );
-            let _ = munmap(p, size as usize);
-            if keymap.is_null() {
-                return false;
-            }
-            let state = (self.xkb.xkb_state_new)(keymap);
-            if state.is_null() {
-                (self.xkb.xkb_keymap_unref)(keymap);
-                return false;
-            }
-            self.drop_keymap();
-            self.keymap = keymap;
-            self.state = state;
-        }
-        true
-    }
-
-    fn drop_keymap(&mut self) {
-        // SAFETY: 作った物を 1 回ずつ外す
-        unsafe {
-            if !self.state.is_null() {
-                (self.xkb.xkb_state_unref)(self.state);
-            }
-            if !self.keymap.is_null() {
-                (self.xkb.xkb_keymap_unref)(self.keymap);
-            }
-        }
-        self.state = std::ptr::null_mut();
-        self.keymap = std::ptr::null_mut();
-    }
-
-    fn ready(&self) -> bool {
-        !self.state.is_null()
-    }
-
-    fn update_mods(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
-        if self.ready() {
-            // SAFETY: 作った state に、合成が送った修飾キーの状態を入れる
-            unsafe {
-                (self.xkb.xkb_state_update_mask)(self.state, depressed, latched, locked, 0, 0, group);
-            }
-        }
-    }
-
-    fn mod_active(&self, name: &[u8]) -> bool {
-        // SAFETY: name は NUL で終わる定数（XKB_MOD_NAME_*）
-        self.ready() && unsafe { (self.xkb.xkb_state_mod_name_is_active)(self.state, name.as_ptr() as *const c_char, xkb::xkb_state_component::XKB_STATE_MODS_EFFECTIVE) } > 0
-    }
-
-    fn mods(&self) -> Mods {
-        Mods { shift: self.mod_active(xkb::XKB_MOD_NAME_SHIFT), ctrl: self.mod_active(xkb::XKB_MOD_NAME_CTRL), alt: self.mod_active(xkb::XKB_MOD_NAME_ALT) }
-    }
-
-    /// キーの番号（xkb）を、修飾キーを外した段 0 の記号にする（Windows の仮想キーと同じく、配列の文字ではなくキーで決める）
-    fn base_sym(&self, code: u32) -> u32 {
-        if !self.ready() {
-            return 0;
-        }
-        // SAFETY: 作った keymap と state に、合成が送ったキーの番号を渡す
-        unsafe {
-            let layout = (self.xkb.xkb_state_key_get_layout)(self.state, code);
-            let mut syms: *const u32 = std::ptr::null();
-            let n = (self.xkb.xkb_keymap_key_get_syms_by_level)(self.keymap, code, layout, 0, &mut syms);
-            if n > 0 && !syms.is_null() { *syms } else { 0 }
-        }
-    }
-
-    /// 今の修飾キーで打った文字
-    fn utf8(&self, code: u32) -> String {
-        if !self.ready() {
-            return String::new();
-        }
-        let mut buf = [0 as c_char; 32];
-        // SAFETY: buf の大きさを渡し、書かれた長さだけを読む
-        let n = unsafe { (self.xkb.xkb_state_key_get_utf8)(self.state, code, buf.as_mut_ptr(), buf.len()) };
-        if n <= 0 {
-            return String::new();
-        }
-        let bytes: Vec<u8> = buf[..(n as usize).min(buf.len() - 1)].iter().map(|&c| c as u8).collect();
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-
-    fn repeats(&self, code: u32) -> bool {
-        // SAFETY: 作った keymap にキーの番号を渡す
-        self.ready() && self.rate > 0 && unsafe { (self.xkb.xkb_keymap_key_repeats)(self.keymap, code) } != 0
-    }
-
-    /// 押し続けをやめる（繰り返していたら、その回数を記録する）
-    fn stop_repeat(&mut self, why: &str) {
-        if let Some((code, _)) = self.repeat.take()
-            && self.repeat_count > 0
-        {
-            log::event("key.repeat", &format!("code={code} why={why}"), &format!("stopped count={}", self.repeat_count));
-        }
-        self.repeat_count = 0;
-    }
-}
-
-impl Drop for Keyboard {
-    fn drop(&mut self) {
-        self.drop_keymap();
-        // SAFETY: new で作った context を外す
-        unsafe { (self.xkb.xkb_context_unref)(self.ctx) };
-    }
-}
-
-/// xkb の記号（段 0）→ kargui のキー
-fn key_of(sym: u32) -> Option<Key> {
-    const LETTERS: [Key; 26] = [Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I, Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R, Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z];
-    const DIGITS: [Key; 10] = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
-    const FKEYS: [Key; 12] = [Key::F1, Key::F2, Key::F3, Key::F4, Key::F5, Key::F6, Key::F7, Key::F8, Key::F9, Key::F10, Key::F11, Key::F12];
-    Some(match sym {
-        0x61..=0x7a => LETTERS[(sym - 0x61) as usize],
-        0x41..=0x5a => LETTERS[(sym - 0x41) as usize],
-        0x30..=0x39 => DIGITS[(sym - 0x30) as usize],
-        0xffbe..=0xffc9 => FKEYS[(sym - 0xffbe) as usize],
-        0xff0d | 0xff8d => Key::Enter,
-        0xff09 | 0xfe20 => Key::Tab,
-        0xff1b => Key::Escape,
-        0x20 => Key::Space,
-        0xff08 => Key::Backspace,
-        0xffff | 0xff9f => Key::Delete,
-        0xff51 | 0xff96 => Key::Left,
-        0xff53 | 0xff98 => Key::Right,
-        0xff52 | 0xff97 => Key::Up,
-        0xff54 | 0xff99 => Key::Down,
-        0xff50 | 0xff95 => Key::Home,
-        0xff57 | 0xff9c => Key::End,
-        0xff55 | 0xff9a => Key::PageUp,
-        0xff56 | 0xff9b => Key::PageDown,
-        0xff63 | 0xff9e => Key::Insert,
-        0xff67 => Key::ContextMenu,
-        _ => return None,
-    })
-}
 
 /// 日本語入力（text-input-v3）の状態
 #[derive(Default)]
@@ -532,44 +312,6 @@ struct Ime {
     shown: String,
 }
 
-/// 読み上げ（AT-SPI）からの頼みを受ける係。accesskit_unix は 3 つの係をどれも別のスレッドから呼ぶので、
-/// 操作は列に積み、eventfd に書いて窓の処理（poll）を起こす。最初の木もここでは作らず（画面の状態は窓の処理の
-/// スレッドにある）、起きた後のフレームで update_if_active に全部の木を渡す
-#[derive(Clone)]
-struct A11ySink {
-    actions: Arc<Mutex<Vec<ActionRequest>>>,
-    wake: Arc<OwnedFd>,
-}
-
-impl A11ySink {
-    fn wake(&self) {
-        let _ = rustix::io::write(&*self.wake, &1u64.to_ne_bytes());
-    }
-}
-
-impl ActivationHandler for A11ySink {
-    fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
-        log::event("a11y.activate", "", "pending (tree on next frame)");
-        self.wake();
-        None
-    }
-}
-
-impl ActionHandler for A11ySink {
-    fn do_action(&mut self, request: ActionRequest) {
-        log::event("a11y.action", &format!("action={:?} node={:?}", request.action, request.target_node), "queued");
-        if let Ok(mut q) = self.actions.lock() {
-            q.push(request);
-        }
-        self.wake();
-    }
-}
-
-impl DeactivationHandler for A11ySink {
-    fn deactivate_accessibility(&mut self) {
-        log::event("a11y.deactivate", "", "ok");
-    }
-}
 
 /// 窓の番号。面や xdg の窓の知らせに添えて、どの窓の物かを分ける
 type WinId = u32;
@@ -1071,21 +813,8 @@ impl State {
             &format!("key={key} save={} multiple={} filters={} folder={:?}", d.save, d.allows_multiple(), d.filters.len(), d.folder),
             "portal",
         );
-        let (tx, wake) = (self.dialog_tx.clone(), self.wake.clone());
-        let spawned = std::thread::Builder::new().name("kargui-file-dialog".into()).spawn(move || {
-            let files = match crate::portal::choose_files(&d) {
-                Ok(f) => f,
-                Err(e) => {
-                    log::event("file_dialog.error", &format!("key={key}"), &format!("error={e}"));
-                    Vec::new()
-                }
-            };
-            log::event("file_dialog.answer", &format!("key={key} save={}", d.save), &format!("files={}", files.len()));
-            let _ = tx.send((win, key, files));
-            let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
-        });
-        if let Err(e) = spawned {
-            log::event("file_dialog.error", "spawn", &format!("error={e}"));
+        // Wayland の親の窓は xdg-foreign で渡す仕組みが要るので、まだ渡さない
+        if !crate::linux::spawn_file_dialog(win, key, d, String::new(), self.dialog_tx.clone(), self.wake.clone()) {
             self.dialog_open = false;
         }
     }
@@ -1405,10 +1134,6 @@ impl State {
     }
 }
 
-/// 窓の app_id（Hyprland の窓の規則などで使う）は、実行ファイルの名前
-fn app_id() -> String {
-    std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_else(|| "kargui".into())
-}
 
 pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Error> {
     let started = Instant::now();
@@ -1444,29 +1169,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
 
     // OS の設定（明暗と、kargui が題の帯を描く時のボタンの並び）は、窓の準備と並べてポータルに聞く（最初の絵の前に少しだけ待つ）
     let (want_dark, want_buttons) = (options.dark.is_none(), deco_mgr.is_none());
-    let settings_rx = (want_dark || want_buttons).then(|| {
-        let (tx, rx) = channel();
-        let wake = wake_fd.clone();
-        let _ = std::thread::Builder::new().name("kargui-portal-settings".into()).spawn(move || {
-            let t = Instant::now();
-            let dark = want_dark.then(crate::portal::read_dark);
-            let button_layout = want_buttons.then(crate::portal::read_button_layout);
-            let ms = t.elapsed().as_secs_f64() * 1000.0;
-            match &dark {
-                Some(Ok(d)) => log::event("portal.color_scheme", "", &format!("dark={d} ms={ms:.1}")),
-                Some(Err(e)) => log::event("portal.color_scheme", "", &format!("error={e} ms={ms:.1}")),
-                None => {}
-            }
-            match &button_layout {
-                Some(Ok(l)) => log::event("portal.button_layout", "", &format!("layout={l:?} ms={ms:.1}")),
-                Some(Err(e)) => log::event("portal.button_layout", "", &format!("error={e} ms={ms:.1}")),
-                None => {}
-            }
-            let _ = tx.send(PortalSettings { dark: dark.and_then(Result::ok), button_layout: button_layout.and_then(Result::ok) });
-            let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
-        });
-        rx
-    });
+    let settings_rx = crate::linux::spawn_settings(want_dark, want_buttons, wake_fd.clone());
     // クリップボード（座席ごとに 1 つの data device）
     let device = match (&data_mgr, &seat) {
         (Some(m), Some(s)) => Some(m.get_data_device(s, &qh, ())),

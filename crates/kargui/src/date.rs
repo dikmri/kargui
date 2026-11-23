@@ -45,7 +45,7 @@ impl Time {
             return t;
         }
         #[cfg(target_os = "linux")]
-        if let Some(t) = crate::wayland::local_time().and_then(|(h, m)| Time::new(h, m)) {
+        if let Some(t) = crate::linux::local_time().and_then(|(h, m)| Time::new(h, m)) {
             return t;
         }
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
@@ -172,7 +172,7 @@ impl Date {
             return d;
         }
         #[cfg(target_os = "linux")]
-        if let Some(d) = crate::wayland::local_date().and_then(|(y, m, d)| Date::new(y, m, d)) {
+        if let Some(d) = crate::linux::local_date().and_then(|(y, m, d)| Date::new(y, m, d)) {
             return d;
         }
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);

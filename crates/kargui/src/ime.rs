@@ -109,6 +109,52 @@ pub(crate) fn text_input_done(shown: &str, preedit: &str, begin: i32, end: i32, 
     out
 }
 
+/// fcitx5 の書式の旗の「強調」（TextFormatFlag::HighLight）。今変換している文節に付く
+const FCITX_HIGHLIGHT: i32 = 1 << 4;
+
+/// fcitx5 の D-Bus の UpdateFormattedPreedit（書式付きの区切りの並びと、変換中の文字の中の UTF-8 のバイトのカーソル。
+/// 負ならカーソルを出さない）を、変換中の文字と文節にする。区切りの境目を文節の境目にし、強調の付いた区切りを
+/// 今変換している文節にする
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn fcitx_clauses(segments: &[(String, i32)], cursor: i32) -> (String, Clauses) {
+    let text: String = segments.iter().map(|(t, _)| t.as_str()).collect();
+    let len = text.encode_utf16().count();
+    let mut bounds = vec![0];
+    let mut target: Option<(usize, usize)> = None;
+    let mut at = 0;
+    for (t, flags) in segments {
+        let end = at + t.encode_utf16().count();
+        if flags & FCITX_HIGHLIGHT != 0 && end > at {
+            target = Some(target.map_or((at, end), |(a, b)| (a.min(at), b.max(end))));
+        }
+        bounds.push(end);
+        at = end;
+    }
+    bounds.dedup();
+    if bounds.len() < 2 {
+        bounds = vec![0, len];
+    }
+    let cursor = (cursor >= 0).then(|| {
+        let mut b = (cursor as usize).min(text.len());
+        while !text.is_char_boundary(b) {
+            b -= 1;
+        }
+        utf16_of(&text, b)
+    });
+    (text, Clauses { bounds, target, cursor })
+}
+
+/// fcitx5 の UpdateFormattedPreedit を kargui の入力にする。shown は今見せている変換中の文字。
+/// 変換中の文字が空になったら（取り消し・確定の後）、見せていた時だけ消す
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn fcitx_preedit_events(shown: &str, segments: &[(String, i32)], cursor: i32) -> Vec<Event> {
+    let (text, Clauses { bounds, target, cursor }) = fcitx_clauses(segments, cursor);
+    if text.is_empty() {
+        return if shown.is_empty() { Vec::new() } else { vec![Event::ImePreedit(String::new())] };
+    }
+    vec![Event::ImePreedit(text), Event::ImeClauses { bounds, target, cursor }]
+}
+
 /// RECONVERTSTRING の頭の大きさ（DWORD が 8 個）
 pub(crate) const HEADER: usize = 32;
 
@@ -255,6 +301,34 @@ mod tests {
         assert_eq!(confirmed_range(value, 6, 2), ("牛乳を".len(), value.len()));
         // 長すぎる範囲は終わりで止まる
         assert_eq!(confirmed_range(value, 6, 99), ("牛乳を".len(), value.len()));
+    }
+
+    #[test]
+    fn fcitx_segments_become_clauses_and_the_highlight_is_the_target() {
+        let seg = |t: &str, f: i32| (t.to_string(), f);
+        // fcitx5 の UpdateFormattedPreedit: 「明日は|東京に|行く」の「東京に」を変換中（下線 8、強調 16）。カーソルは 18 バイト目
+        let segs = [seg("明日は", 8), seg("東京に", 8 | 16), seg("行く", 8)];
+        let (text, c) = fcitx_clauses(&segs, 18);
+        assert_eq!(text, "明日は東京に行く");
+        assert_eq!(c, Clauses { bounds: vec![0, 3, 6, 8], target: Some((3, 6)), cursor: Some(6) });
+        // かなを打っている途中（文節 1 つ、強調なし）。カーソルは「あい|う」
+        let (_, c) = fcitx_clauses(&[seg("あいう", 8)], 6);
+        assert_eq!(c, Clauses { bounds: vec![0, 3], target: None, cursor: Some(2) });
+        // カーソルを出さない（-1）・文字の途中の位置・空の区切りも止まらない
+        let (_, c) = fcitx_clauses(&[seg("", 8), seg("😀あ", 16)], -1);
+        assert_eq!(c, Clauses { bounds: vec![0, 3], target: Some((0, 3)), cursor: None });
+        let (_, c) = fcitx_clauses(&[seg("あいう", 8)], 4);
+        assert_eq!(c.cursor, Some(1));
+    }
+
+    #[test]
+    fn fcitx_preedit_events_clear_an_empty_composition_once() {
+        let seg = |t: &str, f: i32| (t.to_string(), f);
+        let ev = fcitx_preedit_events("", &[seg("あ", 8)], 3);
+        assert_eq!(ev, vec![Event::ImePreedit("あ".into()), Event::ImeClauses { bounds: vec![0, 1], target: None, cursor: Some(1) }]);
+        // 変換中の文字が空になった（取り消し）。見せていた時だけ消す
+        assert_eq!(fcitx_preedit_events("あ", &[], 0), vec![Event::ImePreedit(String::new())]);
+        assert_eq!(fcitx_preedit_events("", &[], 0), Vec::<Event>::new());
     }
 
     #[test]
