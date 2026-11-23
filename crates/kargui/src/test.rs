@@ -3267,6 +3267,58 @@ mod tests {
         assert_eq!(focused_name(&h).as_deref(), Some("After"));
     }
 
+    #[derive(Default)]
+    struct TextFields {
+        name: String,
+        body: String,
+        secret: String,
+    }
+
+    impl App for TextFields {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.text_input(&mut self.name).hint("Name");
+            ui.text_area(&mut self.body).hint("Body");
+            ui.password(&mut self.secret).hint("Password");
+        }
+    }
+
+    /// 部品の子（読み上げの木の中の物）
+    fn a11y_children<A: App>(h: &Harness<A>, name: &str) -> Vec<accesskit::Node> {
+        let parent = a11y_node(h, name);
+        let built = a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new());
+        parent.children().iter().map(|id| built.update.nodes.iter().find(|(n, _)| n == id).expect("子の部品").1.clone()).collect()
+    }
+
+    #[test]
+    fn text_fields_give_screen_readers_text_runs_and_the_caret() {
+        use accesskit::{Role, TextPosition};
+        let mut h = Harness::new(TextFields::default());
+        h.click("Name").type_text("ab cd").press(Key::Left);
+        // 1 行の欄: 子に文字の並びが 1 つ。Orca（AT-SPI）はこれで中身とキャレットを読む
+        let name = a11y_node(&h, "Name");
+        let runs = a11y_children(&h, "Name");
+        assert_eq!(runs.len(), 1);
+        assert_eq!((runs[0].role(), runs[0].value()), (Role::TextRun, Some("ab cd")));
+        assert_eq!((runs[0].character_lengths(), runs[0].word_starts()), (&[1u8, 1, 1, 1, 1][..], &[0u8, 3][..]));
+        let caret = TextPosition { node: name.children()[0], character_index: 4 };
+        let sel = *name.text_selection().expect("キャレットの位置");
+        assert_eq!((sel.anchor, sel.focus), (caret, caret));
+        // Shift+← で選ぶと、動かない端（anchor）と動く端（focus）が分かれる
+        h.press_with(Key::Left, Mods::SHIFT);
+        let sel = *a11y_node(&h, "Name").text_selection().unwrap();
+        assert_eq!((sel.anchor.character_index, sel.focus.character_index), (4, 3));
+        // 複数行の欄: 行ごとの並び。改行は行の終わりの 1 字
+        h.click("Body").type_text("x").press(Key::Enter).type_text("y");
+        let lines: Vec<String> = a11y_children(&h, "Body").iter().map(|r| r.value().unwrap().to_string()).collect();
+        assert_eq!(lines, vec!["x\n", "y"]);
+        let body = a11y_node(&h, "Body");
+        assert_eq!(body.text_selection().unwrap().focus, TextPosition { node: body.children()[1], character_index: 1 });
+        // パスワードは中身を出さない
+        h.click("Password").type_text("pw");
+        assert!(a11y_node(&h, "Password").children().is_empty());
+        assert!(a11y_nodes(&h).iter().all(|n| n.value() != Some("pw")));
+    }
+
     /// 1 群の A 組の見本: ラジオ・区切り線・進み具合・枠・開閉・リンク・押したままのボタン・パスワード
     #[derive(Default)]
     struct Parts {

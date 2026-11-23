@@ -146,8 +146,9 @@ shared memory, fractional scaling, the mouse (double and triple clicks, wheel, r
 shapes), the keyboard (the system key map through libxkbcommon, loaded at run time, and key
 repeat), the system clipboard (text), the local date and time, and the input method (text-input-v3:
 the composition with its clause being converted, and the candidate window under the caret; checked
-with fcitx5 and Mozc). Not there yet: screen readers, file dialogs, the system dark mode, more than one window, drag and drop from other
-apps, title bars on GNOME and X11. It is checked on Hyprland. On macOS, `kargui::run` still returns an `Err` saying the
+with fcitx5 and Mozc), screen readers (AT-SPI through accesskit_unix, with the same tree as on
+Windows; checked with Orca), and file dialogs and the system dark mode (xdg-desktop-portal). Not
+there yet: more than one window, drag and drop from other apps, title bars on GNOME and X11. It is checked on Hyprland. On macOS, `kargui::run` still returns an `Err` saying the
 system is not supported.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).

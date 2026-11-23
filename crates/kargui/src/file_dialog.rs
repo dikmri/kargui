@@ -118,3 +118,51 @@ impl FileDialog {
         self.multiple && !self.save
     }
 }
+
+/// file:// の URI（Linux のポータルの答え）を、ファイルの場所のバイトにする。%XX を元のバイトに戻す。
+/// ほかの形（http:// など、ほかの機械の file://host/…）は None
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn file_uri_bytes(uri: &str) -> Option<Vec<u8>> {
+    let rest = uri.strip_prefix("file://")?;
+    // 「file://機械の名前/場所」。名前が無いか localhost の時だけ、この機械のファイル
+    let path = match rest.find('/') {
+        Some(0) => rest,
+        Some(i) if &rest[..i] == "localhost" => &rest[i..],
+        _ => return None,
+    };
+    let b = path.as_bytes();
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex)) {
+            (b'%', Some(h), Some(l)) => {
+                out.push(h << 4 | l);
+                i += 3;
+            }
+            (c, _, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_uris_become_paths_with_percent_escapes_decoded() {
+        assert_eq!(file_uri_bytes("file:///home/a/b.txt").as_deref(), Some(&b"/home/a/b.txt"[..]));
+        assert_eq!(file_uri_bytes("file:///home/a/b%20c.txt").as_deref(), Some(&b"/home/a/b c.txt"[..]));
+        // 日本語の名前は UTF-8 のバイトを %XX で並べてある
+        assert_eq!(file_uri_bytes("file:///tmp/%E6%9D%B1%E4%BA%AC.md").as_deref(), Some("/tmp/東京.md".as_bytes()));
+        assert_eq!(file_uri_bytes("file://localhost/tmp/x").as_deref(), Some(&b"/tmp/x"[..]));
+        // 小文字の %xx も読む。% の後ろが 16 進でなければ、そのままにする
+        assert_eq!(file_uri_bytes("file:///a%2fb%zz").as_deref(), Some(&b"/a/b%zz"[..]));
+        assert_eq!(file_uri_bytes("https://example.com/a"), None);
+        assert_eq!(file_uri_bytes("file://other-pc/a"), None);
+    }
+}

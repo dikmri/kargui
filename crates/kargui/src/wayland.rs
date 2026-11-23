@@ -7,17 +7,21 @@
 //!
 //! クリップボードは wl_data_device（文字だけ）。地元の日付と時刻は C の localtime_r で読む。
 //! 日本語入力は text-input-v3（fcitx5 などの IME が、合成を通して変換中の文字と確定の文字を送る）。
+//! 読み上げは accesskit_unix（AT-SPI を D-Bus で話す）。Windows と同じ木を毎フレーム渡し、違いは AccessKit が見つける。
+//! ファイルのダイアログと OS の明暗の設定は xdg-desktop-portal（portal.rs。別のスレッドで呼ぶ）。
 //!
-//! まだ無い物（次の区切り）: 読み上げ・ファイルのダイアログ・明暗の設定・複数の窓・ドラッグ＆ドロップ・
-//! 題の帯（GNOME の CSD）。
+//! まだ無い物（次の区切り）: 複数の窓・ドラッグ＆ドロップ・題の帯（GNOME の CSD）。
 
 use std::cell::RefCell;
 use std::ffi::c_char;
 use std::os::fd::{AsFd, OwnedFd};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use accesskit::{ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate};
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec, eventfd, poll};
 use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
 use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
@@ -42,7 +46,7 @@ use crate::cpu_frame;
 use crate::damage::Summary;
 use crate::geom::Color;
 use crate::ime;
-use crate::input::{Event, Key, Mods};
+use crate::input::{A11yAction, Event, Key, Mods};
 use crate::log;
 use crate::runtime::Runtime;
 use crate::text::Text;
@@ -448,6 +452,45 @@ struct Ime {
     shown: String,
 }
 
+/// 読み上げ（AT-SPI）からの頼みを受ける係。accesskit_unix は 3 つの係をどれも別のスレッドから呼ぶので、
+/// 操作は列に積み、eventfd に書いて窓の処理（poll）を起こす。最初の木もここでは作らず（画面の状態は窓の処理の
+/// スレッドにある）、起きた後のフレームで update_if_active に全部の木を渡す
+#[derive(Clone)]
+struct A11ySink {
+    actions: Arc<Mutex<Vec<ActionRequest>>>,
+    wake: Arc<OwnedFd>,
+}
+
+impl A11ySink {
+    fn wake(&self) {
+        let _ = rustix::io::write(&*self.wake, &1u64.to_ne_bytes());
+    }
+}
+
+impl ActivationHandler for A11ySink {
+    fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
+        log::event("a11y.activate", "", "pending (tree on next frame)");
+        self.wake();
+        None
+    }
+}
+
+impl ActionHandler for A11ySink {
+    fn do_action(&mut self, request: ActionRequest) {
+        log::event("a11y.action", &format!("action={:?} node={:?}", request.action, request.target_node), "queued");
+        if let Ok(mut q) = self.actions.lock() {
+            q.push(request);
+        }
+        self.wake();
+    }
+}
+
+impl DeactivationHandler for A11ySink {
+    fn deactivate_accessibility(&mut self) {
+        log::event("a11y.deactivate", "", "ok");
+    }
+}
+
 struct State {
     rt: Runtime,
     app: Box<dyn App>,
@@ -465,6 +508,19 @@ struct State {
     /// 日本語入力（合成が text-input-v3 を持っていなければ None）
     text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
     ime: Ime,
+    /// 読み上げ。読み上げソフトが動いていない間、AccessKit は木を作らせない（update_if_active が何もしない）
+    a11y: accesskit_unix::Adapter,
+    a11y_actions: Arc<Mutex<Vec<ActionRequest>>>,
+    /// ほかのスレッドから窓の処理を起こす eventfd
+    wake: Arc<OwnedFd>,
+    /// ファイルのダイアログ（ポータル）の答え。開いている間は dialog_open
+    dialog_tx: Sender<(String, Vec<PathBuf>)>,
+    dialog_rx: Receiver<(String, Vec<PathBuf>)>,
+    dialog_open: bool,
+    /// 最後にダイアログで選んだファイルのフォルダ（この起動の間だけ覚える）
+    last_folder: Option<PathBuf>,
+    /// OS の明暗の設定の答え（Options::dark が無い時だけ聞く。届いたら None にする）
+    dark_rx: Option<Receiver<Option<bool>>>,
     buffers: Option<Shm>,
     /// CPU の道の絵（前のフレームの絵。変わった所だけ描き直す）と、その要約と背景の色
     pixels: Vec<u32>,
@@ -531,6 +587,83 @@ impl State {
         self.events.push(e);
         self.need_frame = true;
         self.why = "input";
+    }
+
+    /// ファイルのダイアログをポータルに頼む。ダイアログの間も窓は描き続けたいので、別のスレッドで待ち、答えは
+    /// dialog_rx と eventfd で受け取る（Windows と同じく、取り消しやポータルが無い時は空の答え）
+    fn open_file_dialog(&mut self, key: String, mut d: crate::file_dialog::FileDialog) {
+        if self.dialog_open {
+            log::event("file_dialog", &format!("key={key}"), "ignored (a dialog is already open)");
+            return;
+        }
+        self.dialog_open = true;
+        // アプリがフォルダを決めていなければ、最後に選んだファイルのフォルダから始める（Windows のダイアログは
+        // アプリが最後に使ったフォルダから始まる。GTK のダイアログは何も渡さないとホームから始まる）
+        if d.folder.is_none() {
+            d.folder = self.last_folder.clone();
+        }
+        log::event(
+            "file_dialog",
+            &format!("key={key} save={} multiple={} filters={} folder={:?}", d.save, d.allows_multiple(), d.filters.len(), d.folder),
+            "portal",
+        );
+        let (tx, wake) = (self.dialog_tx.clone(), self.wake.clone());
+        let spawned = std::thread::Builder::new().name("kargui-file-dialog".into()).spawn(move || {
+            let files = match crate::portal::choose_files(&d) {
+                Ok(f) => f,
+                Err(e) => {
+                    log::event("file_dialog.error", &format!("key={key}"), &format!("error={e}"));
+                    Vec::new()
+                }
+            };
+            log::event("file_dialog.answer", &format!("key={key} save={}", d.save), &format!("files={}", files.len()));
+            let _ = tx.send((key, files));
+            let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
+        });
+        if let Err(e) = spawned {
+            log::event("file_dialog.error", "spawn", &format!("error={e}"));
+            self.dialog_open = false;
+        }
+    }
+
+    /// 別のスレッドから届いた答え（ファイルのダイアログ・OS の明暗）を受け取る
+    fn take_answers(&mut self) {
+        while let Ok((key, files)) = self.dialog_rx.try_recv() {
+            if let Some(dir) = files.first().and_then(|f| f.parent()) {
+                self.last_folder = Some(dir.to_path_buf());
+            }
+            self.rt.cx.file_results.insert(key, files);
+            self.dialog_open = false;
+            self.need_frame = true;
+        }
+        if let Some(rx) = &self.dark_rx
+            && let Ok(dark) = rx.try_recv()
+        {
+            self.dark_rx = None;
+            if let Some(d) = dark {
+                log::event("theme.system", &format!("dark={d}"), "late (after the first frame)");
+                self.rt.cx.set_dark(d);
+                self.need_frame = true;
+            }
+        }
+    }
+
+    /// 読み上げソフトから届いた操作を、kargui の入力に直す（Windows の platform.rs と同じ対応）
+    fn apply_a11y_actions(&mut self) {
+        let requests: Vec<ActionRequest> = self.a11y_actions.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+        for r in requests {
+            let action = match r.action {
+                accesskit::Action::Click => A11yAction::Click,
+                accesskit::Action::Focus => A11yAction::Focus,
+                accesskit::Action::Increment => A11yAction::Increment,
+                accesskit::Action::Decrement => A11yAction::Decrement,
+                other => {
+                    log::event("a11y.action", &format!("action={other:?}"), "ignored");
+                    continue;
+                }
+            };
+            self.push(Event::A11y { target: Id(r.target_node.0), action });
+        }
     }
 
     fn mods(&self) -> Mods {
@@ -713,8 +846,8 @@ impl State {
             log::event("window.quit", "", "ok");
             self.running = false;
         }
-        if let Some((key, _)) = self.rt.cx.file_dialog_request.take() {
-            log::event("file_dialog", &format!("key={key}"), "not supported on linux yet");
+        if let Some((key, d)) = self.rt.cx.file_dialog_request.take() {
+            self.open_file_dialog(key, d);
         }
         if !self.rt.cx.windows.is_empty() && !self.warned_windows {
             self.warned_windows = true;
@@ -722,6 +855,9 @@ impl State {
         }
         // 文字を打つ位置は、絵と同じ wl_surface.commit で合成に届くように、絵より先に知らせる
         self.update_ime();
+        // 読み上げの木（読み上げソフトが聞いている時だけ作る。2 つの絵が両方使われていて描けない時も渡す）
+        let rt = &mut self.rt;
+        self.a11y.update_if_active(|| rt.a11y().0);
         self.wake_at = out.wake_after.map(|d| Instant::now() + d);
         self.animating = out.want_frame;
         self.need_frame = false;
@@ -797,6 +933,25 @@ fn app_id() -> String {
 
 pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Error> {
     let started = Instant::now();
+    // ほかのスレッドから起こされたら、eventfd に書いて poll を起こす
+    let wake_fd = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).map_err(|e| error("eventfd", e))?);
+    // OS の明暗の設定は、窓の準備と並べてポータルに聞く（最初の絵の前に少しだけ待つ）
+    let dark_rx = options.dark.is_none().then(|| {
+        let (tx, rx) = channel();
+        let wake = wake_fd.clone();
+        let _ = std::thread::Builder::new().name("kargui-portal-settings".into()).spawn(move || {
+            let t = Instant::now();
+            let r = crate::portal::read_dark();
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            match &r {
+                Ok(d) => log::event("portal.color_scheme", "", &format!("dark={d} ms={ms:.1}")),
+                Err(e) => log::event("portal.color_scheme", "", &format!("error={e} ms={ms:.1}")),
+            }
+            let _ = tx.send(r.ok());
+            let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
+        });
+        rx
+    });
     let conn = Connection::connect_to_env().map_err(|e| error("connect (WAYLAND_DISPLAY)", e))?;
     let (globals, mut queue) = registry_queue_init::<State>(&conn).map_err(|e| error("registry", e))?;
     let qh = queue.handle();
@@ -858,12 +1013,15 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let text = Text::new()?;
     let dark = options.dark.unwrap_or(false);
     let mut rt = Runtime::new(text, dark, Box::new(WaylandClipboard(clip.clone())), options.title.clone());
-    // ほかのスレッドから起こされたら、eventfd に書いて poll を起こす
-    let wake_fd = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).map_err(|e| error("eventfd", e))?);
     let writer = wake_fd.clone();
     rt.cx.waker = crate::wake::Waker::new(move || {
         let _ = rustix::io::write(&*writer, &1u64.to_ne_bytes());
     });
+    // 読み上げ。AT-SPI の接続は accesskit_unix が自分のスレッドで行うので、起動を待たせない
+    let a11y_actions = Arc::new(Mutex::new(Vec::new()));
+    let sink = A11ySink { actions: a11y_actions.clone(), wake: wake_fd.clone() };
+    let a11y = accesskit_unix::Adapter::new(sink.clone(), sink.clone(), sink);
+    let (dialog_tx, dialog_rx) = channel();
     rt.cx.text.load_fonts(&options.fonts);
     rt.cx.font = rt.cx.text.fonts.id(&options.font);
     let logical = (options.size.0.round().max(1.0) as i32, options.size.1.round().max(1.0) as i32);
@@ -885,6 +1043,14 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         clip,
         text_input,
         ime: Ime::default(),
+        a11y,
+        a11y_actions,
+        wake: wake_fd.clone(),
+        dialog_tx,
+        dialog_rx,
+        dialog_open: false,
+        last_folder: None,
+        dark_rx,
         buffers: None,
         pixels: Vec::new(),
         summary: Summary::default(),
@@ -922,6 +1088,19 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     st.apply_size();
     // 最初の configure（と、出せれば倍率）を待つ
     queue.roundtrip(&mut st).map_err(|e| error("roundtrip", e))?;
+    // OS の明暗の答えを、最初の絵の前に 150 ms まで待つ。間に合わなければ明るい方で描き、届いた時に切り替える
+    let answer = st.dark_rx.as_ref().map(|rx| rx.recv_timeout(Duration::from_millis(150)));
+    match answer {
+        Some(Ok(dark)) => {
+            st.dark_rx = None;
+            if let Some(d) = dark {
+                st.rt.cx.set_dark(d);
+            }
+            log::event("theme.system", &format!("dark={dark:?}"), &format!("waited_ms={:.1}", started.elapsed().as_secs_f64() * 1000.0));
+        }
+        Some(Err(_)) => log::event("theme.system", "", "not answered in 150 ms (light until it is)"),
+        None => {}
+    }
 
     let _keep = (compositor, wm_base, xdg_surface, toplevel, seat, ti_mgr);
     while st.running {
@@ -985,6 +1164,9 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             log::event("wake", "from=waker", "frame");
             st.need_frame = true;
             st.why = "wake";
+            // 読み上げソフトの操作・ファイルのダイアログ・明暗の答えも同じ eventfd で起きる
+            st.apply_a11y_actions();
+            st.take_answers();
         }
     }
     log::event("loop.end", "", "ok");
@@ -1056,6 +1238,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
                 if activated != st.focused {
                     st.focused = activated;
                     log::event("window.focus", &format!("focused={activated}"), "ok");
+                    st.a11y.update_window_focus_state(activated);
                     st.need_frame = true;
                 }
             }

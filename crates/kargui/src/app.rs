@@ -312,7 +312,7 @@ pub fn run(options: Options, app: impl App) -> Result<(), crate::Error> {
     {
         crate::platform::run(options, Box::new(app))
     }
-    // Linux は Wayland の窓（日本語入力・OS のクリップボード・読み上げはまだ。wayland.rs の冒頭）
+    // Linux は Wayland の窓（まだ無い物は wayland.rs の冒頭）
     #[cfg(target_os = "linux")]
     {
         crate::wayland::run(options, Box::new(app))

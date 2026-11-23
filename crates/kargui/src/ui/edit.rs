@@ -74,6 +74,90 @@ pub(crate) fn utf16_of(s: &str, byte: usize) -> usize {
     s[..byte.min(s.len())].encode_utf16().count()
 }
 
+/// 読み上げに渡す文字の並び（AccessKit の TextRun）1 つ分。値の start..end のバイトを受け持つ
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextRun {
+    pub start: usize,
+    pub end: usize,
+    /// 1 字（書記素）ごとの UTF-8 のバイト数
+    pub lengths: Vec<u8>,
+    /// 単語の始まりの字の番号（この並びの中の番号）
+    pub words: Vec<u8>,
+}
+
+/// 1 つの並びに入れる字の数の上限（AccessKit は字の番号と長さを u8 で持つ）
+const RUN_CHARS: usize = u8::MAX as usize;
+
+/// 入力欄の値を、読み上げの文字の並びに分ける。
+///
+/// 行（改行まで。改行は行の終わりの 1 字）ごとに分け、255 字を超える行はさらに分ける。値が空の時と、
+/// 改行で終わる時は、キャレットを置けるよう最後に空の並びを置く。単語の始まりは Ctrl+→ が止まる所
+/// （同じ種類の字の続きと、その後ろの空白で 1 語。行の頭の空白はそれだけで 1 語）
+pub(crate) fn text_runs(s: &str) -> Vec<TextRun> {
+    let first_class = |p: usize| class(s[p..].chars().next().unwrap_or(' '));
+    let mut runs = Vec::new();
+    let mut line_start = 0;
+    loop {
+        let line_end = s[line_start..].find('\n').map_or(s.len(), |p| line_start + p + 1);
+        // 行の字の（始まり, 長さ）。u8 に入らない長い書記素は、1 文字ずつに分ける
+        let mut chars: Vec<(usize, usize)> = Vec::new();
+        for (p, g) in s[line_start..line_end].grapheme_indices(true) {
+            if g.len() <= RUN_CHARS {
+                chars.push((line_start + p, g.len()));
+            } else {
+                chars.extend(g.char_indices().map(|(q, c)| (line_start + p + q, c.len_utf8())));
+            }
+        }
+        let starts: Vec<bool> = (0..chars.len())
+            .map(|j| {
+                let k = first_class(chars[j].0);
+                j == 0 || (k != Class::Space && first_class(chars[j - 1].0) != k)
+            })
+            .collect();
+        if chars.is_empty() {
+            runs.push(TextRun { start: line_start, end: line_end, lengths: Vec::new(), words: Vec::new() });
+        }
+        for (n, chunk) in chars.chunks(RUN_CHARS).enumerate() {
+            let base = n * RUN_CHARS;
+            let (last, len) = chunk[chunk.len() - 1];
+            runs.push(TextRun {
+                start: chunk[0].0,
+                end: last + len,
+                lengths: chunk.iter().map(|&(_, l)| l as u8).collect(),
+                words: (0..chunk.len()).filter(|&j| starts[base + j]).map(|j| j as u8).collect(),
+            });
+        }
+        if line_end >= s.len() {
+            if s.ends_with('\n') {
+                runs.push(TextRun { start: s.len(), end: s.len(), lengths: Vec::new(), words: Vec::new() });
+            }
+            return runs;
+        }
+        line_start = line_end;
+    }
+}
+
+/// 値の中のバイトの位置を、（並びの番号, その並びの中の字の番号）にする。並びの境目は後ろの並びの頭、
+/// 値の終わりは最後の並びの終わり
+pub(crate) fn run_position(runs: &[TextRun], byte: usize) -> (usize, usize) {
+    for (k, r) in runs.iter().enumerate() {
+        if byte < r.end {
+            let mut p = r.start;
+            let mut j = 0;
+            for &l in &r.lengths {
+                if p >= byte {
+                    break;
+                }
+                p += l as usize;
+                j += 1;
+            }
+            return (k, j);
+        }
+    }
+    let last = runs.len().saturating_sub(1);
+    (last, runs.get(last).map_or(0, |r| r.lengths.len()))
+}
+
 /// パスワードの 1 文字の代わりに出す点（U+2022。● より小さく、Windows の標準のパスワードの欄に近い）
 pub(crate) const DOT: char = '\u{2022}';
 
@@ -505,5 +589,77 @@ mod tests {
         let mut e = at("", 2);
         e.clamp("資");
         assert_eq!(e.cursor, 0);
+    }
+
+    fn runs_of(s: &str) -> Vec<(&str, Vec<u8>, Vec<u8>)> {
+        text_runs(s).into_iter().map(|r| (&s[r.start..r.end], r.lengths, r.words)).collect()
+    }
+
+    #[test]
+    fn text_runs_split_lines_and_keep_the_line_break_at_the_end() {
+        assert_eq!(runs_of("ab\ncd"), vec![("ab\n", vec![1, 1, 1], vec![0]), ("cd", vec![1, 1], vec![0])]);
+        assert_eq!(runs_of("a\n\nb").iter().map(|r| r.0).collect::<Vec<_>>(), vec!["a\n", "\n", "b"]);
+    }
+
+    #[test]
+    fn text_runs_count_a_grapheme_as_one_character() {
+        // 「か」＋ 濁点の結合文字、ZWJ でつないだ家族の絵文字
+        let s = "か\u{3099}👨\u{200D}👩\u{200D}👧";
+        assert_eq!(text_runs(s)[0].lengths, vec![6, 18]);
+    }
+
+    #[test]
+    fn text_runs_give_an_empty_run_for_empty_text_and_after_a_final_line_break() {
+        assert_eq!(runs_of(""), vec![("", vec![], vec![])]);
+        assert_eq!(runs_of("a\n"), vec![("a\n", vec![1, 1], vec![0]), ("", vec![], vec![])]);
+        assert_eq!(text_runs("a\n")[1].start, 2);
+    }
+
+    #[test]
+    fn text_runs_split_lines_longer_than_255_characters() {
+        let s = "a".repeat(600);
+        let runs = text_runs(&s);
+        assert_eq!(runs.iter().map(|r| (r.start, r.lengths.len())).collect::<Vec<_>>(), vec![(0, 255), (255, 255), (510, 90)]);
+        // 単語の途中から始まる並びには、単語の始まりが無い
+        assert!(runs[1].words.is_empty());
+    }
+
+    #[test]
+    fn word_starts_are_where_ctrl_right_stops() {
+        let words = |s: &str| text_runs(s)[0].words.clone();
+        assert_eq!(words("ab cd"), vec![0, 3]);
+        assert_eq!(words("明日は東京"), vec![0, 2, 3]);
+        // 行の頭の空白は、それだけで 1 つの単語
+        assert_eq!(words("  ab"), vec![0, 2]);
+        // Ctrl+→ が止まる位置と同じ
+        let s = "ab cd 明日は";
+        let mut stops = vec![0];
+        let mut e = at(s, 0);
+        while e.cursor < s.len() {
+            e.move_right(s, true, false);
+            stops.push(s[..e.cursor].chars().count());
+        }
+        stops.pop();
+        assert_eq!(words(s).iter().map(|&w| w as usize).collect::<Vec<_>>(), stops);
+        // 255 字で分けた後ろの並びでは、並びの中の番号で数える
+        let s = format!("{} ab", "a".repeat(255));
+        assert_eq!(text_runs(&s)[1].words, vec![1]);
+    }
+
+    #[test]
+    fn run_position_turns_a_byte_into_a_run_and_a_character() {
+        let runs = text_runs("ab\ncd");
+        assert_eq!(run_position(&runs, 0), (0, 0));
+        // 行の終わりのキャレットは、改行の字の上
+        assert_eq!(run_position(&runs, 2), (0, 2));
+        assert_eq!(run_position(&runs, 3), (1, 0));
+        assert_eq!(run_position(&runs, 5), (1, 2));
+        let runs = text_runs("a\n");
+        assert_eq!(run_position(&runs, 2), (1, 0));
+        let runs = text_runs("東京");
+        assert_eq!(run_position(&runs, 3), (0, 1));
+        let s = "a".repeat(300);
+        assert_eq!(run_position(&text_runs(&s), 255), (1, 0));
+        assert_eq!(run_position(&text_runs(""), 0), (0, 0));
     }
 }

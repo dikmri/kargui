@@ -41,6 +41,12 @@ wayland-client = "=0.31.15"
 wayland-protocols = { version = "=0.32.13", features = ["client", "staging", "unstable"] }
 xkbcommon-dl = "=0.4.2"
 rustix = { version = "=1.1.6", features = ["fs", "mm", "event", "pipe"] }
+# 読み上げの橋渡し（AT-SPI を D-Bus で話す。D-Bus は zbus、自分のスレッドで async-io を回す）。MIT/Apache-2.0。
+# Linux の依存はこれで 71 個増える（zbus・AT-SPI の型・async の部品）。読み上げは kargui の最初からの約束なので入れる
+accesskit_unix = "=0.24.1"
+# ファイルのダイアログと明暗の設定（xdg-desktop-portal）。accesskit_unix が使う zbus と同じ物を、同期の呼び方
+# （blocking-api。手続きマクロの機能が 1 つ増えるだけで、依存は増えない）で使う。MIT
+zbus = { version = "=5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 
 # OS との境目（窓・入力・日本語入力・文字・画面に出す・クリップボード・読み上げの橋渡し）の Windows の版
 [target.'cfg(windows)'.dependencies]

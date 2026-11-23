@@ -44,6 +44,8 @@ mod platform;
 mod wic;
 // OS との境目の Linux の版（Wayland の窓と入力）
 #[cfg(target_os = "linux")]
+mod portal;
+#[cfg(target_os = "linux")]
 mod wayland;
 mod raster;
 mod runtime;

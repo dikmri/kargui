@@ -6,12 +6,18 @@
 
 use std::collections::HashSet;
 
-use accesskit::{Action, Node, NodeId, Rect as AkRect, Role, Toggled, TreeId, TreeInfo, TreeUpdate};
+use accesskit::{Action, Node, NodeId, Rect as AkRect, Role, TextPosition, TextSelection, Toggled, TreeId, TreeInfo, TreeUpdate};
 
 use crate::geom::Rect;
 use crate::log;
 use crate::ui::context::Context;
+use crate::ui::edit;
 use crate::ui::{Kind, MenuMark, OverlayKind, Tree, visible_text};
+
+/// 入力欄の k 番目の文字の並びの番号（部品の番号から作る。部品の番号は 64 ビットのハッシュなので重ならない）
+fn run_id(input: u64, k: usize) -> NodeId {
+    NodeId(input ^ 0x9E37_79B9_7F4A_7C15u64.wrapping_mul(k as u64 + 1))
+}
 
 fn ak(r: Rect) -> AkRect {
     AkRect { x0: r.x as f64, y0: r.y as f64, x1: r.right() as f64, y1: r.bottom() as f64 }
@@ -574,6 +580,34 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
         // 重ねて出す物は親に付いていないので、根の子として読み上げの木に入れる
         if i == 0 {
             children.extend(tree.overlays.iter().map(|o| NodeId(o.id.0)));
+        }
+        // 入力欄の中身: 行ごとの文字の並び（TextRun）とキャレット。AT-SPI（Linux の Orca）は Text の窓口で中身と
+        // キャレットを読み、AccessKit は文字の並びを持つ入力欄にだけその窓口を付ける。パスワードは中身を出さない
+        let text = match &info.kind {
+            Kind::TextInput { value, password: false, .. } | Kind::TextArea { value, .. } => Some(value),
+            _ => None,
+        };
+        if let Some(value) = text {
+            let runs = edit::text_runs(value);
+            let ids: Vec<NodeId> = (0..runs.len()).map(|k| run_id(info.id.0, k)).collect();
+            for (r, &id) in runs.iter().zip(&ids) {
+                let mut n = Node::new(Role::TextRun);
+                n.set_value(&value[r.start..r.end]);
+                n.set_character_lengths(r.lengths.clone());
+                if !r.words.is_empty() {
+                    n.set_word_starts(r.words.clone());
+                }
+                n.set_bounds(ak(l.rect));
+                nodes.push((id, n));
+            }
+            if let Some(e) = cx.edits.get(&info.id) {
+                let at = |b: usize| {
+                    let (k, j) = edit::run_position(&runs, b.min(value.len()));
+                    TextPosition { node: ids[k], character_index: j }
+                };
+                node.set_text_selection(TextSelection { anchor: at(e.anchor), focus: at(e.cursor) });
+            }
+            children.extend(ids);
         }
         if !children.is_empty() {
             node.set_children(children);

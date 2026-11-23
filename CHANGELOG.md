@@ -14,9 +14,18 @@
   input method works through text-input-v3: it is turned on while a text field has the focus, the
   composition is drawn in the field with the clause being converted, the candidate window opens
   under the caret, and a composition is committed when the field or the window loses the focus
-  (checked with fcitx5 and Mozc on Hyprland). Not there yet: screen readers, file dialogs, the system dark mode, more than one
-  window, file drag and drop, title bars on GNOME, and X11. New Linux-only dependencies:
-  wayland-client, wayland-protocols, xkbcommon-dl and rustix (13 crates in all).
+  (checked with fcitx5 and Mozc on Hyprland). Screen readers get the same tree as on Windows
+  through AT-SPI (accesskit_unix; checked with Orca). `ui.file_dialog` opens the dialog of
+  xdg-desktop-portal (when the app gives no folder, it starts in the folder of the file chosen
+  last, as the Windows dialog does), and the window starts in the system's dark or light mode (the portal's
+  color-scheme, read while the window is being set up). Not there yet: more than one window, file
+  drag and drop, title bars on GNOME, and X11. New Linux-only dependencies: wayland-client,
+  wayland-protocols, xkbcommon-dl, rustix, accesskit_unix and zbus (84 crates in all; 71 of them
+  come with accesskit_unix, that is zbus and AT-SPI).
+- Screen readers: text fields and text areas now expose their text as text runs (one per line)
+  with the caret and the selection, so a screen reader can read the text and follow the caret.
+  On Linux, Orca needs this to read a field at all; on Windows, fields gain the UI Automation
+  text pattern next to the value pattern. Password fields still expose nothing.
 - Rich text: `ui.rich_text(|t| …)` lays out parts that have their own style as one paragraph that
   wraps to the width. `t.text(…)` returns a `Span` with `.bold()`, `.italic()` (slanted where the
   font has no italic style, as Japanese fonts), `.underline()`, `.strike()`, `.weak()`,
