@@ -9,6 +9,7 @@
 //!
 //! 位置はすべて UTF-16 の単位（IME の決まり）。
 
+use crate::input::Event;
 use crate::ui::Id;
 use crate::ui::edit::{byte_of, utf16_of};
 
@@ -60,6 +61,52 @@ pub(crate) fn clause_bounds(raw: &[u32], len: usize) -> Vec<usize> {
     let v: Vec<usize> = raw.iter().map(|&x| x as usize).collect();
     let ok = v.len() >= 2 && v[0] == 0 && *v.last().unwrap() == len && v.windows(2).all(|w| w[0] < w[1]);
     if ok { v } else { vec![0, len] }
+}
+
+/// Wayland の text-input-v3 の preedit_string（範囲は変換中の文字の中の UTF-8 のバイト。-1 はカーソルを出さない）を文節にする。
+/// v3 には文節の区切りが無いので、IME が強調した範囲（始まり < 終わり）を今変換している文節とし、その前と後を別の文節にする。
+/// 始まり = 終わりなら、そこがカーソルの位置
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn wayland_clauses(text: &str, begin: i32, end: i32) -> Clauses {
+    let len = text.encode_utf16().count();
+    if begin < 0 || end < 0 {
+        return Clauses { bounds: vec![0, len], target: None, cursor: None };
+    }
+    // バイトの位置を UTF-16 の位置にする（文字の途中・長すぎる位置は、手前の文字の境目に寄せる）
+    let at = |b: i32| {
+        let mut b = (b as usize).min(text.len());
+        while !text.is_char_boundary(b) {
+            b -= 1;
+        }
+        utf16_of(text, b)
+    };
+    let (a, b) = (at(begin.min(end)), at(begin.max(end)));
+    if a == b {
+        return Clauses { bounds: vec![0, len], target: None, cursor: Some(a) };
+    }
+    let mut bounds = vec![0, a, b, len];
+    bounds.dedup();
+    Clauses { bounds, target: Some((a, b)), cursor: Some(b) }
+}
+
+/// text-input-v3 の done で、たまった変換中の文字と確定の文字を kargui の入力にする。
+/// `shown` は今見せている変換中の文字。確定を先に渡し、それから新しい変換中の文字を渡す（v3 の決まりの順）。
+/// done で変換中の文字が届かなかったら、変換中の文字は空になった
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn text_input_done(shown: &str, preedit: &str, begin: i32, end: i32, commit: &str) -> Vec<Event> {
+    let mut out = Vec::new();
+    if !commit.is_empty() {
+        out.push(Event::ImePreedit(String::new()));
+        out.push(Event::ImeCommit(commit.to_string()));
+    }
+    if !preedit.is_empty() {
+        let Clauses { bounds, target, cursor } = wayland_clauses(preedit, begin, end);
+        out.push(Event::ImePreedit(preedit.to_string()));
+        out.push(Event::ImeClauses { bounds, target, cursor });
+    } else if commit.is_empty() && !shown.is_empty() {
+        out.push(Event::ImePreedit(String::new()));
+    }
+    out
 }
 
 /// RECONVERTSTRING の頭の大きさ（DWORD が 8 個）
@@ -208,5 +255,66 @@ mod tests {
         assert_eq!(confirmed_range(value, 6, 2), ("牛乳を".len(), value.len()));
         // 長すぎる範囲は終わりで止まる
         assert_eq!(confirmed_range(value, 6, 99), ("牛乳を".len(), value.len()));
+    }
+
+    #[test]
+    fn wayland_clauses_turn_the_highlight_into_the_clause_being_converted() {
+        // 「明日は東京に行く」の「東京に」を変換中（1 文字 3 バイト。9..18 バイト = 3..6 文字目）
+        let c = wayland_clauses("明日は東京に行く", 9, 18);
+        assert_eq!(c, Clauses { bounds: vec![0, 3, 6, 8], target: Some((3, 6)), cursor: Some(6) });
+        // 全体を変換中なら、文節は 1 つ
+        let c = wayland_clauses("東京", 0, 6);
+        assert_eq!(c, Clauses { bounds: vec![0, 2], target: Some((0, 2)), cursor: Some(2) });
+    }
+
+    #[test]
+    fn wayland_clauses_show_a_line_cursor_when_begin_equals_end() {
+        // かなを打っている途中（変換の前）。カーソルは「あい|う」
+        let c = wayland_clauses("あいう", 6, 6);
+        assert_eq!(c, Clauses { bounds: vec![0, 3], target: None, cursor: Some(2) });
+    }
+
+    #[test]
+    fn wayland_clauses_hide_the_cursor_for_minus_one() {
+        let c = wayland_clauses("あいう", -1, -1);
+        assert_eq!(c, Clauses { bounds: vec![0, 3], target: None, cursor: None });
+    }
+
+    #[test]
+    fn wayland_clauses_count_in_utf16_and_stay_on_character_boundaries() {
+        // 😀 は 4 バイトで UTF-16 の 2 単位
+        let c = wayland_clauses("😀あ", 4, 4);
+        assert_eq!(c.cursor, Some(2));
+        // 文字の途中や長すぎる位置は、文字の境目に寄せる（IME の誤りで止まらない）
+        let c = wayland_clauses("あいう", 1, 99);
+        assert_eq!(c, Clauses { bounds: vec![0, 3], target: Some((0, 3)), cursor: Some(3) });
+        // 前後が逆でも並べ直す
+        let c = wayland_clauses("あいう", 6, 3);
+        assert_eq!(c.target, Some((1, 2)));
+    }
+
+    #[test]
+    fn text_input_done_sends_the_commit_before_the_new_composition() {
+        // 前の変換を確定して、続けて次の変換が始まった
+        let ev = text_input_done("とうきょう", "あ", 3, 3, "東京");
+        assert_eq!(
+            ev,
+            vec![
+                Event::ImePreedit(String::new()),
+                Event::ImeCommit("東京".into()),
+                Event::ImePreedit("あ".into()),
+                Event::ImeClauses { bounds: vec![0, 1], target: None, cursor: Some(1) },
+            ]
+        );
+    }
+
+    #[test]
+    fn text_input_done_clears_the_composition_only_when_one_is_shown() {
+        // 変換中の文字を全部消した（Backspace）
+        assert_eq!(text_input_done("あ", "", 0, 0, ""), vec![Event::ImePreedit(String::new())]);
+        // 何も見せていない時に空の知らせが来ても、何も渡さない
+        assert_eq!(text_input_done("", "", 0, 0, ""), vec![]);
+        // 確定だけ（直接入力の 1 文字など）
+        assert_eq!(text_input_done("", "", 0, 0, "a"), vec![Event::ImePreedit(String::new()), Event::ImeCommit("a".into())]);
     }
 }

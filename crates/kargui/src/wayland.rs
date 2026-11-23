@@ -6,9 +6,10 @@
 //! 待つのは poll の 1 か所（Wayland の接続・ほかのスレッドから起こす eventfd・時間）。
 //!
 //! クリップボードは wl_data_device（文字だけ）。地元の日付と時刻は C の localtime_r で読む。
+//! 日本語入力は text-input-v3（fcitx5 などの IME が、合成を通して変換中の文字と確定の文字を送る）。
 //!
-//! まだ無い物（次の区切り）: 日本語入力（text-input-v3）・読み上げ・ファイルのダイアログ・明暗の設定・
-//! 複数の窓・ドラッグ＆ドロップ・題の帯（GNOME の CSD）。
+//! まだ無い物（次の区切り）: 読み上げ・ファイルのダイアログ・明暗の設定・複数の窓・ドラッグ＆ドロップ・
+//! 題の帯（GNOME の CSD）。
 
 use std::cell::RefCell;
 use std::ffi::c_char;
@@ -30,6 +31,7 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_n
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{self, Shape};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
 use wayland_protocols::wp::fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1};
+use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, zwp_text_input_v3};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::decoration::zv1::client::{zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
@@ -39,10 +41,12 @@ use crate::app::{App, Frame, Options};
 use crate::cpu_frame;
 use crate::damage::Summary;
 use crate::geom::Color;
+use crate::ime;
 use crate::input::{Event, Key, Mods};
 use crate::log;
 use crate::runtime::Runtime;
 use crate::text::Text;
+use crate::ui::Id;
 use crate::ui::context::Clipboard;
 
 /// ホイールの 1 刻み（物理ピクセル。Windows の platform.rs と同じ）
@@ -419,6 +423,31 @@ fn key_of(sym: u32) -> Option<Key> {
     })
 }
 
+/// 日本語入力（text-input-v3）の状態
+#[derive(Default)]
+struct Ime {
+    /// 合成が、この窓に文字の入力の焦点を置いている（enter から leave まで）
+    entered: bool,
+    /// キーボードの焦点がこの窓にある。Hyprland は作業場を移った時に text-input の leave を送らないので、
+    /// キーボードの焦点でも有効・無効を決める
+    keyboard: bool,
+    /// 有効にした入力欄（None = 無効にしている）
+    enabled: Option<Id>,
+    /// 送った commit の数（done の serial と比べる）
+    commits: u32,
+    /// この数より前の serial の done は、有効・無効を切り替える前の変換の残り（こちらで確定した変換を IME が
+    /// 確定し直した物など）なので捨てる
+    stale_before: u32,
+    /// 最後に知らせた文字を打つ位置（論理ピクセル）
+    rect: Option<(i32, i32, i32, i32)>,
+    /// done までにたまった、変換中の文字（強調の範囲。UTF-8 のバイト）と確定の文字と消す長さ
+    preedit: Option<(String, i32, i32)>,
+    commit: Option<String>,
+    delete: (u32, u32),
+    /// 今見せている変換中の文字
+    shown: String,
+}
+
 struct State {
     rt: Runtime,
     app: Box<dyn App>,
@@ -433,6 +462,9 @@ struct State {
     xkb: Option<Keyboard>,
     /// クリップボード（WaylandClipboard と分け合う）
     clip: Rc<RefCell<Clip>>,
+    /// 日本語入力（合成が text-input-v3 を持っていなければ None）
+    text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
+    ime: Ime,
     buffers: Option<Shm>,
     /// CPU の道の絵（前のフレームの絵。変わった所だけ描き直す）と、その要約と背景の色
     pixels: Vec<u32>,
@@ -584,6 +616,90 @@ impl State {
         }
     }
 
+    /// 焦点のある部品が入力欄なら IME を有効に、そうでなければ無効にする。文字を打つ位置が動いたら知らせる。
+    /// kargui が変換中の文字を確定した時（入力欄の外を押したなど）は、無効にして有効にし直し、IME の変換を捨てさせる
+    fn update_ime(&mut self) {
+        let cancel = std::mem::take(&mut self.rt.cx.ime_cancel);
+        let Some(ti) = self.text_input.clone() else { return };
+        if !self.ime.entered {
+            return;
+        }
+        let focus = self.rt.cx.focus.filter(|f| self.ime.keyboard && self.rt.cx.prev.inputs.contains_key(f));
+        let s = self.scale();
+        let rect = self.rt.cx.caret.map(|c| ((c.x / s).floor() as i32, (c.y / s).floor() as i32, (c.w / s).ceil().max(1.0) as i32, (c.h / s).ceil().max(1.0) as i32));
+        if focus != self.ime.enabled || (cancel && focus.is_some()) {
+            let was = self.ime.enabled;
+            if was.is_some() {
+                ti.disable();
+                ti.commit();
+                self.ime.commits += 1;
+            }
+            if focus.is_some() {
+                ti.enable();
+                ti.set_content_type(zwp_text_input_v3::ContentHint::empty(), zwp_text_input_v3::ContentPurpose::Normal);
+                if let Some((x, y, w, h)) = rect {
+                    ti.set_cursor_rectangle(x, y, w, h);
+                }
+                ti.commit();
+                self.ime.commits += 1;
+            }
+            self.ime.stale_before = self.ime.commits;
+            self.ime.enabled = focus;
+            self.ime.rect = rect;
+            let why = if cancel { "cancel" } else { "focus" };
+            let id = |f: Option<Id>| f.map_or("none".to_string(), |f| format!("{:x}", f.0));
+            log::event("ime.enable", &format!("why={why} from={} to={} rect={rect:?}", id(was), id(focus)), &format!("commits={}", self.ime.commits));
+        } else if focus.is_some()
+            && rect != self.ime.rect
+            && let Some((x, y, w, h)) = rect
+        {
+            ti.set_cursor_rectangle(x, y, w, h);
+            ti.commit();
+            self.ime.commits += 1;
+            self.ime.rect = rect;
+            log::event("ime.rect", &format!("x={x} y={y} w={w} h={h}"), &format!("commits={}", self.ime.commits));
+        }
+    }
+
+    /// 変換の途中で窓を離れたら、見せている変換中の文字を確定する（Windows の IME と同じ。fcitx5 は捨ててしまう）。
+    /// IME がこの後に送る前の変換の残りは、次に有効・無効を切り替えるまで捨てる
+    fn commit_shown(&mut self, why: &str) {
+        let shown = std::mem::take(&mut self.ime.shown);
+        if shown.is_empty() {
+            return;
+        }
+        self.ime.stale_before = self.ime.commits + 1;
+        log::event("ime.commit_on_leave", &format!("why={why} text={shown}"), "sent");
+        self.push(Event::ImePreedit(String::new()));
+        self.push(Event::ImeCommit(shown));
+    }
+
+    /// text-input-v3 の done: たまった変換中の文字と確定の文字を入力にする
+    fn ime_done(&mut self, serial: u32) {
+        let (preedit, begin, end) = self.ime.preedit.take().unwrap_or_default();
+        let commit = self.ime.commit.take().unwrap_or_default();
+        let delete = std::mem::take(&mut self.ime.delete);
+        let what = format!("serial={serial} commits={} preedit={preedit:?} range={begin}..{end} commit={commit:?}", self.ime.commits);
+        if serial < self.ime.stale_before {
+            log::event("ime.done", &what, "dropped (from before enable/disable)");
+            return;
+        }
+        if delete != (0, 0) {
+            // 前後の文字を送っていないので、IME が消す長さを頼むことは無いはず
+            log::event("ime.delete_surrounding", &format!("before={} after={}", delete.0, delete.1), "ignored");
+        }
+        let events = ime::text_input_done(&self.ime.shown, &preedit, begin, end, &commit);
+        let clauses = events.iter().find_map(|e| match e {
+            Event::ImeClauses { bounds, target, cursor } => Some(format!(" clauses={bounds:?} target={target:?} cursor={cursor:?}")),
+            _ => None,
+        });
+        log::event("ime.done", &what, &format!("events={}{}", events.len(), clauses.unwrap_or_default()));
+        self.ime.shown = preedit;
+        for e in events {
+            self.push(e);
+        }
+    }
+
     /// 1 フレーム: 入力を渡してビューを回し、描いて画面に出す
     fn frame(&mut self) {
         if !self.configured {
@@ -604,6 +720,8 @@ impl State {
             self.warned_windows = true;
             log::event("window.open", &format!("count={}", self.rt.cx.windows.len()), "not supported on linux yet");
         }
+        // 文字を打つ位置は、絵と同じ wl_surface.commit で合成に届くように、絵より先に知らせる
+        self.update_ime();
         self.wake_at = out.wake_after.map(|d| Instant::now() + d);
         self.animating = out.want_frame;
         self.need_frame = false;
@@ -691,16 +809,18 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let cursor_mgr: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let deco_mgr: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let data_mgr: Option<wl_data_device_manager::WlDataDeviceManager> = globals.bind(&qh, 1..=3, ()).ok();
+    let ti_mgr: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3> = globals.bind(&qh, 1..=1, ()).ok();
     log::event(
         "wayland.globals",
         &format!(
-            "seat={} viewporter={} fractional_scale={} cursor_shape={} decoration={} data_device={}",
+            "seat={} viewporter={} fractional_scale={} cursor_shape={} decoration={} data_device={} text_input={}",
             seat.is_some(),
             viewporter.is_some(),
             frac_mgr.is_some(),
             cursor_mgr.is_some(),
             deco_mgr.is_some(),
-            data_mgr.is_some()
+            data_mgr.is_some(),
+            ti_mgr.is_some()
         ),
         &format!("ms={:.1}", started.elapsed().as_secs_f64() * 1000.0),
     );
@@ -729,6 +849,11 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         _ => None,
     };
     let clip = Rc::new(RefCell::new(Clip { conn: conn.clone(), qh: qh.clone(), manager: data_mgr, device, serial: 0, ours: None, offer: None, local: None }));
+    // 日本語入力（座席ごとに 1 つ。焦点が入力欄にある間だけ有効にする）
+    let text_input = match (&ti_mgr, &seat) {
+        (Some(m), Some(s)) => Some(m.get_text_input(s, &qh, ())),
+        _ => None,
+    };
 
     let text = Text::new()?;
     let dark = options.dark.unwrap_or(false);
@@ -758,6 +883,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         keyboard: None,
         xkb: Keyboard::new(),
         clip,
+        text_input,
+        ime: Ime::default(),
         buffers: None,
         pixels: Vec::new(),
         summary: Summary::default(),
@@ -796,7 +923,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     // 最初の configure（と、出せれば倍率）を待つ
     queue.roundtrip(&mut st).map_err(|e| error("roundtrip", e))?;
 
-    let _keep = (compositor, wm_base, xdg_surface, toplevel, seat);
+    let _keep = (compositor, wm_base, xdg_surface, toplevel, seat, ti_mgr);
     while st.running {
         queue.dispatch_pending(&mut st).map_err(|e| error("dispatch", e))?;
         let now = Instant::now();
@@ -1111,12 +1238,17 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
             }
             wl_keyboard::Event::Enter { serial, .. } => {
                 st.clip.borrow_mut().serial = serial;
+                st.ime.keyboard = true;
+                st.need_frame = true;
                 log::event("keyboard.enter", "", "ok");
             }
             wl_keyboard::Event::Leave { .. } => {
                 if let Some(k) = st.xkb.as_mut() {
                     k.stop_repeat("leave");
                 }
+                st.ime.keyboard = false;
+                st.need_frame = true;
+                st.commit_shown("keyboard.leave");
                 log::event("keyboard.leave", "", "ok");
             }
             wl_keyboard::Event::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
@@ -1155,6 +1287,46 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
 }
 
 delegate_noop!(State: wl_data_device_manager::WlDataDeviceManager);
+delegate_noop!(State: zwp_text_input_manager_v3::ZwpTextInputManagerV3);
+
+impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for State {
+    fn event(st: &mut Self, _: &zwp_text_input_v3::ZwpTextInputV3, event: zwp_text_input_v3::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        use zwp_text_input_v3::Event as E;
+        match event {
+            // 文字の入力の焦点が窓に来た（キーボードの焦点と一緒に動く）。次のフレームで、入力欄なら有効にする
+            E::Enter { surface } if surface == st.surface => {
+                st.ime.entered = true;
+                st.ime.enabled = None;
+                st.ime.rect = None;
+                st.need_frame = true;
+                st.why = "input";
+                log::event("ime.enter", "", "ok");
+            }
+            // 焦点が離れた。合成はこの後の頼みを聞かないので、有効・無効は次の enter でやり直す。
+            // 変換中の文字は、キーボードの焦点が離れた時と同じく確定する
+            E::Leave { .. } => {
+                st.ime.entered = false;
+                st.ime.enabled = None;
+                st.ime.rect = None;
+                st.ime.preedit = None;
+                st.ime.commit = None;
+                st.commit_shown("ime.leave");
+                log::event("ime.leave", "", "ok");
+            }
+            E::PreeditString { text, cursor_begin, cursor_end } => {
+                st.ime.preedit = Some((text.unwrap_or_default(), cursor_begin, cursor_end));
+            }
+            E::CommitString { text } => {
+                st.ime.commit = Some(text.unwrap_or_default());
+            }
+            E::DeleteSurroundingText { before_length, after_length } => {
+                st.ime.delete = (before_length, after_length);
+            }
+            E::Done { serial } => st.ime_done(serial),
+            _ => {}
+        }
+    }
+}
 
 impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
     fn event(st: &mut Self, _: &wl_data_device::WlDataDevice, event: wl_data_device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {

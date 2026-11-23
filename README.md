@@ -144,8 +144,9 @@ Every push runs the tests on Windows, Linux and macOS (GitHub Actions).
 On Linux, apps open a Wayland window (`wayland.rs`, work in progress): the CPU picture through
 shared memory, fractional scaling, the mouse (double and triple clicks, wheel, right click, pointer
 shapes), the keyboard (the system key map through libxkbcommon, loaded at run time, and key
-repeat), the system clipboard (text) and the local date and time. Not there yet: the input method,
-screen readers, file dialogs, the system dark mode, more than one window, drag and drop from other
+repeat), the system clipboard (text), the local date and time, and the input method (text-input-v3:
+the composition with its clause being converted, and the candidate window under the caret; checked
+with fcitx5 and Mozc). Not there yet: screen readers, file dialogs, the system dark mode, more than one window, drag and drop from other
 apps, title bars on GNOME and X11. It is checked on Hyprland. On macOS, `kargui::run` still returns an `Err` saying the
 system is not supported.
 

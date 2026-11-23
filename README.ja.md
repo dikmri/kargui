@@ -101,7 +101,7 @@ cargo run -p xtask -- check                      # 説明と例の割合・部�
 
 対応する予定。OS に頼る所（窓・入力・日本語入力・文字・画面に出す・クリップボード・読み上げの橋渡し）は、`platform.rs`・`gdi.rs`・`gpu.rs`・`text/dwrite.rs`・`wic.rs`（画像のファイルを読む）の 5 つのファイルにまとめてある。それ以外（部品・並べ方・描き方・試験台）は Linux と macOS でも組み立てられ、文字は parley と swash で並べて描く。Linux で組み立てるには fontconfig の開発用ファイルが要る（Debian と Ubuntu では `libfontconfig1-dev` と `pkg-config`）。parley の中の fontique が、OS のフォントを探すのに fontconfig を使うため。送るたびに、Windows・Linux・macOS で試験を走らせる（GitHub Actions）。
 
-Linux では、アプリが Wayland の窓を開く（`wayland.rs`、作っている途中）。CPU の絵を共有メモリで出し、中途半端な倍率（1.5 倍など）・マウス（2 回押し・3 回押し・ホイール・右クリック・ポインターの形）・キー（OS のキー配列を libxkbcommon で読む。動く時に読むので組み立てに開発用の部品は要らない。押し続けも）・OS のクリップボード（文字）・地元の日付と時刻が動く。まだ無い物: 日本語入力・読み上げ・ファイルのダイアログ・OS の明暗の設定・2 つ目からの窓・ほかのアプリからのドラッグ＆ドロップ・GNOME の題の帯・X11。確かめたのは Hyprland の上。macOS で `kargui::run` を呼ぶと、今までどおり対応していないことを伝える `Err` を返す。
+Linux では、アプリが Wayland の窓を開く（`wayland.rs`、作っている途中）。CPU の絵を共有メモリで出し、中途半端な倍率（1.5 倍など）・マウス（2 回押し・3 回押し・ホイール・右クリック・ポインターの形）・キー（OS のキー配列を libxkbcommon で読む。動く時に読むので組み立てに開発用の部品は要らない。押し続けも）・OS のクリップボード（文字）・地元の日付と時刻・日本語入力（text-input-v3。変換中の文字と今変換している文節、文字の真下の候補の窓。fcitx5 と Mozc で確かめた）が動く。まだ無い物: 読み上げ・ファイルのダイアログ・OS の明暗の設定・2 つ目からの窓・ほかのアプリからのドラッグ＆ドロップ・GNOME の題の帯・X11。確かめたのは Hyprland の上。macOS で `kargui::run` を呼ぶと、今までどおり対応していないことを伝える `Err` を返す。
 
 0.x の間は API が変わることがある。変わった所は [CHANGELOG.md](CHANGELOG.md) に書く。
 

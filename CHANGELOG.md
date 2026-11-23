@@ -10,8 +10,11 @@
   (cursor-shape). Keyboard: the system key map through libxkbcommon, loaded at run time with
   xkbcommon-dl (no development package is needed to build), and key repeat. Copy and paste use
   the system clipboard (text, through wl_data_device; pasting waits up to one second for the other
-  app). `Date::today()` and `Time::now()` use the local time zone (they used UTC on Linux). Not
-  there yet: the input method, screen readers, file dialogs, the system dark mode, more than one
+  app). `Date::today()` and `Time::now()` use the local time zone (they used UTC on Linux). The
+  input method works through text-input-v3: it is turned on while a text field has the focus, the
+  composition is drawn in the field with the clause being converted, the candidate window opens
+  under the caret, and a composition is committed when the field or the window loses the focus
+  (checked with fcitx5 and Mozc on Hyprland). Not there yet: screen readers, file dialogs, the system dark mode, more than one
   window, file drag and drop, title bars on GNOME, and X11. New Linux-only dependencies:
   wayland-client, wayland-protocols, xkbcommon-dl and rustix (13 crates in all).
 - Rich text: `ui.rich_text(|t| …)` lays out parts that have their own style as one paragraph that
