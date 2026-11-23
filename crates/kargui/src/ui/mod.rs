@@ -1198,12 +1198,11 @@ impl<'a> Ui<'a> {
             if self.cx.focus == Some(id) && !options.is_empty() {
                 // 閉じたまま: 上下で選び直す。Alt+下と F4 で開く
                 for e in std::mem::take(&mut self.cx.keys) {
-                    if let Event::Key { key: key @ (Key::Up | Key::Down), mods } = e {
-                        if !mods.alt {
+                    if let Event::Key { key: key @ (Key::Up | Key::Down), mods } = e
+                        && !mods.alt {
                             let at = current.unwrap_or(0) as isize + if key == Key::Down { 1 } else { -1 };
                             picked = Some(at.clamp(0, options.len() as isize - 1) as usize);
                         }
-                    }
                 }
                 if self.cx.app_keys.contains(&(Key::Down, Mods::ALT)) || self.cx.app_keys.contains(&(Key::F4, Mods::NONE)) {
                     open = true;
@@ -1467,11 +1466,10 @@ impl<'a> Ui<'a> {
                     Key::Home => next = 0,
                     Key::End => next = n - 1,
                     // 入れ子のメニューは左で閉じる（焦点は開いた項目へ戻る）
-                    Key::Left if depth > 0 => {
-                        if cx.menus.get(depth) == Some(&pop) {
+                    Key::Left if depth > 0
+                        && cx.menus.get(depth) == Some(&pop) => {
                             cx.menus_truncate(depth);
                         }
-                    }
                     Key::Left if in_bar => step = -1,
                     Key::Right if in_bar => step = 1,
                     _ => {}
@@ -1913,12 +1911,11 @@ impl<'a> Ui<'a> {
         if !self.disabled {
             let cx = &mut *self.cx;
             // つかんで動かす: 仕切りの真ん中がポインターの下に来るように
-            if cx.pressed == Some(bar_id) || cx.released == Some(bar_id) {
-                if let (Some((px, py)), Some((start, _))) = (cx.pointer, total) {
+            if (cx.pressed == Some(bar_id) || cx.released == Some(bar_id))
+                && let (Some((px, py)), Some((start, _))) = (cx.pointer, total) {
                     let pos = if stacked { py } else { px };
                     v = (pos - start - bar_len / 2.0) / scale;
                 }
-            }
             if cx.focus == Some(bar_id) {
                 for e in std::mem::take(&mut cx.keys) {
                     if let Event::Key { key, mods } = e {
@@ -5202,11 +5199,10 @@ impl MenuItem<'_> {
     /// # });
     /// ```
     pub fn shortcut(mut self, key: Key, mods: Mods) -> Self {
-        if let Some((tree, idx)) = &mut self.node {
-            if let Kind::MenuItem { shortcut, .. } = &mut tree.info[*idx].kind {
+        if let Some((tree, idx)) = &mut self.node
+            && let Kind::MenuItem { shortcut, .. } = &mut tree.info[*idx].kind {
                 *shortcut = Some(key_label(key, mods));
             }
-        }
         self.keyed |= self.cx.app_keys.contains(&(key, mods));
         self
     }
@@ -5244,11 +5240,10 @@ impl MenuItem<'_> {
     /// # });
     /// ```
     pub fn icon(mut self, icon: Icon) -> Self {
-        if let Some((tree, idx)) = &mut self.node {
-            if let Kind::MenuItem { icon: i, .. } = &mut tree.info[*idx].kind {
+        if let Some((tree, idx)) = &mut self.node
+            && let Kind::MenuItem { icon: i, .. } = &mut tree.info[*idx].kind {
                 *i = Some(icon);
             }
-        }
         self
     }
 
@@ -5272,11 +5267,10 @@ impl MenuItem<'_> {
 impl Drop for MenuItem<'_> {
     /// ショートカットで選んだチェックとラジオの値を変える（enabled と shortcut の順番に関わらず、最後に決める）
     fn drop(&mut self) {
-        if self.keyed && self.enabled {
-            if let Some(mut a) = self.apply.take() {
+        if self.keyed && self.enabled
+            && let Some(mut a) = self.apply.take() {
                 a();
             }
-        }
     }
 }
 
@@ -6340,12 +6334,11 @@ impl<'u> Table<'u, '_> {
             let grip = Id(hash_of((id.0, k, "grip")));
             let cx = &mut *ui.cx;
             let mut w = *cx.column_widths.entry((id, k)).or_insert(start);
-            if !ui.disabled && (cx.pressed == Some(grip) || cx.released == Some(grip)) {
-                if let (Some((px, _)), Some(h)) = (cx.pointer, cx.prev.hits.iter().find(|h| h.id == grip)) {
+            if !ui.disabled && (cx.pressed == Some(grip) || cx.released == Some(grip))
+                && let (Some((px, _)), Some(h)) = (cx.pointer, cx.prev.hits.iter().find(|h| h.id == grip)) {
                     w = (w + (px - (h.rect.x + h.rect.w / 2.0)) / scale).round().max(MIN_COLUMN_W);
                     cx.column_widths.insert((id, k), w);
                 }
-            }
             widths.push(Some(w));
         }
         let px_widths: Vec<Option<f32>> = widths.iter().map(|w| w.map(|w| (w * scale).round())).collect();
@@ -6374,11 +6367,10 @@ impl<'u> Table<'u, '_> {
                 hui.tree.layout[h].clip = true;
                 hui.tree.info[h].skip_tab = k != 0;
                 heads.push(hid);
-                if sortable && !hui.disabled && hui.cx.clicked == Some(hid) {
-                    if let Some(s) = sort.as_deref_mut() {
+                if sortable && !hui.disabled && hui.cx.clicked == Some(hid)
+                    && let Some(s) = sort.as_deref_mut() {
                         *s = Some((k, !matches!(*s, Some((col, true)) if col == k)));
                     }
-                }
                 if px_widths[k].is_some() {
                     let gid = Id(hash_of((id.0, k, "grip")));
                     let (g, _) = hui.push(gid, Kind::ColumnGrip, Dir::Leaf);
@@ -6890,11 +6882,10 @@ impl<'u> List<'u, '_> {
         let mut sel = selection.as_deref().copied().flatten().filter(|&s| s < count);
         let disabled = ui.disabled;
         if let Some(out) = selection.as_deref_mut() {
-            if let Some(&(list, i)) = cx.clicked.filter(|_| !disabled).and_then(|c| cx.prev.items.get(&c)) {
-                if list == id && i < count {
+            if let Some(&(list, i)) = cx.clicked.filter(|_| !disabled).and_then(|c| cx.prev.items.get(&c))
+                && list == id && i < count {
                     sel = Some(i);
                 }
-            }
             let focused = cx.focus.filter(|_| !disabled).and_then(|f| cx.prev.items.get(&f)).filter(|(l, _)| *l == id).map(|&(_, i)| i);
             if let (Some(at), true) = (focused, count > 0) {
                 let start = sel.unwrap_or(at.min(count - 1));

@@ -66,10 +66,10 @@ impl App for Board {
         let mut action: Option<(CardRef, usize, Option<usize>)> = None;
         let mut add = false;
         ui.row(|ui| {
-            for c in 0..COLUMNS.len() {
+            for (c, column_name) in COLUMNS.iter().enumerate() {
                 let mut column = ui
                     .card(|ui| {
-                        ui.heading(format!("{}（{}）", COLUMNS[c], self.cols[c].len()));
+                        ui.heading(format!("{}（{}）", column_name, self.cols[c].len()));
                         for (k, text) in self.cols[c].iter().enumerate() {
                             let me = CardRef { col: c, idx: k };
                             let mut card = ui
@@ -110,7 +110,7 @@ impl App for Board {
                     })
                     .width(Size::Fill(1.0))
                     .height(Size::Fill(1.0))
-                    .label(COLUMNS[c]);
+                    .label(*column_name);
                 // 列の空いた所に落としたら、列の最後へ
                 if let Some(from) = column.dropped::<CardRef>() {
                     action = Some((from, c, None));

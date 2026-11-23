@@ -306,7 +306,7 @@ impl Gpu {
 
             let target = self.target.clone();
             let c = &self.context;
-            c.OMSetRenderTargets(Some(&[target.clone()]), None);
+            c.OMSetRenderTargets(Some(std::slice::from_ref(&target)), None);
             let bg = [background[0], background[1], background[2], 1.0];
             c.ClearRenderTargetView(target.as_ref().unwrap(), &bg);
             let viewport = D3D11_VIEWPORT {
@@ -372,11 +372,10 @@ impl Gpu {
         if self.output.is_none() {
             self.output = unsafe { self.swapchain.GetContainingOutput() }.ok();
         }
-        if let Some(o) = &self.output {
-            if unsafe { o.WaitForVBlank() }.is_err() {
+        if let Some(o) = &self.output
+            && unsafe { o.WaitForVBlank() }.is_err() {
                 self.output = None;
             }
-        }
     }
 
     /// 窓が動いたあとに呼ぶ

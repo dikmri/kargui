@@ -379,11 +379,11 @@ impl Gallery {
             21 => {
                 let mut moved = None;
                 ui.row(|ui| {
-                    for b in 0..2 {
+                    for (b, items) in self.boxes.iter().enumerate() {
                         let mut column = ui
                             .card(|ui| {
                                 ui.heading(if b == 0 { "左の箱" } else { "右の箱" });
-                                for (k, name) in self.boxes[b].iter().enumerate() {
+                                for (k, name) in items.iter().enumerate() {
                                     ui.card(|ui| {
                                         ui.label(*name);
                                     })

@@ -48,7 +48,7 @@ impl Image {
         if width == 0 || height == 0 || rgba.len() != width as usize * height as usize * 4 {
             return Err(Error(format!("Image::from_rgba: {width} x {height} needs {} bytes, got {}", width as usize * height as usize * 4, rgba.len())));
         }
-        for p in rgba.chunks_exact_mut(4) {
+        for p in rgba.as_chunks_mut::<4>().0 {
             let a = p[3] as u32;
             if a < 255 {
                 for c in &mut p[..3] {

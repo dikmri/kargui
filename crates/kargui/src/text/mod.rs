@@ -123,12 +123,11 @@ fn add_trailing_line(s: &str, lines: &mut Vec<Line>) {
     if !s.ends_with('\n') {
         return;
     }
-    if let Some(&last) = lines.last() {
-        if last.start != len16 {
+    if let Some(&last) = lines.last()
+        && last.start != len16 {
             let top = last.top + last.height;
             lines.push(Line { start: len16, end: len16, top, height: last.height, width: 0.0, baseline: top + (last.baseline - last.top) });
         }
-    }
 }
 
 /// A typeface for text.

@@ -132,11 +132,10 @@ impl Runtime {
             want = true;
         }
         // 焦点のある部品が消えたら、焦点を外す
-        if let Some(f) = self.cx.focus {
-            if !tree.info.iter().any(|n| n.id == f) {
+        if let Some(f) = self.cx.focus
+            && !tree.info.iter().any(|n| n.id == f) {
                 self.cx.focus = None;
             }
-        }
         self.tree = tree;
         self.frames += 1;
         let wake_after = self.cx.wake_at.map(|t| t.saturating_duration_since(self.cx.now));

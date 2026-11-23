@@ -65,11 +65,10 @@ pub fn line(unix_ms: u64, app: &str, event: &str, args: &str, result: &str) -> S
 /// 記録を始める。path が無ければ、今いる場所からの logs/rust-gui/<app>.log に追記する。
 pub fn init(app: &'static str, path: Option<&str>) -> std::io::Result<String> {
     let path = path.map(str::to_string).unwrap_or_else(|| format!("logs/rust-gui/{app}.log"));
-    if let Some(dir) = std::path::Path::new(&path).parent() {
-        if !dir.as_os_str().is_empty() {
+    if let Some(dir) = std::path::Path::new(&path).parent()
+        && !dir.as_os_str().is_empty() {
             fs::create_dir_all(dir)?;
         }
-    }
     let file = OpenOptions::new().create(true).append(true).open(&path)?;
     let _ = LOGGER.set(Logger { app, file: Mutex::new(file) });
     let prev = std::panic::take_hook();

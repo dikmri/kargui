@@ -504,8 +504,8 @@ mod tests {
         // 同じ重みなら同じ幅にする
         let mut nodes = vec![LayoutNode::new(Dir::Row), leaf(250.0, 10.0), leaf(80.0, 10.0), leaf(80.0, 10.0)];
         nodes[0].children = vec![1, 2, 3];
-        for k in 1..=3 {
-            nodes[k].width = Size::Fill(1.0);
+        for node in &mut nodes[1..=3] {
+            node.width = Size::Fill(1.0);
         }
         layout(&mut nodes, 0, Rect::new(0.0, 0.0, 900.0, 10.0));
         assert_eq!([nodes[1].rect.w, nodes[2].rect.w, nodes[3].rect.w], [300.0, 300.0, 300.0]);
@@ -515,8 +515,8 @@ mod tests {
     fn a_fill_never_gets_shorter_than_its_content_and_the_others_share_the_rest() {
         let mut nodes = vec![LayoutNode::new(Dir::Row), leaf(500.0, 10.0), leaf(80.0, 10.0), leaf(0.0, 10.0)];
         nodes[0].children = vec![1, 2, 3];
-        for k in 1..=3 {
-            nodes[k].width = Size::Fill(1.0);
+        for node in &mut nodes[1..=3] {
+            node.width = Size::Fill(1.0);
         }
         layout(&mut nodes, 0, Rect::new(0.0, 0.0, 900.0, 10.0));
         assert_eq!([nodes[1].rect.w, nodes[2].rect.w, nodes[3].rect.w], [500.0, 200.0, 200.0], "取り分 300 より広い中身は中身の幅");

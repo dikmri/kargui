@@ -234,12 +234,11 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
     for i in 0..tree.info.len() {
         if let Kind::Label { wrap: true, .. } | Kind::RichText { .. } = tree.info[i].kind {
             let w = tree.layout[i].rect.w;
-            if let Some(size) = intrinsic(cx, &tree.info[i].kind, Some(w)) {
-                if (size.1 - tree.layout[i].intrinsic.1).abs() > 0.5 {
+            if let Some(size) = intrinsic(cx, &tree.info[i].kind, Some(w))
+                && (size.1 - tree.layout[i].intrinsic.1).abs() > 0.5 {
                     tree.layout[i].intrinsic = size;
                     again = true;
                 }
-            }
         }
     }
     if again {
@@ -262,8 +261,8 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
         layout::layout(&mut tree.layout, 0, window);
     }
     // 頼まれた部品を、いちばん近いスクロールの入れ物の上端へ持ってくる
-    if let Some(target) = cx.scroll_into_view.take() {
-        if let Some(t) = tree.info.iter().position(|n| n.id == target) {
+    if let Some(target) = cx.scroll_into_view.take()
+        && let Some(t) = tree.info.iter().position(|n| n.id == target) {
             let scroller = (0..tree.info.len()).rev().find(|&s| matches!(tree.info[s].kind, Kind::Scroll) && contains(tree, s, t));
             if let Some(s) = scroller {
                 let l = &tree.layout[s];
@@ -276,7 +275,6 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
                 }
             }
         }
-    }
     place_overlays(tree, cx, window);
     // 書式付きの文字の部分（子）の四角は、置いた後の幅で並べた結果から決める
     super::rich::place_spans(tree, cx);
@@ -806,11 +804,10 @@ impl Painter<'_> {
         let id = tree.info[i].id;
         let line = self.line();
         // 右クリックのメニューを持つ部品は、見えている範囲を覚える（右クリックの場所から部品を探す）
-        if tree.info[i].context_menu {
-            if let Some(c) = intersect(r, self.clip) {
+        if tree.info[i].context_menu
+            && let Some(c) = intersect(r, self.clip) {
                 self.prev.context_regions.push((id, c));
             }
-        }
         match &tree.info[i].kind {
             // 重ねる物は親に付かないので、ここには来ない（Painter::overlay で描く）
             Kind::Overlay { .. } => {}

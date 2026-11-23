@@ -1650,11 +1650,10 @@ mod tests {
             });
             ui.row(|ui| {
                 let field = ui.text_input(&mut self.input).hint("New item").grow();
-                if field.submitted() || ui.button("Add").primary().clicked() {
-                    if !self.input.trim().is_empty() {
+                if (field.submitted() || ui.button("Add").primary().clicked())
+                    && !self.input.trim().is_empty() {
                         self.items.insert(0, (std::mem::take(&mut self.input), false));
                     }
-                }
             });
             ui.segmented(&mut self.filter, &[(0, "All"), (1, "Open")]);
             let shown: Vec<usize> = (0..self.items.len()).filter(|&i| self.filter == 0 || !self.items[i].1).collect();
@@ -4476,7 +4475,7 @@ mod tests {
 
     impl App for FileTable {
         fn view(&mut self, ui: &mut Ui) {
-            let mut rows = vec![("b.txt", 20, "Text"), ("a.png", 300, "Image"), ("c.md", 5, "Text")];
+            let mut rows = [("b.txt", 20, "Text"), ("a.png", 300, "Image"), ("c.md", 5, "Text")];
             match self.sort {
                 Some((0, asc)) => rows.sort_by(|x, y| if asc { x.0.cmp(y.0) } else { y.0.cmp(x.0) }),
                 Some((1, asc)) => rows.sort_by(|x, y| if asc { x.1.cmp(&y.1) } else { y.1.cmp(&x.1) }),
@@ -4852,11 +4851,11 @@ mod tests {
         fn view(&mut self, ui: &mut Ui) {
             let mut moved = None;
             ui.row(|ui| {
-                for c in 0..2 {
+                for (c, cards) in self.cols.iter().enumerate() {
                     let mut col = ui
                         .column(|ui| {
                             ui.heading(if c == 0 { "To do" } else { "Done" });
-                            for (k, name) in self.cols[c].iter().enumerate() {
+                            for (k, name) in cards.iter().enumerate() {
                                 ui.label(*name).drag_source(CardAt(c, k));
                             }
                         })
@@ -4990,11 +4989,10 @@ mod tests {
                     })
                     .width(Size::Fixed(300.0))
                     .height(Size::Fixed(200.0));
-                if self.accept {
-                    if let Some(paths) = shelf.dropped::<Vec<std::path::PathBuf>>() {
+                if self.accept
+                    && let Some(paths) = shelf.dropped::<Vec<std::path::PathBuf>>() {
                         self.opened.extend(paths);
                     }
-                }
                 ui.label("Not here");
                 // 窓の中の引っ張り（ファイルの行）も、同じ型なら同じ部品が受け取る
                 ui.label("notes.txt").drag_source(vec![std::path::PathBuf::from("notes.txt")]);

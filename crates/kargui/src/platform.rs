@@ -491,7 +491,7 @@ fn make_icon(image: &crate::Image) -> Option<HICON> {
     let mut bgra = Vec::with_capacity(d.pixels.len());
     for px in d.pixels.chunks_exact(4) {
         let a = px[3] as u32;
-        let un = |c: u8| if a == 0 { 0 } else { ((c as u32 * 255 + a / 2) / a).min(255) as u8 };
+        let un = |c: u8| (c as u32 * 255 + a / 2).checked_div(a).map_or(0, |v| v.min(255) as u8);
         bgra.extend([un(px[2]), un(px[1]), un(px[0]), px[3]]);
     }
     unsafe {
@@ -1443,15 +1443,14 @@ impl State {
             }
             WM_IME_COMPOSITION => {
                 let flags = lp.0 as u32;
-                if flags & GCS_RESULTSTR.0 != 0 {
-                    if let Some(s) = self.ime_string(GCS_RESULTSTR) {
+                if flags & GCS_RESULTSTR.0 != 0
+                    && let Some(s) = self.ime_string(GCS_RESULTSTR) {
                         log::event("ime.commit", &format!("text={s}"), "sent");
                         self.push(Event::ImePreedit(String::new()));
                         self.push(Event::ImeCommit(s));
                     }
-                }
-                if flags & GCS_COMPSTR.0 != 0 {
-                    if let Some(s) = self.ime_string(GCS_COMPSTR) {
+                if flags & GCS_COMPSTR.0 != 0
+                    && let Some(s) = self.ime_string(GCS_COMPSTR) {
                         // 文節の境目（u32 の並び）・文字ごとの属性・キャレットの位置も読む（文節ごとの下線に使う）
                         let len16 = s.encode_utf16().count();
                         let raw: Vec<u32> = self
@@ -1467,7 +1466,6 @@ impl State {
                         self.push(Event::ImePreedit(s));
                         self.push(Event::ImeClauses { bounds, target, cursor });
                     }
-                }
                 Some(LRESULT(0))
             }
             WM_IME_ENDCOMPOSITION => {
@@ -1577,7 +1575,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         WM_GETOBJECT => {
             let n = GETOBJECT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            if n <= 5 || n % 100 == 0 {
+            if n <= 5 || n.is_multiple_of(100) {
                 log::event("a11y.getobject", &format!("objid={} n={n}", lp.0 as i32), "received");
             }
             // 借りの中で木を作って渡し、UIA への受け渡し（入れ子のメッセージが起きうる）は借りの外で行う

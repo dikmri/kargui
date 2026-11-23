@@ -181,11 +181,10 @@ impl App for Notepad {
             self.load(path);
         }
         if let Some(path) = ui.chosen_file("save") {
-            if self.save_to(path) {
-                if let Some(then) = self.after_save.take() {
+            if self.save_to(path)
+                && let Some(then) = self.after_save.take() {
                     self.go(ui, then);
                 }
-            }
         } else if ui.file_dialog_cancelled("save") {
             self.after_save = None;
         }
@@ -286,7 +285,7 @@ fn icon() -> Image {
     for y in 0..32usize {
         for x in 0..32usize {
             let paper = (5..27).contains(&x) && (3..29).contains(&y);
-            let line = paper && (9..23).contains(&x) && y >= 9 && y < 25 && (y - 9) % 5 == 0;
+            let line = paper && (9..23).contains(&x) && (9..25).contains(&y) && (y - 9) % 5 == 0;
             let edge = paper && (x == 5 || x == 26 || y == 3 || y == 28);
             let c: [u8; 4] = if line {
                 [0x2f, 0x6f, 0xd6, 0xff]

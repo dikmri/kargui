@@ -142,6 +142,7 @@ impl DrawList {
         self.quads.push(Quad { rect: [r.x, r.y, r.w, r.h], color: [1.0; 4], uv: [0.0, 0.0, image.width() as f32, image.height() as f32], extra });
     }
 
+    #[allow(clippy::too_many_arguments)] // 字の位置・大きさ・字形の座標・色を、呼ぶ側でそのまま並べる
     pub fn glyph(&mut self, x: f32, y: f32, w: f32, h: f32, ax: f32, ay: f32, color: Color) {
         self.quads.push(Quad { rect: [x, y, w, h], color, uv: [ax, ay, w, h], extra: [0.0; 4] });
     }

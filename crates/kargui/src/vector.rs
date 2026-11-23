@@ -85,8 +85,8 @@ impl Raster {
     pub fn coverage(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.w * self.h);
         let mut sum = 0.0f32;
-        for i in 0..self.w * self.h {
-            sum += self.acc[i];
+        for &a in &self.acc[..self.w * self.h] {
+            sum += a;
             out.push((sum.abs().min(1.0) * 255.0 + 0.5) as u8);
         }
         out
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn total_ink_matches_the_area() {
         let tri = vec![(1.0, 1.0), (9.0, 2.0), (3.0, 8.0)];
-        let c = fill(10, 10, &[tri.clone()]);
+        let c = fill(10, 10, std::slice::from_ref(&tri));
         let ink: f32 = c.iter().map(|&v| v as f32 / 255.0).sum();
         let want = area(&tri).abs();
         assert!((ink - want).abs() < 0.3, "ink {ink} area {want}");

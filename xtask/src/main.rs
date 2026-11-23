@@ -47,8 +47,8 @@ fn items(source: &str, impl_header: &str) -> Vec<Item> {
         if started && depth == 1 {
             if let Some(d) = t.strip_prefix("///") {
                 docs.push(d.strip_prefix(' ').unwrap_or(d).to_string());
-            } else if t.starts_with("pub fn ") {
-                let name = t["pub fn ".len()..].split(|c: char| c == '(' || c == '<').next().unwrap_or("").to_string();
+            } else if let Some(rest) = t.strip_prefix("pub fn ") {
+                let name = rest.split(['(', '<']).next().unwrap_or("").to_string();
                 out.push(Item { name, docs: std::mem::take(&mut docs), signature: t.trim_end_matches('{').trim().to_string() });
             } else if !t.starts_with("#[") {
                 docs.clear();

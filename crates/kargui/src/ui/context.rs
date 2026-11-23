@@ -1161,11 +1161,10 @@ impl Context {
                     self.move_focus(mods.shift);
                     self.reveal_focus();
                     // Tab で浮き出しの外へ出たら閉じる
-                    if let Some(o) = self.top_popup() {
-                        if !self.focus.is_some_and(|f| o.focus.contains(&f)) {
+                    if let Some(o) = self.top_popup()
+                        && !self.focus.is_some_and(|f| o.focus.contains(&f)) {
                             self.closing.insert(o.id);
                         }
-                    }
                 }
                 Event::Key { key: Key::Enter | Key::Space, mods: Mods { ctrl: false, alt: false, .. } }
                     if self.focus.is_some_and(|f| !self.is_text_input(f)) =>
