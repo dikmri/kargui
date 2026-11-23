@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Linux: apps open a Wayland window (first part). `kargui::run` no longer returns an `Err` on
+  Linux. The window is an xdg-shell toplevel drawn by the CPU path into shared memory, at the
+  compositor's fractional scale (fractional-scale and viewporter; integer scale where they are
+  missing). Mouse: move, press (double and triple clicks within 400 ms and 4 pixels), wheel
+  (one notch is 96 pixels, as on Windows) and touchpad scrolling, right click, and pointer shapes
+  (cursor-shape). Keyboard: the system key map through libxkbcommon, loaded at run time with
+  xkbcommon-dl (no development package is needed to build), and key repeat. Not there yet: the
+  input method, the system clipboard (copy and paste stay inside the app), screen readers, file
+  dialogs, more than one window, file drag and drop, title bars on GNOME, and X11. New Linux-only
+  dependencies: wayland-client, wayland-protocols, xkbcommon-dl and rustix (13 crates in all).
 - Rich text: `ui.rich_text(|t| …)` lays out parts that have their own style as one paragraph that
   wraps to the width. `t.text(…)` returns a `Span` with `.bold()`, `.italic()` (slanted where the
   font has no italic style, as Japanese fonts), `.underline()`, `.strike()`, `.weak()`,

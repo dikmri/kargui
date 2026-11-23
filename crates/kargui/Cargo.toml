@@ -32,6 +32,16 @@ unicode-segmentation = "=1.12.0"
 parley = "=0.12.0"
 swash = "=0.2.10"
 
+# OS との境目の Linux の版（窓・入力。wayland.rs）。低い層の wayland-client と protocols を直接使う
+# （smithay-client-toolkit は依存が 57 個で、組み立てに libxkbcommon-dev と pkg-config が要る）。キー配列は動く時に
+# libxkbcommon.so を読む xkbcommon-dl（組み立てに開発用の部品が要らない）。memfd・mmap・poll・eventfd は rustix。
+# どれも MIT（rustix は Apache-2.0 か MIT）
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "=0.31.15"
+wayland-protocols = { version = "=0.32.13", features = ["client", "staging", "unstable"] }
+xkbcommon-dl = "=0.4.2"
+rustix = { version = "=1.1.6", features = ["fs", "mm", "event"] }
+
 # OS との境目（窓・入力・日本語入力・文字・画面に出す・クリップボード・読み上げの橋渡し）の Windows の版
 [target.'cfg(windows)'.dependencies]
 accesskit_windows = "=0.35.2"

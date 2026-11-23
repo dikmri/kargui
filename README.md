@@ -139,8 +139,15 @@ text, putting pixels on screen, clipboard, screen-reader adapter) is kept in fiv
 test harness) builds on Linux and macOS as well, with text laid out and drawn by parley and swash.
 On Linux, building needs the fontconfig development files (`libfontconfig1-dev` and `pkg-config` on
 Debian and Ubuntu); fontique, inside parley, uses fontconfig to find the system fonts.
-Every push runs the tests on Windows, Linux and macOS (GitHub Actions). Apps cannot open windows
-there yet, so `kargui::run` returns an `Err` saying the system is not supported. Linux comes first.
+Every push runs the tests on Windows, Linux and macOS (GitHub Actions).
+
+On Linux, apps open a Wayland window (`wayland.rs`, work in progress): the CPU picture through
+shared memory, fractional scaling, the mouse (double and triple clicks, wheel, right click, pointer
+shapes) and the keyboard (the system key map through libxkbcommon, loaded at run time, and key
+repeat). Not there yet: the input method, the system clipboard (copy and paste stay inside the app),
+screen readers, file dialogs, more than one window, drag and drop from other apps, title bars on
+GNOME and X11. It is checked on Hyprland. On macOS, `kargui::run` still returns an `Err` saying the
+system is not supported.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).
 

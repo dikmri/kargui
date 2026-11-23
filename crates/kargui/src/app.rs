@@ -312,10 +312,15 @@ pub fn run(options: Options, app: impl App) -> Result<(), crate::Error> {
     {
         crate::platform::run(options, Box::new(app))
     }
-    // Linux と macOS の窓はまだ無い（部品・並べ方・描き方・試験台は動く）
-    #[cfg(not(windows))]
+    // Linux は Wayland の窓（日本語入力・OS のクリップボード・読み上げはまだ。wayland.rs の冒頭）
+    #[cfg(target_os = "linux")]
+    {
+        crate::wayland::run(options, Box::new(app))
+    }
+    // macOS の窓はまだ無い（部品・並べ方・描き方・試験台は動く）
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (options, app);
-        Err(crate::Error("kargui cannot open windows on this operating system yet: only Windows is supported (Linux and macOS are planned)".into()))
+        Err(crate::Error("kargui cannot open windows on this operating system yet: Windows and Linux (Wayland) are supported (macOS is planned)".into()))
     }
 }
