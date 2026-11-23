@@ -9,11 +9,17 @@
 //! 日本語入力は text-input-v3（fcitx5 などの IME が、合成を通して変換中の文字と確定の文字を送る）。
 //! 読み上げは accesskit_unix（AT-SPI を D-Bus で話す）。Windows と同じ木を毎フレーム渡し、違いは AccessKit が見つける。
 //! ファイルのダイアログと OS の明暗の設定は xdg-desktop-portal（portal.rs。別のスレッドで呼ぶ）。
+//! ほかのアプリから引っ張ってきたファイルは wl_data_device の引っ張りの知らせ（text/uri-list を入った時に受け取る）。
 //!
-//! まだ無い物（次の区切り）: 複数の窓・ドラッグ＆ドロップ・題の帯（GNOME の CSD）。
+//! 窓は Win（窓ごとに面・xdg の窓・絵・Runtime・読み上げ）、座席の物（マウス・キーボード・日本語入力・クリップボード・
+//! 引っ張り）は State に持つ。面と xdg の窓の知らせには窓の番号（WinId）を添え、マウス・キーボード・日本語入力・引っ張りは
+//! enter の面で窓を決める。2 つ目からの窓は、Windows と同じく主の窓のフレームの後で、頼まれた窓とそろえる。
+//!
+//! まだ無い物（次の区切り）: 題の帯（GNOME の CSD）・X11。
 
 use std::cell::RefCell;
-use std::ffi::c_char;
+use std::ffi::{OsString, c_char};
+use std::os::unix::ffi::OsStringExt;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -70,6 +76,8 @@ fn error(what: &str, e: impl std::fmt::Display) -> crate::Error {
 const TEXT_MIMES: [&str; 4] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT"];
 /// ほかのアプリが貼る物を書き終えるのを待つ長さ
 const PASTE_TIMEOUT: Duration = Duration::from_secs(1);
+/// ほかのアプリから引っ張ってくるファイルの一覧の形
+const URI_LIST: &str = "text/uri-list";
 
 /// 窓（合成からの知らせ）とクリップボードの係が分け合う状態
 struct Clip {
@@ -85,6 +93,55 @@ struct Clip {
     offer: Option<wl_data_offer::WlDataOffer>,
     /// wl_data_device が無い合成では、アプリの中だけで持つ
     local: Option<String>,
+}
+
+/// offer の中身を mime の形で受け取る（貼る時と、ほかのアプリからファイルを引っ張ってきた時）。ほかのアプリが
+/// 書き終える（書く口を閉じる）まで読む。止まったアプリで固まらないよう、待つのは 1 秒まで。（中身, 時間切れか）
+fn receive_offer(conn: &Connection, offer: &wl_data_offer::WlDataOffer, mime: &str) -> Option<(Vec<u8>, bool)> {
+    let t = Instant::now();
+    let (read_end, write_end) = pipe_with(PipeFlags::CLOEXEC).ok()?;
+    offer.receive(mime.to_string(), write_end.as_fd());
+    drop(write_end);
+    let _ = conn.flush();
+    let mut bytes = Vec::new();
+    let mut timed_out = false;
+    loop {
+        let left = PASTE_TIMEOUT.saturating_sub(t.elapsed());
+        let ts = Timespec { tv_sec: left.as_secs() as _, tv_nsec: left.subsec_nanos() as _ };
+        let mut fds = [PollFd::new(&read_end, PollFlags::IN)];
+        match poll(&mut fds, Some(&ts)) {
+            Ok(0) => {
+                timed_out = true;
+                break;
+            }
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => break,
+        }
+        let mut chunk = [0u8; 8192];
+        match rustix::io::read(&read_end, &mut chunk) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => break,
+        }
+    }
+    Some((bytes, timed_out))
+}
+
+/// ほかのアプリから引っ張ってきている物（wl_data_device の enter から leave か drop まで）
+struct Drag {
+    /// 入ってきた窓
+    win: WinId,
+    offer: wl_data_offer::WlDataOffer,
+    /// enter の番号（accept に添える）
+    serial: u32,
+    /// ファイル（text/uri-list）を持っていて、場所を受け取れた
+    files: bool,
+    /// 位置（物理ピクセル）
+    at: (f32, f32),
+    /// 最後に合成へ答えた「受け取れるか」
+    accepting: Option<bool>,
 }
 
 /// OS のクリップボード（文字だけ）
@@ -127,34 +184,7 @@ impl Clipboard for WaylandClipboard {
             return None;
         };
         let t = Instant::now();
-        let (read_end, write_end) = pipe_with(PipeFlags::CLOEXEC).ok()?;
-        offer.receive(mime.to_string(), write_end.as_fd());
-        drop(write_end);
-        let _ = c.conn.flush();
-        // ほかのアプリが書き終える（書く口を閉じる）まで読む。止まったアプリで固まらないよう、待つのは 1 秒まで
-        let mut bytes = Vec::new();
-        let mut timed_out = false;
-        loop {
-            let left = PASTE_TIMEOUT.saturating_sub(t.elapsed());
-            let ts = Timespec { tv_sec: left.as_secs() as _, tv_nsec: left.subsec_nanos() as _ };
-            let mut fds = [PollFd::new(&read_end, PollFlags::IN)];
-            match poll(&mut fds, Some(&ts)) {
-                Ok(0) => {
-                    timed_out = true;
-                    break;
-                }
-                Ok(_) => {}
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(_) => break,
-            }
-            let mut chunk = [0u8; 8192];
-            match rustix::io::read(&read_end, &mut chunk) {
-                Ok(0) => break,
-                Ok(n) => bytes.extend_from_slice(&chunk[..n]),
-                Err(rustix::io::Errno::INTR) => {}
-                Err(_) => break,
-            }
-        }
+        let (bytes, timed_out) = receive_offer(&c.conn, offer, mime)?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
         log::event(
             "clipboard.get",
@@ -215,7 +245,7 @@ struct Shm {
 }
 
 impl Shm {
-    fn new(shm: &wl_shm::WlShm, qh: &QueueHandle<State>, width: i32, height: i32) -> Result<Shm, crate::Error> {
+    fn new(shm: &wl_shm::WlShm, qh: &QueueHandle<State>, width: i32, height: i32, win: WinId) -> Result<Shm, crate::Error> {
         let stride = width * 4;
         let one = (stride * height) as usize;
         let len = one * 2;
@@ -225,7 +255,7 @@ impl Shm {
         let map = unsafe { mmap(std::ptr::null_mut(), len, ProtFlags::READ | ProtFlags::WRITE, MapFlags::SHARED, &fd, 0) }
             .map_err(|e| error("mmap", e))? as *mut u8;
         let pool = shm.create_pool(fd.as_fd(), len as i32, qh, ());
-        let slots = [0usize, 1].map(|i| (pool.create_buffer((one * i) as i32, width, height, stride, wl_shm::Format::Xrgb8888, qh, ()), false));
+        let slots = [0usize, 1].map(|i| (pool.create_buffer((one * i) as i32, width, height, stride, wl_shm::Format::Xrgb8888, qh, win), false));
         Ok(Shm { pool, map, len, _fd: fd, width, height, slots })
     }
 
@@ -430,11 +460,10 @@ fn key_of(sym: u32) -> Option<Key> {
 /// 日本語入力（text-input-v3）の状態
 #[derive(Default)]
 struct Ime {
-    /// 合成が、この窓に文字の入力の焦点を置いている（enter から leave まで）
+    /// 合成が、どれかの窓に文字の入力の焦点を置いている（enter から leave まで。どの窓かは State::ime_win）。
+    /// Hyprland は作業場を移った時に text-input の leave を送らないので、キーボードの焦点（State::keyboard_win）
+    /// が同じ窓にある時だけ有効にする
     entered: bool,
-    /// キーボードの焦点がこの窓にある。Hyprland は作業場を移った時に text-input の leave を送らないので、
-    /// キーボードの焦点でも有効・無効を決める
-    keyboard: bool,
     /// 有効にした入力欄（None = 無効にしている）
     enabled: Option<Id>,
     /// 送った commit の数（done の serial と比べる）
@@ -491,36 +520,25 @@ impl DeactivationHandler for A11ySink {
     }
 }
 
-struct State {
+/// 窓の番号。面や xdg の窓の知らせに添えて、どの窓の物かを分ける
+type WinId = u32;
+
+/// 窓 1 つ分（主の窓と、Ui::window で開いた窓）。Windows の platform.rs と同じく、窓ごとに Runtime を持ち、
+/// アプリは窓どうしで分け合う（State::app）
+struct Win {
+    id: WinId,
+    /// None は主の窓
+    key: Option<String>,
     rt: Runtime,
-    app: Box<dyn App>,
-    qh: QueueHandle<State>,
-    shm: wl_shm::WlShm,
     surface: wl_surface::WlSurface,
+    xdg_surface: xdg_surface::XdgSurface,
+    toplevel: xdg_toplevel::XdgToplevel,
     viewport: Option<wp_viewport::WpViewport>,
-    cursor_mgr: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
-    cursor: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
-    pointer: Option<wl_pointer::WlPointer>,
-    keyboard: Option<wl_keyboard::WlKeyboard>,
-    xkb: Option<Keyboard>,
-    /// クリップボード（WaylandClipboard と分け合う）
-    clip: Rc<RefCell<Clip>>,
-    /// 日本語入力（合成が text-input-v3 を持っていなければ None）
-    text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
-    ime: Ime,
+    fractional: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
     /// 読み上げ。読み上げソフトが動いていない間、AccessKit は木を作らせない（update_if_active が何もしない）
     a11y: accesskit_unix::Adapter,
     a11y_actions: Arc<Mutex<Vec<ActionRequest>>>,
-    /// ほかのスレッドから窓の処理を起こす eventfd
-    wake: Arc<OwnedFd>,
-    /// ファイルのダイアログ（ポータル）の答え。開いている間は dialog_open
-    dialog_tx: Sender<(String, Vec<PathBuf>)>,
-    dialog_rx: Receiver<(String, Vec<PathBuf>)>,
-    dialog_open: bool,
-    /// 最後にダイアログで選んだファイルのフォルダ（この起動の間だけ覚える）
-    last_folder: Option<PathBuf>,
-    /// OS の明暗の設定の答え（Options::dark が無い時だけ聞く。届いたら None にする）
-    dark_rx: Option<Receiver<Option<bool>>>,
     buffers: Option<Shm>,
     /// CPU の道の絵（前のフレームの絵。変わった所だけ描き直す）と、その要約と背景の色
     pixels: Vec<u32>,
@@ -541,9 +559,183 @@ struct State {
     animating: bool,
     frame_callback: bool,
     wake_at: Option<Instant>,
-    running: bool,
     focused: bool,
-    // ポインター（物理ピクセル）
+    shown: bool,
+    /// 窓を作った時（主の窓はアプリの起動の時。出るまでの時間を記録に書く）
+    created: Instant,
+}
+
+impl Drop for Win {
+    fn drop(&mut self) {
+        // 作った順の逆に壊す（バッファは Shm の Drop が壊す）
+        self.buffers = None;
+        if let Some(d) = self.decoration.take() {
+            d.destroy();
+        }
+        if let Some(f) = self.fractional.take() {
+            f.destroy();
+        }
+        if let Some(v) = self.viewport.take() {
+            v.destroy();
+        }
+        self.toplevel.destroy();
+        self.xdg_surface.destroy();
+        self.surface.destroy();
+    }
+}
+
+impl Win {
+    fn scale(&self) -> f32 {
+        self.scale120 as f32 / 120.0
+    }
+
+    fn physical(&self) -> (i32, i32) {
+        let s = self.scale120 as i64;
+        let f = |v: i32| ((v as i64 * s + 60) / 120).max(1) as i32;
+        (f(self.logical.0), f(self.logical.1))
+    }
+
+    /// 記録に添える窓の名前（主の窓は空。ほかの窓は「 win=キー」）
+    fn tag(&self) -> String {
+        self.key.as_ref().map_or(String::new(), |k| format!(" win={k}"))
+    }
+
+    /// 論理の大きさか倍率が変わった
+    fn apply_size(&mut self) {
+        let (w, h) = self.physical();
+        self.rt.resize(w as f32, h as f32, self.scale());
+        self.summary = Summary::default();
+        self.full = true;
+        self.need_frame = true;
+        self.why = "size";
+        log::event("window.size", &format!("logical={}x{} scale={:.3}{}", self.logical.0, self.logical.1, self.scale(), self.tag()), &format!("physical={w}x{h}"));
+    }
+
+    fn push(&mut self, e: Event) {
+        self.events.push(e);
+        self.need_frame = true;
+        self.why = "input";
+    }
+
+    /// 読み上げソフトから届いた操作を、kargui の入力に直す（Windows の platform.rs と同じ対応）
+    fn apply_a11y_actions(&mut self) {
+        let requests: Vec<ActionRequest> = self.a11y_actions.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+        for r in requests {
+            let action = match r.action {
+                accesskit::Action::Click => A11yAction::Click,
+                accesskit::Action::Focus => A11yAction::Focus,
+                accesskit::Action::Increment => A11yAction::Increment,
+                accesskit::Action::Decrement => A11yAction::Decrement,
+                other => {
+                    log::event("a11y.action", &format!("action={other:?}"), "ignored");
+                    continue;
+                }
+            };
+            self.push(Event::A11y { target: Id(r.target_node.0), action });
+        }
+    }
+
+    /// 描いて画面に出す（ビューは回した後）。出せたら true
+    fn draw(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<State>, why: &str, t_build: f64) -> bool {
+        let t_draw = Instant::now();
+        let (w, h) = self.physical();
+        if self.buffers.as_ref().is_none_or(|b| b.width != w || b.height != h) {
+            self.buffers = None;
+            match Shm::new(shm, qh, w, h, self.id) {
+                Ok(b) => self.buffers = Some(b),
+                Err(e) => {
+                    log::event("surface.init", &format!("size={w}x{h}{}", self.tag()), &format!("error={e}"));
+                    return false;
+                }
+            }
+            self.pixels = vec![0; (w * h) as usize];
+            self.summary = Summary::default();
+            self.full = true;
+        }
+        let Some(buffers) = self.buffers.as_mut() else { return false };
+        let Some(slot) = buffers.free_slot() else {
+            // 2 枚とも合成が読んでいる。どちらかが返ってきたら描く
+            log::event("render", &format!("why={why}{}", self.tag()), "busy (both buffers in use)");
+            self.need_frame = true;
+            return false;
+        };
+        let bg = self.rt.cx.theme.background;
+        let full = self.full || bg != self.background;
+        let drawn = cpu_frame::draw(&mut self.pixels, w, h, &self.rt.draw, &self.rt.cx.text.atlas, bg, &self.summary, full);
+        self.summary = drawn.summary;
+        self.background = bg;
+        self.full = false;
+        // 2 枚を交互に使うので、写す絵はいつも全体（変わった所だけを合成に知らせる）
+        buffers.pixels(slot).copy_from_slice(&self.pixels);
+        buffers.slots[slot].1 = true;
+        self.surface.attach(Some(&buffers.slots[slot].0), 0, 0);
+        for r in &drawn.present {
+            self.surface.damage_buffer(r.x, r.y, r.w, r.h);
+        }
+        match &self.viewport {
+            Some(v) => v.set_destination(self.logical.0, self.logical.1),
+            None => self.surface.set_buffer_scale(self.int_scale),
+        }
+        if self.animating && !self.frame_callback {
+            self.surface.frame(qh, self.id);
+            self.frame_callback = true;
+        }
+        self.surface.commit();
+        let t_draw = t_draw.elapsed().as_secs_f64() * 1000.0;
+        if !self.animating {
+            log::event(
+                "render",
+                &format!("why={why} {} quads={} slot={slot}{}", drawn.mode, self.rt.draw.quads.len(), self.tag()),
+                &format!("ms={:.2} draw_ms={t_draw:.2}", t_build + t_draw),
+            );
+        }
+        true
+    }
+}
+
+struct State {
+    /// アプリ（どの窓も同じ物を使う）
+    app: Box<dyn App>,
+    qh: QueueHandle<State>,
+    shm: wl_shm::WlShm,
+    compositor: wl_compositor::WlCompositor,
+    wm_base: xdg_wm_base::XdgWmBase,
+    viewporter: Option<wp_viewporter::WpViewporter>,
+    frac_mgr: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    deco_mgr: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+    /// 開いている窓。0 番はいつも主の窓
+    windows: Vec<Win>,
+    next_id: WinId,
+    /// アプリが持ってきた書体のファイル（ほかの窓にも読ませる）
+    font_files: Vec<std::borrow::Cow<'static, [u8]>>,
+    cursor_mgr: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
+    cursor: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
+    pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    xkb: Option<Keyboard>,
+    /// クリップボード（WaylandClipboard と分け合う）
+    clip: Rc<RefCell<Clip>>,
+    /// 日本語入力（合成が text-input-v3 を持っていなければ None）と、文字の入力の焦点がある窓
+    text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
+    ime: Ime,
+    ime_win: Option<WinId>,
+    /// ほかのスレッドから窓の処理を起こす eventfd
+    wake: Arc<OwnedFd>,
+    /// ファイルのダイアログ（ポータル）の答え（頼んだ窓, キー, ファイル）。開いている間は dialog_open
+    dialog_tx: Sender<(WinId, String, Vec<PathBuf>)>,
+    dialog_rx: Receiver<(WinId, String, Vec<PathBuf>)>,
+    dialog_open: bool,
+    /// 最後にダイアログで選んだファイルのフォルダ（この起動の間だけ覚える）
+    last_folder: Option<PathBuf>,
+    /// ほかのアプリから引っ張ってきている物
+    drag: Option<Drag>,
+    /// OS の明暗の設定の答え（Options::dark が無い時だけ聞く。届いたら None にする）
+    dark_rx: Option<Receiver<Option<bool>>>,
+    running: bool,
+    /// ポインターとキーボードの焦点がある窓
+    pointer_win: Option<WinId>,
+    keyboard_win: Option<WinId>,
+    // ポインター（その窓の物理ピクセル）
     px: f32,
     py: f32,
     left_down: bool,
@@ -557,41 +749,153 @@ struct State {
     axis_value: f64,
     axis_value120: i32,
     started: Instant,
-    shown: bool,
-    warned_windows: bool,
 }
 
 impl State {
-    fn scale(&self) -> f32 {
-        self.scale120 as f32 / 120.0
+    fn index(&self, id: WinId) -> Option<usize> {
+        self.windows.iter().position(|w| w.id == id)
     }
 
-    fn physical(&self) -> (i32, i32) {
-        let s = self.scale120 as i64;
-        let f = |v: i32| ((v as i64 * s + 60) / 120).max(1) as i32;
-        (f(self.logical.0), f(self.logical.1))
+    fn win(&mut self, id: WinId) -> Option<&mut Win> {
+        self.windows.iter_mut().find(|w| w.id == id)
     }
 
-    /// 論理の大きさか倍率が変わった
-    fn apply_size(&mut self) {
-        let (w, h) = self.physical();
-        self.rt.resize(w as f32, h as f32, self.scale());
-        self.summary = Summary::default();
-        self.full = true;
-        self.need_frame = true;
-        self.why = "size";
-        log::event("window.size", &format!("logical={}x{} scale={:.3}", self.logical.0, self.logical.1, self.scale()), &format!("physical={w}x{h}"));
+    /// 面から窓を探す（ポインター・キーボード・日本語入力・引っ張りの enter は面で届く）
+    fn win_of(&self, surface: &wl_surface::WlSurface) -> Option<WinId> {
+        self.windows.iter().find(|w| &w.surface == surface).map(|w| w.id)
     }
 
-    fn push(&mut self, e: Event) {
-        self.events.push(e);
-        self.need_frame = true;
-        self.why = "input";
+    fn pointer_index(&self) -> Option<usize> {
+        self.pointer_win.and_then(|id| self.index(id))
+    }
+
+    fn pointer_scale(&self) -> f32 {
+        self.pointer_index().map_or(1.0, |i| self.windows[i].scale())
+    }
+
+    /// 窓を作る（主の窓は run、ほかの窓は主の窓のフレームの後）。最初の configure が来てから描く
+    fn new_window(&mut self, key: Option<String>, title: &str, size: (f32, f32), min_size: Option<(f32, f32)>, rt: Runtime) -> WinId {
+        let id = self.next_id;
+        self.next_id += 1;
+        let qh = &self.qh;
+        let surface = self.compositor.create_surface(qh, id);
+        let xdg_surface = self.wm_base.get_xdg_surface(&surface, qh, id);
+        let toplevel = xdg_surface.get_toplevel(qh, id);
+        toplevel.set_title(title.to_string());
+        toplevel.set_app_id(app_id());
+        if let Some((w, h)) = min_size {
+            toplevel.set_min_size(w.round() as i32, h.round() as i32);
+        }
+        // 合成が題の帯を描けるなら頼む（KDE・sway など。Hyprland と GNOME には無い）
+        let decoration = self.deco_mgr.as_ref().map(|m| {
+            let d = m.get_toplevel_decoration(&toplevel, qh, ());
+            d.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+            d
+        });
+        let viewport = self.viewporter.as_ref().map(|v| v.get_viewport(&surface, qh, ()));
+        let fractional = self.frac_mgr.as_ref().map(|m| m.get_fractional_scale(&surface, qh, id));
+        surface.commit();
+        // 読み上げ。AT-SPI の接続は accesskit_unix が自分のスレッドで行うので、起動を待たせない
+        let a11y_actions = Arc::new(Mutex::new(Vec::new()));
+        let sink = A11ySink { actions: a11y_actions.clone(), wake: self.wake.clone() };
+        let a11y = accesskit_unix::Adapter::new(sink.clone(), sink.clone(), sink);
+        let logical = (size.0.round().max(1.0) as i32, size.1.round().max(1.0) as i32);
+        let mut w = Win {
+            id,
+            key,
+            rt,
+            surface,
+            xdg_surface,
+            toplevel,
+            viewport,
+            fractional,
+            decoration,
+            a11y,
+            a11y_actions,
+            buffers: None,
+            pixels: Vec::new(),
+            summary: Summary::default(),
+            background: [0.0; 4],
+            logical,
+            scale120: 120,
+            int_scale: 1,
+            configured: false,
+            pending_size: None,
+            events: Vec::new(),
+            need_frame: true,
+            why: "first",
+            full: true,
+            animating: false,
+            frame_callback: false,
+            wake_at: None,
+            focused: false,
+            shown: false,
+            created: if self.windows.is_empty() { self.started } else { Instant::now() },
+        };
+        w.apply_size();
+        self.windows.push(w);
+        id
+    }
+
+    /// 窓ごとの Runtime を作る（日付の書き方などは窓ごと。書体・明暗は主の窓と同じにする）
+    fn runtime(&self, title: &str, dark: bool, font: &crate::Font) -> Result<Runtime, crate::Error> {
+        let text = Text::new()?;
+        let mut rt = Runtime::new(text, dark, Box::new(WaylandClipboard(self.clip.clone())), title.to_string());
+        let writer = self.wake.clone();
+        rt.cx.waker = crate::wake::Waker::new(move || {
+            let _ = rustix::io::write(&*writer, &1u64.to_ne_bytes());
+        });
+        rt.cx.text.load_fonts(&self.font_files);
+        rt.cx.font = rt.cx.text.fonts.id(font);
+        Ok(rt)
+    }
+
+    /// Ui::window で頼まれた窓を開く。Wayland では、置く場所（position）と前面に出すか（activate）は合成が決める。
+    /// 窓のアイコンも、まだ合成に渡していない
+    fn open_window(&mut self, r: crate::ui::context::WindowRequest) {
+        let main = &self.windows[0].rt;
+        let (dark, font) = (main.cx.dark, main.cx.text.fonts.get(main.cx.font).clone());
+        match self.runtime(&r.title, dark, &font) {
+            Ok(rt) => {
+                let id = self.new_window(Some(r.key.clone()), &r.title, r.size, r.min_size, rt);
+                log::event("window.open_other", &format!("key={} size={:.0}x{:.0}", r.key, r.size.0, r.size.1), &format!("id={id}"));
+            }
+            Err(e) => log::event("window.open_other", &format!("key={}", r.key), &format!("error={e}")),
+        }
+    }
+
+    fn close_window(&mut self, id: WinId) {
+        let Some(i) = self.index(id) else { return };
+        let w = self.windows.remove(i);
+        log::event("window.close_other", &format!("key={}", w.key.as_deref().unwrap_or("")), "ok");
+        drop(w);
+        for slot in [&mut self.pointer_win, &mut self.keyboard_win, &mut self.ime_win] {
+            if *slot == Some(id) {
+                *slot = None;
+            }
+        }
+        if self.drag.as_ref().is_some_and(|d| d.win == id)
+            && let Some(d) = self.drag.take()
+        {
+            d.offer.destroy();
+        }
+    }
+
+    /// 主の窓のフレームの後: 頼まれた窓と開いている窓をそろえる（Windows の platform.rs と同じ）
+    fn sync_windows(&mut self, requested: Vec<crate::ui::context::WindowRequest>) {
+        let new: Vec<_> = requested.iter().filter(|r| !self.windows.iter().any(|w| w.key.as_deref() == Some(r.key.as_str()))).cloned().collect();
+        for r in new {
+            self.open_window(r);
+        }
+        let gone: Vec<WinId> = self.windows.iter().filter(|w| w.key.as_ref().is_some_and(|k| !requested.iter().any(|r| &r.key == k))).map(|w| w.id).collect();
+        for id in gone {
+            self.close_window(id);
+        }
     }
 
     /// ファイルのダイアログをポータルに頼む。ダイアログの間も窓は描き続けたいので、別のスレッドで待ち、答えは
     /// dialog_rx と eventfd で受け取る（Windows と同じく、取り消しやポータルが無い時は空の答え）
-    fn open_file_dialog(&mut self, key: String, mut d: crate::file_dialog::FileDialog) {
+    fn open_file_dialog(&mut self, win: WinId, key: String, mut d: crate::file_dialog::FileDialog) {
         if self.dialog_open {
             log::event("file_dialog", &format!("key={key}"), "ignored (a dialog is already open)");
             return;
@@ -617,7 +921,7 @@ impl State {
                 }
             };
             log::event("file_dialog.answer", &format!("key={key} save={}", d.save), &format!("files={}", files.len()));
-            let _ = tx.send((key, files));
+            let _ = tx.send((win, key, files));
             let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
         });
         if let Err(e) = spawned {
@@ -628,13 +932,15 @@ impl State {
 
     /// 別のスレッドから届いた答え（ファイルのダイアログ・OS の明暗）を受け取る
     fn take_answers(&mut self) {
-        while let Ok((key, files)) = self.dialog_rx.try_recv() {
+        while let Ok((win, key, files)) = self.dialog_rx.try_recv() {
             if let Some(dir) = files.first().and_then(|f| f.parent()) {
                 self.last_folder = Some(dir.to_path_buf());
             }
-            self.rt.cx.file_results.insert(key, files);
             self.dialog_open = false;
-            self.need_frame = true;
+            if let Some(w) = self.win(win) {
+                w.rt.cx.file_results.insert(key, files);
+                w.need_frame = true;
+            }
         }
         if let Some(rx) = &self.dark_rx
             && let Ok(dark) = rx.try_recv()
@@ -642,28 +948,29 @@ impl State {
             self.dark_rx = None;
             if let Some(d) = dark {
                 log::event("theme.system", &format!("dark={d}"), "late (after the first frame)");
-                self.rt.cx.set_dark(d);
-                self.need_frame = true;
+                for w in &mut self.windows {
+                    w.rt.cx.set_dark(d);
+                    w.need_frame = true;
+                }
             }
         }
     }
 
-    /// 読み上げソフトから届いた操作を、kargui の入力に直す（Windows の platform.rs と同じ対応）
-    fn apply_a11y_actions(&mut self) {
-        let requests: Vec<ActionRequest> = self.a11y_actions.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-        for r in requests {
-            let action = match r.action {
-                accesskit::Action::Click => A11yAction::Click,
-                accesskit::Action::Focus => A11yAction::Focus,
-                accesskit::Action::Increment => A11yAction::Increment,
-                accesskit::Action::Decrement => A11yAction::Decrement,
-                other => {
-                    log::event("a11y.action", &format!("action={other:?}"), "ignored");
-                    continue;
-                }
-            };
-            self.push(Event::A11y { target: Id(r.target_node.0), action });
+    /// ほかのアプリから引っ張ってきている物を受け取れるかを、合成に答える。Windows の IDropTarget と同じく、
+    /// 前のフレームの配置でその場で決める（受け取れる時だけ text/uri-list と「写す」を返す）
+    fn update_drag_accept(&mut self) {
+        let Some(d) = self.drag.as_mut() else { return };
+        let ok = d.files && self.windows.iter().find(|w| w.id == d.win).is_some_and(|w| w.rt.cx.accepts_files_at(d.at.0, d.at.1));
+        if d.accepting == Some(ok) {
+            return;
         }
+        d.accepting = Some(ok);
+        d.offer.accept(d.serial, ok.then(|| URI_LIST.to_string()));
+        if d.offer.version() >= 3 {
+            let action = if ok { wl_data_device_manager::DndAction::Copy } else { wl_data_device_manager::DndAction::empty() };
+            d.offer.set_actions(action, action);
+        }
+        log::event("drag.accept", &format!("at={:.0},{:.0}", d.at.0, d.at.1), &format!("accept={ok}"));
     }
 
     fn mods(&self) -> Mods {
@@ -683,9 +990,11 @@ impl State {
 
     /// ポインターの下の部品から形を決める（Windows の WM_SETCURSOR と同じ）
     fn update_shape(&mut self) {
+        let Some(i) = self.pointer_index() else { return };
         let (x, y) = (self.px, self.py);
-        let hit = self.rt.cx.hit(x, y).cloned();
-        let shape = match hit.as_ref().and_then(|h| self.rt.cx.prev.split_bars.get(&h.id).copied()) {
+        let cx = &self.windows[i].rt.cx;
+        let hit = cx.hit(x, y).cloned();
+        let shape = match hit.as_ref().and_then(|h| cx.prev.split_bars.get(&h.id).copied()) {
             Some(true) => Shape::NsResize,
             Some(false) => Shape::EwResize,
             None if hit.as_ref().is_some_and(|h| h.text_input) => Shape::Text,
@@ -698,33 +1007,40 @@ impl State {
     fn pointer_motion(&mut self, x: f32, y: f32) {
         self.px = x;
         self.py = y;
-        let cx = &self.rt.cx;
+        let Some(i) = self.pointer_index() else { return };
+        let left_down = self.left_down;
+        let w = &mut self.windows[i];
+        let cx = &w.rt.cx;
         let inner_drag = cx.dnd.as_ref().is_some_and(|d| !d.external);
         if cx.drag.is_some() || cx.pressed.is_some() || cx.press_source.is_some() || inner_drag {
             // つまみをつかんでいる・部品を押している・引っ張っている間は、移動を渡す（Windows の platform.rs と同じ）
-            if self.left_down {
-                self.push(Event::PointerMove { x, y });
-                if let Some(ok) = self.rt.cx.drag_cursor(x, y) {
-                    self.set_shape(if ok { Shape::Default } else { Shape::NotAllowed });
+            let mut shape = None;
+            if left_down {
+                w.push(Event::PointerMove { x, y });
+                if let Some(ok) = w.rt.cx.drag_cursor(x, y) {
+                    shape = Some(if ok { Shape::Default } else { Shape::NotAllowed });
                 }
-            } else if inner_drag || self.rt.cx.press_source.is_some() {
+            } else if inner_drag || w.rt.cx.press_source.is_some() {
                 log::event("drag.lost", &format!("x={x} y={y}"), "cancel");
-                self.push(Event::PointerCancel);
+                w.push(Event::PointerCancel);
             } else {
-                self.push(Event::PointerUp { x, y });
+                w.push(Event::PointerUp { x, y });
+            }
+            if let Some(s) = shape {
+                self.set_shape(s);
             }
             return;
         }
-        let hover = self.rt.hover_at(x, y);
-        let bar = self.rt.cx.scrollbar_at(x, y).map(|l| l.id);
-        if hover != self.rt.cx.hover {
+        let hover = w.rt.hover_at(x, y);
+        let bar = w.rt.cx.scrollbar_at(x, y).map(|l| l.id);
+        if hover != w.rt.cx.hover {
             log::event("hover", &format!("x={x} y={y}"), &format!("id={}", hover.map_or("none".to_string(), |h| format!("{:x}", h.0))));
         }
-        if hover != self.rt.cx.hover || bar != self.rt.cx.bar_hover {
-            self.rt.cx.set_hover(hover);
-            self.rt.cx.bar_hover = bar;
-            self.need_frame = true;
-            self.why = "input";
+        if hover != w.rt.cx.hover || bar != w.rt.cx.bar_hover {
+            w.rt.cx.set_hover(hover);
+            w.rt.cx.bar_hover = bar;
+            w.need_frame = true;
+            w.why = "input";
         }
         self.update_shape();
     }
@@ -735,31 +1051,35 @@ impl State {
         let key = key_of(kb.base_sym(code));
         // 文字は Ctrl と Alt の無い時だけ（Windows の WM_CHAR と同じく、ショートカットはキーとして受ける）
         let text = if mods.ctrl || mods.alt { String::new() } else { kb.utf8(code) };
+        let Some(w) = self.keyboard_win.and_then(|id| self.windows.iter_mut().find(|w| w.id == id)) else { return };
         if let Some(key) = key {
             if !repeat {
                 log::event("key", &format!("key={key:?} mods={mods:?}"), "sent");
             }
-            self.push(Event::Key { key, mods });
+            w.push(Event::Key { key, mods });
         }
         for c in text.chars().filter(|c| !c.is_control()) {
             if !repeat {
                 log::event("char", &format!("u=0x{:04X}", c as u32), "insert");
             }
-            self.push(Event::Char(c));
+            w.push(Event::Char(c));
         }
     }
 
-    /// 焦点のある部品が入力欄なら IME を有効に、そうでなければ無効にする。文字を打つ位置が動いたら知らせる。
+    /// 窓 i で、焦点のある部品が入力欄なら IME を有効に、そうでなければ無効にする。文字を打つ位置が動いたら知らせる。
     /// kargui が変換中の文字を確定した時（入力欄の外を押したなど）は、無効にして有効にし直し、IME の変換を捨てさせる
-    fn update_ime(&mut self) {
-        let cancel = std::mem::take(&mut self.rt.cx.ime_cancel);
+    fn update_ime(&mut self, i: usize) {
+        let id = self.windows[i].id;
+        let cancel = std::mem::take(&mut self.windows[i].rt.cx.ime_cancel);
         let Some(ti) = self.text_input.clone() else { return };
-        if !self.ime.entered {
+        if !self.ime.entered || self.ime_win != Some(id) {
             return;
         }
-        let focus = self.rt.cx.focus.filter(|f| self.ime.keyboard && self.rt.cx.prev.inputs.contains_key(f));
-        let s = self.scale();
-        let rect = self.rt.cx.caret.map(|c| ((c.x / s).floor() as i32, (c.y / s).floor() as i32, (c.w / s).ceil().max(1.0) as i32, (c.h / s).ceil().max(1.0) as i32));
+        let keyboard = self.keyboard_win == Some(id);
+        let w = &self.windows[i];
+        let focus = w.rt.cx.focus.filter(|f| keyboard && w.rt.cx.prev.inputs.contains_key(f));
+        let s = w.scale();
+        let rect = w.rt.cx.caret.map(|c| ((c.x / s).floor() as i32, (c.y / s).floor() as i32, (c.w / s).ceil().max(1.0) as i32, (c.h / s).ceil().max(1.0) as i32));
         if focus != self.ime.enabled || (cancel && focus.is_some()) {
             let was = self.ime.enabled;
             if was.is_some() {
@@ -780,8 +1100,8 @@ impl State {
             self.ime.enabled = focus;
             self.ime.rect = rect;
             let why = if cancel { "cancel" } else { "focus" };
-            let id = |f: Option<Id>| f.map_or("none".to_string(), |f| format!("{:x}", f.0));
-            log::event("ime.enable", &format!("why={why} from={} to={} rect={rect:?}", id(was), id(focus)), &format!("commits={}", self.ime.commits));
+            let fmt = |f: Option<Id>| f.map_or("none".to_string(), |f| format!("{:x}", f.0));
+            log::event("ime.enable", &format!("why={why} from={} to={} rect={rect:?}{}", fmt(was), fmt(focus), self.windows[i].tag()), &format!("commits={}", self.ime.commits));
         } else if focus.is_some()
             && rect != self.ime.rect
             && let Some((x, y, w, h)) = rect
@@ -803,11 +1123,13 @@ impl State {
         }
         self.ime.stale_before = self.ime.commits + 1;
         log::event("ime.commit_on_leave", &format!("why={why} text={shown}"), "sent");
-        self.push(Event::ImePreedit(String::new()));
-        self.push(Event::ImeCommit(shown));
+        if let Some(w) = self.ime_win.and_then(|id| self.windows.iter_mut().find(|w| w.id == id)) {
+            w.push(Event::ImePreedit(String::new()));
+            w.push(Event::ImeCommit(shown));
+        }
     }
 
-    /// text-input-v3 の done: たまった変換中の文字と確定の文字を入力にする
+    /// text-input-v3 の done: たまった変換中の文字と確定の文字を、文字の入力の焦点がある窓の入力にする
     fn ime_done(&mut self, serial: u32) {
         let (preedit, begin, end) = self.ime.preedit.take().unwrap_or_default();
         let commit = self.ime.commit.take().unwrap_or_default();
@@ -828,100 +1150,72 @@ impl State {
         });
         log::event("ime.done", &what, &format!("events={}{}", events.len(), clauses.unwrap_or_default()));
         self.ime.shown = preedit;
-        for e in events {
-            self.push(e);
+        if let Some(w) = self.ime_win.and_then(|id| self.windows.iter_mut().find(|w| w.id == id)) {
+            for e in events {
+                w.push(e);
+            }
         }
     }
 
-    /// 1 フレーム: 入力を渡してビューを回し、描いて画面に出す
-    fn frame(&mut self) {
-        if !self.configured {
+    /// 窓 i の 1 フレーム: 入力を渡してビューを回し、描いて画面に出す
+    fn frame(&mut self, i: usize) {
+        if !self.windows[i].configured {
             return;
         }
-        let why = self.why;
         let t = Instant::now();
-        let events = std::mem::take(&mut self.events);
-        let out = self.rt.frame(&mut *self.app, events);
-        if std::mem::take(&mut self.rt.cx.quit) {
+        let app = &mut self.app;
+        let w = &mut self.windows[i];
+        let why = w.why;
+        let events = std::mem::take(&mut w.events);
+        let out = match w.key.clone() {
+            None => w.rt.frame(&mut **app, events),
+            Some(k) => w.rt.frame_with(&mut |ui: &mut crate::ui::Ui| app.window(&k, ui), events),
+        };
+        let (id, is_main) = (w.id, w.key.is_none());
+        let quit = std::mem::take(&mut w.rt.cx.quit);
+        let dialog = w.rt.cx.file_dialog_request.take();
+        let requested = is_main.then(|| w.rt.cx.windows.clone());
+        w.wake_at = out.wake_after.map(|d| Instant::now() + d);
+        w.animating = out.want_frame;
+        w.need_frame = false;
+        if quit {
             log::event("window.quit", "", "ok");
             self.running = false;
         }
-        if let Some((key, d)) = self.rt.cx.file_dialog_request.take() {
-            self.open_file_dialog(key, d);
-        }
-        if !self.rt.cx.windows.is_empty() && !self.warned_windows {
-            self.warned_windows = true;
-            log::event("window.open", &format!("count={}", self.rt.cx.windows.len()), "not supported on linux yet");
+        if let Some((key, d)) = dialog {
+            self.open_file_dialog(id, key, d);
         }
         // 文字を打つ位置は、絵と同じ wl_surface.commit で合成に届くように、絵より先に知らせる
-        self.update_ime();
+        self.update_ime(i);
         // 読み上げの木（読み上げソフトが聞いている時だけ作る。2 つの絵が両方使われていて描けない時も渡す）
-        let rt = &mut self.rt;
-        self.a11y.update_if_active(|| rt.a11y().0);
-        self.wake_at = out.wake_after.map(|d| Instant::now() + d);
-        self.animating = out.want_frame;
-        self.need_frame = false;
+        let w = &mut self.windows[i];
+        let rt = &mut w.rt;
+        w.a11y.update_if_active(|| rt.a11y().0);
         let t_build = t.elapsed().as_secs_f64() * 1000.0;
-
-        let t_draw = Instant::now();
-        let (w, h) = self.physical();
-        if self.buffers.as_ref().is_none_or(|b| b.width != w || b.height != h) {
-            self.buffers = None;
-            match Shm::new(&self.shm, &self.qh, w, h) {
-                Ok(b) => self.buffers = Some(b),
-                Err(e) => {
-                    log::event("surface.init", &format!("size={w}x{h}"), &format!("error={e}"));
-                    return;
-                }
+        let drawn = w.draw(&self.shm, &self.qh, why, t_build);
+        if drawn {
+            let w = &mut self.windows[i];
+            let first = !w.shown;
+            w.shown = true;
+            if first {
+                let (pw, ph) = w.physical();
+                log::event("window.shown", &format!("physical={pw}x{ph} scale={:.3}{}", w.scale(), w.tag()), &format!("ms={:.1}", w.created.elapsed().as_secs_f64() * 1000.0));
             }
-            self.pixels = vec![0; (w * h) as usize];
-            self.summary = Summary::default();
-            self.full = true;
+            if is_main {
+                let number = if first { 0 } else { w.rt.frames - 1 };
+                self.app.presented(&Frame { number, since_start: self.started.elapsed() });
+            }
         }
-        let Some(buffers) = self.buffers.as_mut() else { return };
-        let Some(slot) = buffers.free_slot() else {
-            // 2 枚とも合成が読んでいる。どちらかが返ってきたら描く
-            log::event("render", &format!("why={why}"), "busy (both buffers in use)");
-            self.need_frame = true;
-            return;
-        };
-        let bg = self.rt.cx.theme.background;
-        let full = self.full || bg != self.background;
-        let drawn = cpu_frame::draw(&mut self.pixels, w, h, &self.rt.draw, &self.rt.cx.text.atlas, bg, &self.summary, full);
-        self.summary = drawn.summary;
-        self.background = bg;
-        self.full = false;
-        // 2 枚を交互に使うので、写す絵はいつも全体（変わった所だけを合成に知らせる）
-        buffers.pixels(slot).copy_from_slice(&self.pixels);
-        buffers.slots[slot].1 = true;
-        self.surface.attach(Some(&buffers.slots[slot].0), 0, 0);
-        for r in &drawn.present {
-            self.surface.damage_buffer(r.x, r.y, r.w, r.h);
+        // 入力で描いたら、ほかの窓も描き直す（アプリを共有するため。描き直しはそれ以上広げない）
+        if why == "input" {
+            for o in self.windows.iter_mut().filter(|o| o.id != id && !o.need_frame) {
+                o.need_frame = true;
+                o.why = "sync";
+            }
         }
-        match &self.viewport {
-            Some(v) => v.set_destination(self.logical.0, self.logical.1),
-            None => self.surface.set_buffer_scale(self.int_scale),
-        }
-        if self.animating && !self.frame_callback {
-            self.surface.frame(&self.qh, ());
-            self.frame_callback = true;
-        }
-        self.surface.commit();
-        let t_draw = t_draw.elapsed().as_secs_f64() * 1000.0;
-        if !self.animating {
-            log::event(
-                "render",
-                &format!("why={why} {} quads={} slot={slot}", drawn.mode, self.rt.draw.quads.len()),
-                &format!("ms={:.2} draw_ms={t_draw:.2}", t_build + t_draw),
-            );
-        }
-        if self.shown {
-            let number = self.rt.frames - 1;
-            self.app.presented(&Frame { number, since_start: self.started.elapsed() });
-        } else {
-            self.shown = true;
-            log::event("window.shown", &format!("physical={w}x{h} scale={:.3}", self.scale()), &format!("ms={:.1}", self.started.elapsed().as_secs_f64() * 1000.0));
-            self.app.presented(&Frame { number: 0, since_start: self.started.elapsed() });
+        // 主の窓: 頼まれた窓と開いている窓をそろえる
+        if let Some(requested) = requested {
+            self.sync_windows(requested);
         }
     }
 }
@@ -980,24 +1274,6 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         &format!("ms={:.1}", started.elapsed().as_secs_f64() * 1000.0),
     );
 
-    let surface = compositor.create_surface(&qh, ());
-    let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg_surface.get_toplevel(&qh, ());
-    toplevel.set_title(options.title.clone());
-    toplevel.set_app_id(app_id());
-    if let Some((w, h)) = options.min_size {
-        toplevel.set_min_size(w.round() as i32, h.round() as i32);
-    }
-    // 合成が題の帯を描けるなら頼む（KDE・sway など。Hyprland と GNOME には無い）
-    let _decoration = deco_mgr.as_ref().map(|m| {
-        let d = m.get_toplevel_decoration(&toplevel, &qh, ());
-        d.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
-        d
-    });
-    let viewport = viewporter.as_ref().map(|v| v.get_viewport(&surface, &qh, ()));
-    let _fractional = frac_mgr.as_ref().map(|m| m.get_fractional_scale(&surface, &qh, ()));
-    surface.commit();
-
     // クリップボード（座席ごとに 1 つの data device）
     let device = match (&data_mgr, &seat) {
         (Some(m), Some(s)) => Some(m.get_data_device(s, &qh, ())),
@@ -1009,32 +1285,19 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         (Some(m), Some(s)) => Some(m.get_text_input(s, &qh, ())),
         _ => None,
     };
-
-    let text = Text::new()?;
-    let dark = options.dark.unwrap_or(false);
-    let mut rt = Runtime::new(text, dark, Box::new(WaylandClipboard(clip.clone())), options.title.clone());
-    let writer = wake_fd.clone();
-    rt.cx.waker = crate::wake::Waker::new(move || {
-        let _ = rustix::io::write(&*writer, &1u64.to_ne_bytes());
-    });
-    // 読み上げ。AT-SPI の接続は accesskit_unix が自分のスレッドで行うので、起動を待たせない
-    let a11y_actions = Arc::new(Mutex::new(Vec::new()));
-    let sink = A11ySink { actions: a11y_actions.clone(), wake: wake_fd.clone() };
-    let a11y = accesskit_unix::Adapter::new(sink.clone(), sink.clone(), sink);
     let (dialog_tx, dialog_rx) = channel();
-    rt.cx.text.load_fonts(&options.fonts);
-    rt.cx.font = rt.cx.text.fonts.id(&options.font);
-    let logical = (options.size.0.round().max(1.0) as i32, options.size.1.round().max(1.0) as i32);
-    let local = local_date().zip(local_time()).map_or("unknown".to_string(), |((y, m, d), (h, min))| format!("{y}-{m:02}-{d:02} {h:02}:{min:02}"));
-    log::event("window.create", &format!("title={:?} size={}x{} app_id={} local={local}", options.title, logical.0, logical.1, app_id()), "ok");
-
     let mut st = State {
-        rt,
         app,
         qh: qh.clone(),
         shm,
-        surface,
-        viewport,
+        compositor,
+        wm_base,
+        viewporter,
+        frac_mgr,
+        deco_mgr,
+        windows: Vec::new(),
+        next_id: 1,
+        font_files: options.fonts.clone(),
         cursor_mgr,
         cursor: None,
         pointer: None,
@@ -1043,32 +1306,17 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         clip,
         text_input,
         ime: Ime::default(),
-        a11y,
-        a11y_actions,
+        ime_win: None,
         wake: wake_fd.clone(),
         dialog_tx,
         dialog_rx,
         dialog_open: false,
         last_folder: None,
+        drag: None,
         dark_rx,
-        buffers: None,
-        pixels: Vec::new(),
-        summary: Summary::default(),
-        background: [0.0; 4],
-        logical,
-        scale120: 120,
-        int_scale: 1,
-        configured: false,
-        pending_size: None,
-        events: Vec::new(),
-        need_frame: true,
-        why: "first",
-        full: true,
-        animating: false,
-        frame_callback: false,
-        wake_at: None,
         running: true,
-        focused: false,
+        pointer_win: None,
+        keyboard_win: None,
         px: 0.0,
         py: 0.0,
         left_down: false,
@@ -1079,13 +1327,15 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         axis_value: 0.0,
         axis_value120: 0,
         started,
-        shown: false,
-        warned_windows: false,
     };
     if st.xkb.is_none() {
         log::event("keyboard.xkb", "", "error=libxkbcommon.so could not be loaded (keys will not work)");
     }
-    st.apply_size();
+    // 主の窓
+    let rt = st.runtime(&options.title, options.dark.unwrap_or(false), &options.font)?;
+    let local = local_date().zip(local_time()).map_or("unknown".to_string(), |((y, m, d), (h, min))| format!("{y}-{m:02}-{d:02} {h:02}:{min:02}"));
+    log::event("window.create", &format!("title={:?} size={:.0}x{:.0} app_id={} local={local}", options.title, options.size.0, options.size.1, app_id()), "ok");
+    st.new_window(None, &options.title, options.size, options.min_size, rt);
     // 最初の configure（と、出せれば倍率）を待つ
     queue.roundtrip(&mut st).map_err(|e| error("roundtrip", e))?;
     // OS の明暗の答えを、最初の絵の前に 150 ms まで待つ。間に合わなければ明るい方で描き、届いた時に切り替える
@@ -1094,7 +1344,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         Some(Ok(dark)) => {
             st.dark_rx = None;
             if let Some(d) = dark {
-                st.rt.cx.set_dark(d);
+                st.windows[0].rt.cx.set_dark(d);
             }
             log::event("theme.system", &format!("dark={dark:?}"), &format!("waited_ms={:.1}", started.elapsed().as_secs_f64() * 1000.0));
         }
@@ -1102,15 +1352,17 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         None => {}
     }
 
-    let _keep = (compositor, wm_base, xdg_surface, toplevel, seat, ti_mgr);
+    let _keep = (seat, ti_mgr);
     while st.running {
         queue.dispatch_pending(&mut st).map_err(|e| error("dispatch", e))?;
         let now = Instant::now();
-        if st.wake_at.is_some_and(|t| t <= now) {
-            st.wake_at = None;
-            log::event("timer", "", "frame");
-            st.need_frame = true;
-            st.why = "timer";
+        for w in &mut st.windows {
+            if w.wake_at.is_some_and(|t| t <= now) {
+                w.wake_at = None;
+                log::event("timer", &w.tag(), "frame");
+                w.need_frame = true;
+                w.why = "timer";
+            }
         }
         let due = st.xkb.as_ref().and_then(|k| k.repeat).filter(|(_, t)| *t <= now);
         if let Some((code, _)) = due {
@@ -1124,8 +1376,18 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 k.repeat_count += 1;
             }
         }
-        if st.need_frame && st.configured {
-            st.frame();
+        // 窓ごとに描く（主の窓のフレームが窓を開け閉めするので、番号でたどる）
+        let ids: Vec<WinId> = st.windows.iter().map(|w| w.id).collect();
+        for id in ids {
+            if let Some(i) = st.index(id)
+                && st.windows[i].need_frame
+                && st.windows[i].configured
+            {
+                st.frame(i);
+            }
+            if !st.running {
+                break;
+            }
         }
         if !st.running {
             break;
@@ -1134,7 +1396,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             log::event("wayland.flush", "", &format!("error={e}"));
         }
         // 次に起きる時（タイマー・押し続け）。アニメーション中は合成のフレームの知らせで起きる
-        let deadline = [st.wake_at, st.xkb.as_ref().and_then(|k| k.repeat.map(|r| r.1))].into_iter().flatten().min();
+        let deadline = st.windows.iter().filter_map(|w| w.wake_at).chain(st.xkb.as_ref().and_then(|k| k.repeat.map(|r| r.1))).min();
         let timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
         let Some(guard) = queue.prepare_read() else { continue };
         let (conn_ready, woke) = {
@@ -1160,16 +1422,20 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         if woke {
             let mut buf = [0u8; 8];
             let _ = rustix::io::read(&*wake_fd, &mut buf);
-            st.rt.cx.waker.take_woken();
             log::event("wake", "from=waker", "frame");
-            st.need_frame = true;
-            st.why = "wake";
             // 読み上げソフトの操作・ファイルのダイアログ・明暗の答えも同じ eventfd で起きる
-            st.apply_a11y_actions();
+            for w in &mut st.windows {
+                w.rt.cx.waker.take_woken();
+                w.need_frame = true;
+                w.why = "wake";
+                w.apply_a11y_actions();
+            }
             st.take_answers();
         }
     }
     log::event("loop.end", "", "ok");
+    // 窓は主の窓から順に壊す
+    st.windows.clear();
     Ok(())
 }
 
@@ -1196,59 +1462,76 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for State {
     }
 }
 
-impl Dispatch<xdg_surface::XdgSurface, ()> for State {
-    fn event(st: &mut Self, xs: &xdg_surface::XdgSurface, event: xdg_surface::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<xdg_surface::XdgSurface, WinId> for State {
+    fn event(st: &mut Self, xs: &xdg_surface::XdgSurface, event: xdg_surface::Event, id: &WinId, _: &Connection, _: &QueueHandle<Self>) {
         if let xdg_surface::Event::Configure { serial } = event {
             xs.ack_configure(serial);
-            let first = !st.configured;
-            st.configured = true;
-            if let Some(size) = st.pending_size.take()
-                && size != st.logical
+            let Some(w) = st.win(*id) else { return };
+            let first = !w.configured;
+            w.configured = true;
+            if let Some(size) = w.pending_size.take()
+                && size != w.logical
             {
-                st.logical = size;
-                st.apply_size();
+                w.logical = size;
+                w.apply_size();
             }
             if first {
-                log::event("window.configure", &format!("logical={}x{}", st.logical.0, st.logical.1), "first");
+                log::event("window.configure", &format!("logical={}x{}{}", w.logical.0, w.logical.1, w.tag()), "first");
             }
-            st.need_frame = true;
+            w.need_frame = true;
         }
     }
 }
 
-impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
-    fn event(st: &mut Self, _: &xdg_toplevel::XdgToplevel, event: xdg_toplevel::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<xdg_toplevel::XdgToplevel, WinId> for State {
+    fn event(st: &mut Self, _: &xdg_toplevel::XdgToplevel, event: xdg_toplevel::Event, id: &WinId, _: &Connection, _: &QueueHandle<Self>) {
         match event {
             xdg_toplevel::Event::Configure { width, height, states } => {
+                let Some(w) = st.win(*id) else { return };
                 // 状態は u32 の並び（1 最大化・2 全画面・4 前面・5〜8 敷き詰めの辺）
                 let states: Vec<u32> = states.as_chunks::<4>().0.iter().map(|c| u32::from_ne_bytes(*c)).collect();
                 let has = |s: xdg_toplevel::State| states.contains(&(s as u32));
                 use xdg_toplevel::State as S;
                 let constrained = [S::Maximized, S::Fullscreen, S::TiledLeft, S::TiledRight, S::TiledTop, S::TiledBottom].into_iter().any(has);
-                log::event("toplevel.configure", &format!("size={width}x{height} states={states:?} configured={}", st.configured), &format!("constrained={constrained}"));
+                log::event("toplevel.configure", &format!("size={width}x{height} states={states:?} configured={}{}", w.configured, w.tag()), &format!("constrained={constrained}"));
                 // 最大化・全画面・敷き詰めの時は、言われた大きさに従う。浮いた窓の最初の大きさは勧めにすぎないので、
-                // アプリが頼んだ大きさ（Options::size）を使う（Hyprland は浮いた窓に画面いっぱいを勧めてくる）。
-                // 2 回目からは、利用者が窓の大きさを変えた結果なので従う
-                if width > 0 && height > 0 && (constrained || st.configured) {
-                    st.pending_size = Some((width, height));
+                // アプリが頼んだ大きさ（Options::size・Ui::window の大きさ）を使う（Hyprland は浮いた窓に画面いっぱいを
+                // 勧めてくる）。2 回目からは、利用者が窓の大きさを変えた結果なので従う
+                if width > 0 && height > 0 && (constrained || w.configured) {
+                    w.pending_size = Some((width, height));
                 } else if width > 0 && height > 0 {
-                    log::event("window.configure", &format!("suggested={width}x{height}"), "ignored (floating, first configure: use Options::size)");
+                    log::event("window.configure", &format!("suggested={width}x{height}{}", w.tag()), "ignored (floating, first configure: use the requested size)");
                 }
                 let activated = has(S::Activated);
-                if activated != st.focused {
-                    st.focused = activated;
-                    log::event("window.focus", &format!("focused={activated}"), "ok");
-                    st.a11y.update_window_focus_state(activated);
-                    st.need_frame = true;
+                if activated != w.focused {
+                    w.focused = activated;
+                    log::event("window.focus", &format!("focused={activated}{}", w.tag()), "ok");
+                    w.a11y.update_window_focus_state(activated);
+                    w.need_frame = true;
                 }
             }
             xdg_toplevel::Event::Close => {
-                let ok = st.app.close_requested();
-                log::event("window.close_requested", "", &format!("allowed={ok}"));
-                if ok {
-                    st.running = false;
-                } else {
-                    st.need_frame = true;
+                let key = st.win(*id).and_then(|w| w.key.clone());
+                match key {
+                    // 主の窓: アプリに聞いてから終える
+                    None => {
+                        let ok = st.app.close_requested();
+                        log::event("window.close_requested", "", &format!("allowed={ok}"));
+                        if ok {
+                            st.running = false;
+                        } else if let Some(w) = st.windows.first_mut() {
+                            w.need_frame = true;
+                        }
+                    }
+                    // ほかの窓: 閉じるボタンは、Ui::window の open を false にする（窓は主の窓のフレームの後で閉じる）
+                    Some(key) => {
+                        log::event("window.close_requested", &format!("key={key}"), "closed by the user");
+                        if let Some(main) = st.windows.first_mut() {
+                            main.rt.cx.closed_windows.insert(key);
+                            main.need_frame = true;
+                            main.why = "input";
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1256,36 +1539,38 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
     }
 }
 
-impl Dispatch<wl_surface::WlSurface, ()> for State {
-    fn event(st: &mut Self, _: &wl_surface::WlSurface, event: wl_surface::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<wl_surface::WlSurface, WinId> for State {
+    fn event(st: &mut Self, _: &wl_surface::WlSurface, event: wl_surface::Event, id: &WinId, _: &Connection, _: &QueueHandle<Self>) {
         // fractional-scale が無い合成では、整数の倍率で描く
         if let wl_surface::Event::PreferredBufferScale { factor } = event
-            && st.viewport.is_none()
-            && factor != st.int_scale
+            && let Some(w) = st.win(*id)
+            && w.viewport.is_none()
+            && factor != w.int_scale
         {
-            st.int_scale = factor.max(1);
-            st.scale120 = st.int_scale as u32 * 120;
-            st.apply_size();
+            w.int_scale = factor.max(1);
+            w.scale120 = w.int_scale as u32 * 120;
+            w.apply_size();
         }
     }
 }
 
-impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for State {
-    fn event(st: &mut Self, _: &wp_fractional_scale_v1::WpFractionalScaleV1, event: wp_fractional_scale_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, WinId> for State {
+    fn event(st: &mut Self, _: &wp_fractional_scale_v1::WpFractionalScaleV1, event: wp_fractional_scale_v1::Event, id: &WinId, _: &Connection, _: &QueueHandle<Self>) {
         if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event
-            && scale != st.scale120
-            && st.viewport.is_some()
+            && let Some(w) = st.win(*id)
+            && scale != w.scale120
+            && w.viewport.is_some()
         {
-            st.scale120 = scale.max(1);
-            st.apply_size();
+            w.scale120 = scale.max(1);
+            w.apply_size();
         }
     }
 }
 
-impl Dispatch<wl_buffer::WlBuffer, ()> for State {
-    fn event(st: &mut Self, buffer: &wl_buffer::WlBuffer, event: wl_buffer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<wl_buffer::WlBuffer, WinId> for State {
+    fn event(st: &mut Self, buffer: &wl_buffer::WlBuffer, event: wl_buffer::Event, id: &WinId, _: &Connection, _: &QueueHandle<Self>) {
         if let wl_buffer::Event::Release = event
-            && let Some(b) = st.buffers.as_mut()
+            && let Some(b) = st.win(*id).and_then(|w| w.buffers.as_mut())
         {
             for slot in b.slots.iter_mut().filter(|s| &s.0 == buffer) {
                 slot.1 = false;
@@ -1294,13 +1579,15 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for State {
     }
 }
 
-impl Dispatch<wl_callback::WlCallback, ()> for State {
-    fn event(st: &mut Self, _: &wl_callback::WlCallback, event: wl_callback::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_callback::Event::Done { .. } = event {
-            st.frame_callback = false;
-            if st.animating {
-                st.need_frame = true;
-                st.why = "animation";
+impl Dispatch<wl_callback::WlCallback, WinId> for State {
+    fn event(st: &mut Self, _: &wl_callback::WlCallback, event: wl_callback::Event, id: &WinId, _: &Connection, _: &QueueHandle<Self>) {
+        if let wl_callback::Event::Done { .. } = event
+            && let Some(w) = st.win(*id)
+        {
+            w.frame_callback = false;
+            if w.animating {
+                w.need_frame = true;
+                w.why = "animation";
             }
         }
     }
@@ -1324,59 +1611,70 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
 
 impl Dispatch<wl_pointer::WlPointer, ()> for State {
     fn event(st: &mut Self, _: &wl_pointer::WlPointer, event: wl_pointer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        let s = st.scale();
         match event {
-            wl_pointer::Event::Enter { serial, surface_x, surface_y, .. } => {
+            wl_pointer::Event::Enter { serial, surface, surface_x, surface_y } => {
+                st.pointer_win = st.win_of(&surface);
                 st.pointer_serial = serial;
                 st.shape = None;
+                let s = st.pointer_scale();
                 st.pointer_motion(surface_x as f32 * s, surface_y as f32 * s);
                 // 押していない時は形を決める（入ってきた時に決めないと、合成の前の形のまま）
                 st.update_shape();
             }
-            wl_pointer::Event::Leave { .. } => {
-                let had = st.rt.cx.hover.is_some();
-                let bar = st.rt.cx.bar_hover.take().is_some();
-                log::event("pointer.leave", "", &format!("had_hover={had}"));
-                st.rt.cx.set_hover(None);
-                if had || bar {
-                    st.need_frame = true;
-                    st.why = "input";
+            wl_pointer::Event::Leave { surface, .. } => {
+                if let Some(w) = st.win_of(&surface).and_then(|id| st.win(id)) {
+                    let had = w.rt.cx.hover.is_some();
+                    let bar = w.rt.cx.bar_hover.take().is_some();
+                    log::event("pointer.leave", &w.tag(), &format!("had_hover={had}"));
+                    w.rt.cx.set_hover(None);
+                    if had || bar {
+                        w.need_frame = true;
+                        w.why = "input";
+                    }
+                }
+                if st.pointer_win == st.win_of(&surface) {
+                    st.pointer_win = None;
                 }
             }
             wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+                let s = st.pointer_scale();
                 st.pointer_motion(surface_x as f32 * s, surface_y as f32 * s);
             }
             wl_pointer::Event::Button { serial, time, button, state } => {
                 let pressed = state == WEnum::Value(wl_pointer::ButtonState::Pressed);
                 st.clip.borrow_mut().serial = serial;
                 let (x, y) = (st.px, st.py);
+                let s = st.pointer_scale();
                 if button != BTN_LEFT {
                     log::event("button", &format!("button=0x{button:x} pressed={pressed} x={x} y={y}"), "ok");
                 }
+                let shift = st.mods().shift;
+                let last_press = st.last_press;
+                let Some(i) = st.pointer_index() else { return };
                 match button {
                     BTN_LEFT if pressed => {
                         st.left_down = true;
-                        let target = st.rt.cx.hit(x, y).map(|h| h.id);
+                        let w = &mut st.windows[i];
+                        let target = w.rt.cx.hit(x, y).map(|h| h.id);
                         // 続けて押した何回目か（400 ms の中で、4 論理ピクセルの中を押したら続き。3 回で止める）
                         let d = DOUBLE_CLICK_DIST * s;
-                        let count = match st.last_press {
+                        let count = match last_press {
                             Some((t0, x0, y0, n)) if time.wrapping_sub(t0) <= DOUBLE_CLICK_MS && (x - x0).abs() <= d && (y - y0).abs() <= d => (n % 3) + 1,
                             _ => 1,
                         };
+                        log::event("click", &format!("x={x} y={y} count={count}{}", w.tag()), &format!("target={target:?}"));
+                        w.push(Event::PointerDown { x, y, shift, count });
                         st.last_press = Some((time, x, y, count));
-                        log::event("click", &format!("x={x} y={y} count={count}"), &format!("target={target:?}"));
-                        let shift = st.mods().shift;
-                        st.push(Event::PointerDown { x, y, shift, count });
                     }
                     BTN_LEFT => {
                         st.left_down = false;
-                        st.push(Event::PointerUp { x, y });
+                        st.windows[i].push(Event::PointerUp { x, y });
                         st.shape = None;
                     }
                     // 右クリックは離した時（Windows の WM_CONTEXTMENU と同じ）
                     BTN_RIGHT if !pressed => {
                         log::event("context_menu", &format!("x={x} y={y}"), "sent");
-                        st.push(Event::ContextMenu { x, y });
+                        st.windows[i].push(Event::ContextMenu { x, y });
                     }
                     _ => {}
                 }
@@ -1396,15 +1694,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
             wl_pointer::Event::Frame => {
                 let source = st.axis_source.take();
                 let (v120, value) = (std::mem::take(&mut st.axis_value120), std::mem::take(&mut st.axis_value));
-                let dy = if v120 != 0 {
-                    v120 as f32 / 120.0 * WHEEL_STEP
-                } else {
-                    value as f32 * s
-                };
-                if dy != 0.0 {
+                let s = st.pointer_scale();
+                let dy = if v120 != 0 { v120 as f32 / 120.0 * WHEEL_STEP } else { value as f32 * s };
+                if dy != 0.0
+                    && let Some(i) = st.pointer_index()
+                {
                     let (x, y) = (st.px, st.py);
                     log::event("wheel", &format!("source={source:?} value120={v120} value={value:.2} x={x} y={y}"), &format!("dy={dy:.1}"));
-                    st.push(Event::Wheel { x, y, dy });
+                    st.windows[i].push(Event::Wheel { x, y, dy });
                 }
             }
             _ => {}
@@ -1419,20 +1716,26 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 let ok = st.xkb.as_mut().is_some_and(|k| k.set_keymap(fd, size));
                 log::event("keyboard.keymap", &format!("size={size}"), if ok { "ok" } else { "error" });
             }
-            wl_keyboard::Event::Enter { serial, .. } => {
+            wl_keyboard::Event::Enter { serial, surface, .. } => {
                 st.clip.borrow_mut().serial = serial;
-                st.ime.keyboard = true;
-                st.need_frame = true;
-                log::event("keyboard.enter", "", "ok");
+                st.keyboard_win = st.win_of(&surface);
+                if let Some(w) = st.keyboard_win.and_then(|id| st.win(id)) {
+                    w.need_frame = true;
+                    log::event("keyboard.enter", &w.tag(), "ok");
+                }
             }
-            wl_keyboard::Event::Leave { .. } => {
+            wl_keyboard::Event::Leave { surface, .. } => {
                 if let Some(k) = st.xkb.as_mut() {
                     k.stop_repeat("leave");
                 }
-                st.ime.keyboard = false;
-                st.need_frame = true;
+                if let Some(w) = st.win_of(&surface).and_then(|id| st.win(id)) {
+                    w.need_frame = true;
+                    log::event("keyboard.leave", &w.tag(), "ok");
+                }
+                if st.keyboard_win == st.win_of(&surface) {
+                    st.keyboard_win = None;
+                }
                 st.commit_shown("keyboard.leave");
-                log::event("keyboard.leave", "", "ok");
             }
             wl_keyboard::Event::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
                 if let Some(k) = st.xkb.as_mut() {
@@ -1477,13 +1780,17 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for State {
         use zwp_text_input_v3::Event as E;
         match event {
             // 文字の入力の焦点が窓に来た（キーボードの焦点と一緒に動く）。次のフレームで、入力欄なら有効にする
-            E::Enter { surface } if surface == st.surface => {
+            E::Enter { surface } => {
+                let Some(id) = st.win_of(&surface) else { return };
                 st.ime.entered = true;
+                st.ime_win = Some(id);
                 st.ime.enabled = None;
                 st.ime.rect = None;
-                st.need_frame = true;
-                st.why = "input";
-                log::event("ime.enter", "", "ok");
+                if let Some(w) = st.win(id) {
+                    w.need_frame = true;
+                    w.why = "input";
+                    log::event("ime.enter", &w.tag(), "ok");
+                }
             }
             // 焦点が離れた。合成はこの後の頼みを聞かないので、有効・無効は次の enter でやり直す。
             // 変換中の文字は、キーボードの焦点が離れた時と同じく確定する
@@ -1494,6 +1801,7 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for State {
                 st.ime.preedit = None;
                 st.ime.commit = None;
                 st.commit_shown("ime.leave");
+                st.ime_win = None;
                 log::event("ime.leave", "", "ok");
             }
             E::PreeditString { text, cursor_begin, cursor_end } => {
@@ -1523,9 +1831,85 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
                 }
                 log::event("clipboard.selection", &format!("mimes={mimes} ours={}", c.ours.is_some()), if c.offer.is_some() { "offer" } else { "empty" });
             }
-            // ほかのアプリからの引っ張り（まだ受け取らない。offer は片付ける）
-            wl_data_device::Event::Enter { id: Some(offer), .. } => {
-                offer.destroy();
+            // ほかのアプリからの引っ張り。ファイル（text/uri-list）なら入った時に場所の一覧を受け取り、Windows と同じ
+            // FileDragEnter にする（受け取る部品を決めるのは共通の部分）
+            wl_data_device::Event::Enter { serial, surface, x, y, id: Some(offer) } => {
+                if let Some(old) = st.drag.take() {
+                    old.offer.destroy();
+                }
+                let Some(win) = st.win_of(&surface) else {
+                    offer.destroy();
+                    return;
+                };
+                let s = st.windows[st.index(win).unwrap_or(0)].scale();
+                let at = (x as f32 * s, y as f32 * s);
+                let mimes = offer.data::<Mutex<Vec<String>>>().map(|m| m.lock().map(|v| v.clone()).unwrap_or_default()).unwrap_or_default();
+                let mut paths: Vec<PathBuf> = Vec::new();
+                let mut how = String::from("no files");
+                if mimes.iter().any(|m| m == URI_LIST) {
+                    let conn = st.clip.borrow().conn.clone();
+                    let t = Instant::now();
+                    match receive_offer(&conn, &offer, URI_LIST) {
+                        Some((bytes, timed_out)) => {
+                            paths = crate::file_dialog::uri_list(&String::from_utf8_lossy(&bytes)).into_iter().map(|b| PathBuf::from(OsString::from_vec(b))).collect();
+                            how = format!("files={} ms={:.1}{}", paths.len(), t.elapsed().as_secs_f64() * 1000.0, if timed_out { " timeout" } else { "" });
+                        }
+                        None => how = "pipe error".into(),
+                    }
+                }
+                log::event("drag.enter", &format!("mimes={} at={:.0},{:.0}", mimes.len(), at.0, at.1), &how);
+                let files = !paths.is_empty();
+                if files && let Some(w) = st.win(win) {
+                    w.push(Event::FileDragEnter { x: at.0, y: at.1, paths });
+                }
+                st.drag = Some(Drag { win, offer, serial, files, at, accepting: None });
+                st.update_drag_accept();
+            }
+            wl_data_device::Event::Motion { x, y, .. } => {
+                let Some(win) = st.drag.as_ref().map(|d| d.win) else { return };
+                let s = st.index(win).map_or(1.0, |i| st.windows[i].scale());
+                let at = (x as f32 * s, y as f32 * s);
+                let files = match st.drag.as_mut() {
+                    Some(d) => {
+                        d.at = at;
+                        d.files
+                    }
+                    None => return,
+                };
+                if files && let Some(w) = st.win(win) {
+                    w.push(Event::FileDragOver { x: at.0, y: at.1 });
+                }
+                st.update_drag_accept();
+            }
+            wl_data_device::Event::Leave => {
+                if let Some(d) = st.drag.take() {
+                    if d.files
+                        && let Some(w) = st.win(d.win)
+                    {
+                        w.push(Event::FileDragLeave);
+                    }
+                    d.offer.destroy();
+                    log::event("drag.leave", "", "ok");
+                }
+            }
+            // 落とした。場所は入った時に受け取ってある。受け取れると答えていた時だけ、終わりを知らせる（finish）
+            wl_data_device::Event::Drop => {
+                if let Some(d) = st.drag.take() {
+                    let ok = d.files && d.accepting == Some(true);
+                    let (x, y) = d.at;
+                    if let Some(w) = st.win(d.win) {
+                        if ok {
+                            w.push(Event::FileDrop { x, y });
+                        } else if d.files {
+                            w.push(Event::FileDragLeave);
+                        }
+                    }
+                    if ok && d.offer.version() >= 3 {
+                        d.offer.finish();
+                    }
+                    d.offer.destroy();
+                    log::event("drag.drop", &format!("at={x:.0},{y:.0}"), if ok { "dropped" } else { "not accepted" });
+                }
             }
             _ => {}
         }

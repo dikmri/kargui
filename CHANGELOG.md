@@ -18,8 +18,13 @@
   through AT-SPI (accesskit_unix; checked with Orca). `ui.file_dialog` opens the dialog of
   xdg-desktop-portal (when the app gives no folder, it starts in the folder of the file chosen
   last, as the Windows dialog does), and the window starts in the system's dark or light mode (the portal's
-  color-scheme, read while the window is being set up). Not there yet: more than one window, file
-  drag and drop, title bars on GNOME, and X11. New Linux-only dependencies: wayland-client,
+  color-scheme, read while the window is being set up). `ui.window` opens more windows, as on
+  Windows: each window has its own surface and runtime and shares the app; input in one window
+  redraws the others once; a window's close button sets its `open` flag to false (the position, the
+  icon and whether it comes to the front are left to the compositor). Files dragged in from other
+  apps arrive as on Windows (`dropped::<Vec<PathBuf>>`; the text/uri-list is read when the drag
+  enters, and the compositor is told whether the widget under the pointer takes files). Not there
+  yet: title bars on GNOME, and X11. New Linux-only dependencies: wayland-client,
   wayland-protocols, xkbcommon-dl, rustix, accesskit_unix and zbus (84 crates in all; 71 of them
   come with accesskit_unix, that is zbus and AT-SPI).
 - Screen readers: text fields and text areas now expose their text as text runs (one per line)

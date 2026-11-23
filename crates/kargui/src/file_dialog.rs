@@ -149,9 +149,25 @@ pub(crate) fn file_uri_bytes(uri: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// text/uri-list（ほかのアプリから引っ張ってきたファイルの一覧）を、ファイルの場所のバイトの並びにする。
+/// 行は CRLF で区切られ、「#」で始まる行は注釈。file:// でない行とほかの機械の行は飛ばす
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn uri_list(text: &str) -> Vec<Vec<u8>> {
+    text.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.is_empty() && !l.starts_with('#')).filter_map(file_uri_bytes).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uri_lists_become_paths_skipping_comments_and_other_machines() {
+        let list = "# 注釈\r\nfile:///home/a/b%20c.txt\r\nfile:///tmp/%E6%9D%B1%E4%BA%AC\r\nhttps://example.com/x\r\nfile://other-pc/y\r\n\r\n";
+        assert_eq!(uri_list(list), vec![b"/home/a/b c.txt".to_vec(), "/tmp/東京".as_bytes().to_vec()]);
+        // 最後の改行が無くても、LF だけでも読む
+        assert_eq!(uri_list("file:///a\nfile:///b"), vec![b"/a".to_vec(), b"/b".to_vec()]);
+        assert!(uri_list("").is_empty());
+    }
 
     #[test]
     fn file_uris_become_paths_with_percent_escapes_decoded() {
