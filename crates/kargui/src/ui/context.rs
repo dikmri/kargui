@@ -263,6 +263,8 @@ pub(crate) struct PendingDrop {
     /// 離した所の受け取る部品（上の物から）と、受け取る荷物の型
     pub targets: Vec<(Id, std::any::TypeId)>,
     pub payload: Option<Box<dyn std::any::Any>>,
+    /// 離した所（物理ピクセル。ドッキングは、受け取る部品の中のどこかで落とす先を決める）
+    pub at: (f32, f32),
 }
 
 /// 押してから横か縦にこれより（論理ピクセル）動かしたら引っ張り始める。それまではクリック（Windows の SM_CXDRAG・
@@ -303,6 +305,8 @@ pub(crate) struct Prev {
     pub spins: HashMap<Id, Id>,
     /// 仕切り → 入れ物の始まりと長さ（つかんで動かす時と、広げられる限りに使う。物理ピクセル）
     pub splits: HashMap<Id, (f32, f32)>,
+    /// ドッキングの入れ物 → 全体とまとまりの場所（タブを落とした先を決める）
+    pub docks: HashMap<Id, super::dock::DockGeom>,
     /// 仕切り → 上下に分けるか（ポインターの形を決める）
     pub split_bars: HashMap<Id, bool>,
     /// 自由に描く面の場所（ポインターを面の座標にする）
@@ -476,6 +480,8 @@ pub(crate) struct Context {
     /// IME の変換を取り消すように頼む（変換中の文字をこちらで確定した時）。窓の処理が読んで戻す
     pub ime_cancel: bool,
     pub want_frame: bool,
+    /// ドッキングにタブを引っ張っている間に、最後に記録したポインターの下（まとまりと落とす先）。変わった時だけ記録する
+    pub dock_zone_log: Option<String>,
     pub clipboard: Box<dyn Clipboard>,
     // ---- 描いた結果 ----
     /// 文字を打つ位置と、変換中の文字の範囲（物理ピクセル）。IME に知らせる
@@ -575,6 +581,7 @@ impl Context {
             pending_commit: None,
             ime_cancel: false,
             want_frame: false,
+            dock_zone_log: None,
             clipboard,
             caret: None,
             preedit_rect: None,
@@ -875,6 +882,7 @@ impl Context {
         self.pointer = None;
         self.tooltip_hidden = self.hover;
         log::event("drag.start", &format!("source={:x} text={text:?}", source.0), &format!("at={x:.0},{y:.0}"));
+        self.dock_zone_log = None;
         self.dnd = Some(Dnd { source, payload: None, rect, grab: (x0 - rect.x, y0 - rect.y), text, at: (x, y), over: None, external: false });
     }
 
@@ -915,7 +923,7 @@ impl Context {
         };
         if takes {
             log::event("drag.drop", &format!("source={:x} at={x:.0},{y:.0}", d.source.0), &format!("targets={} payload={}", targets.len(), ty.is_some()));
-            self.drop = Some(PendingDrop { source: d.source, targets, payload: d.payload });
+            self.drop = Some(PendingDrop { source: d.source, targets, payload: d.payload, at: (x, y) });
         } else {
             log::event("drag.cancel", &format!("source={:x} at={x:.0},{y:.0}", d.source.0), "why=no-target");
         }

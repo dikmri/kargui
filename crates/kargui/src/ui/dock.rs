@@ -1,0 +1,873 @@
+//! ドッキングの並べ方の木（アプリが持つ）。分割の木の葉がタブのまとまりで、まとまりは番号ではなく中のパネルで指す
+//! （編集しても指す先がずれない）。空のまとまりは作らず、最後のパネルが出たら親の分割ごと畳む。
+//! 変更はすべて Dock::insert を通す（マウスで落とした時・メニュー・キーボードが同じ形を作る）。
+//! 後半は、タブを引っ張って落とす先の計算（描いた結果の場所から、十字の的・外側の的・タブの帯の間を決める）。
+
+use crate::geom::Rect;
+
+/// Which side of a panel group, or of the whole dock, a panel goes to.
+///
+/// ```
+/// use kargui::DockSide;
+///
+/// assert_ne!(DockSide::Left, DockSide::Right);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DockSide {
+    /// To the left.
+    Left,
+    /// To the right.
+    Right,
+    /// Above.
+    Top,
+    /// Below.
+    Bottom,
+}
+
+impl DockSide {
+    /// 上下に分けるか（false は左右）
+    fn stacked(self) -> bool {
+        matches!(self, DockSide::Top | DockSide::Bottom)
+    }
+    /// 新しいパネルが分割の 1 つ目（左か上）に入るか
+    fn first(self) -> bool {
+        matches!(self, DockSide::Left | DockSide::Top)
+    }
+}
+
+/// Where [`Dock::insert`] puts a panel.
+///
+/// Groups are named by a panel in them, so a place stays right while other panels move.
+///
+/// ```
+/// use kargui::{Dock, DockSide, DockTo};
+///
+/// let mut dock = Dock::new(["Files"]);
+/// dock.insert("Editor", DockTo::Split { of: "Files", side: DockSide::Right, share: 0.7 });
+/// dock.insert("Search", DockTo::Tab { with: "Files", index: None });
+/// assert_eq!(dock.panels(), vec![&"Files", &"Search", &"Editor"]);
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub enum DockTo<K> {
+    /// As a tab in the group that holds `with`, before the tab at `index` (counted as the tabs
+    /// are shown before the move), or after the last one when `index` is `None`.
+    Tab {
+        /// A panel in the group.
+        with: K,
+        /// The position among the group's tabs.
+        index: Option<usize>,
+    },
+    /// Next to the group that holds `of`, splitting its space: `share` (0.1 to 0.9) is the part
+    /// the new panel gets.
+    Split {
+        /// A panel in the group to split.
+        of: K,
+        /// Which side of that group.
+        side: DockSide,
+        /// The new panel's part of the space.
+        share: f32,
+    },
+    /// Along a side of the whole dock: `share` (0.1 to 0.9) is the part the new panel gets.
+    Edge {
+        /// Which side of the dock.
+        side: DockSide,
+        /// The new panel's part of the space.
+        share: f32,
+    },
+}
+
+/// 木の節。葉はタブのまとまり、ほかは 2 つに分ける分割
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Node<K> {
+    Tabs { panels: Vec<K>, selected: usize },
+    /// stacked は上下に分ける（false は左右）。share は 1 つ目（左か上）の割合
+    Split { stacked: bool, share: f32, a: Box<Node<K>>, b: Box<Node<K>> },
+}
+
+/// The layout of a dock: panels in tab groups, and groups side by side or one above another.
+/// The app keeps it and shows it with [`Ui::dock`](crate::Ui::dock); the user rearranges it by
+/// dragging tabs or with the tabs' menu. `K` is the app's name for a panel, such as an enum.
+///
+/// ```
+/// use kargui::{Dock, DockSide, DockTo};
+///
+/// #[derive(Clone, Copy, Debug, PartialEq)]
+/// enum Panel { Files, Editor, Output }
+///
+/// let mut dock = Dock::new([Panel::Editor]);
+/// dock.insert(Panel::Files, DockTo::Edge { side: DockSide::Left, share: 0.25 });
+/// dock.insert(Panel::Output, DockTo::Split { of: Panel::Editor, side: DockSide::Bottom, share: 0.3 });
+/// assert_eq!(dock.panels(), vec![&Panel::Files, &Panel::Editor, &Panel::Output]);
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dock<K> {
+    pub(crate) root: Option<Node<K>>,
+}
+
+/// 割合を収める範囲（どちらの区画も消えないように）
+const MIN_SHARE: f32 = 0.1;
+const MAX_SHARE: f32 = 0.9;
+
+impl<K: Clone + PartialEq> Dock<K> {
+    /// A dock with one group holding `panels` as tabs (the first one selected). With no panels,
+    /// the dock is empty.
+    ///
+    /// ```
+    /// use kargui::Dock;
+    ///
+    /// let dock = Dock::new(["Files", "Search"]);
+    /// assert_eq!(dock.panels(), vec![&"Files", &"Search"]);
+    /// assert_eq!(dock.selected(), vec![&"Files"]);
+    /// ```
+    pub fn new(panels: impl IntoIterator<Item = K>) -> Self {
+        let mut list: Vec<K> = Vec::new();
+        for k in panels {
+            if !list.contains(&k) {
+                list.push(k);
+            }
+        }
+        Dock { root: (!list.is_empty()).then_some(Node::Tabs { panels: list, selected: 0 }) }
+    }
+
+    /// Every panel, group by group: left before right, top before bottom, and tabs in order.
+    ///
+    /// ```
+    /// use kargui::Dock;
+    ///
+    /// assert_eq!(Dock::new([1, 2]).panels(), vec![&1, &2]);
+    /// ```
+    pub fn panels(&self) -> Vec<&K> {
+        let mut out = Vec::new();
+        if let Some(r) = &self.root {
+            r.walk(&mut |n| {
+                if let Node::Tabs { panels, .. } = n {
+                    out.extend(panels.iter());
+                }
+            });
+        }
+        out
+    }
+
+    /// The selected panel of each group, in the same order as [`Dock::panels`].
+    ///
+    /// ```
+    /// use kargui::{Dock, DockSide, DockTo};
+    ///
+    /// let mut dock = Dock::new(["A", "B"]);
+    /// dock.insert("C", DockTo::Split { of: "A", side: DockSide::Right, share: 0.5 });
+    /// assert_eq!(dock.selected(), vec![&"A", &"C"]);
+    /// ```
+    pub fn selected(&self) -> Vec<&K> {
+        let mut out = Vec::new();
+        if let Some(r) = &self.root {
+            r.walk(&mut |n| {
+                if let Node::Tabs { panels, selected } = n {
+                    out.push(&panels[*selected]);
+                }
+            });
+        }
+        out
+    }
+
+    /// Whether `panel` is in the dock.
+    ///
+    /// ```
+    /// use kargui::Dock;
+    ///
+    /// let dock = Dock::new(["Files"]);
+    /// assert!(dock.contains(&"Files"));
+    /// assert!(!dock.contains(&"Search"));
+    /// ```
+    pub fn contains(&self, panel: &K) -> bool {
+        self.panels().contains(&panel)
+    }
+
+    /// Selects `panel` in its group (shows its tab). Returns false if it is not in the dock.
+    ///
+    /// ```
+    /// use kargui::Dock;
+    ///
+    /// let mut dock = Dock::new(["Files", "Search"]);
+    /// assert!(dock.select(&"Search"));
+    /// assert_eq!(dock.selected(), vec![&"Search"]);
+    /// ```
+    pub fn select(&mut self, panel: &K) -> bool {
+        let Some(r) = &mut self.root else { return false };
+        let mut found = false;
+        r.walk_mut(&mut |n| {
+            if let Node::Tabs { panels, selected } = n
+                && let Some(i) = panels.iter().position(|p| p == panel) {
+                    *selected = i;
+                    found = true;
+                }
+        });
+        found
+    }
+
+    /// Takes `panel` out of the dock. A group left without panels disappears, and its
+    /// neighbour takes its space. Returns false if the panel was not in the dock.
+    ///
+    /// ```
+    /// use kargui::{Dock, DockSide, DockTo};
+    ///
+    /// let mut dock = Dock::new(["Files"]);
+    /// dock.insert("Editor", DockTo::Split { of: "Files", side: DockSide::Right, share: 0.7 });
+    /// assert!(dock.remove(&"Files"));
+    /// assert_eq!(dock.panels(), vec![&"Editor"]);
+    /// assert!(!dock.remove(&"Files"));
+    /// ```
+    pub fn remove(&mut self, panel: &K) -> bool {
+        let Some(root) = self.root.take() else { return false };
+        let (rest, found) = root.without(panel);
+        self.root = rest;
+        found
+    }
+
+    /// Puts `panel` at `to` and selects it. If the panel is already in the dock, it moves
+    /// there. A place named by a panel that is not in the dock (or, for a moving panel, a
+    /// place named by the panel itself when it is alone in its group) leaves the dock as it is
+    /// and returns false. An empty dock takes any panel as its only group.
+    ///
+    /// ```
+    /// use kargui::{Dock, DockSide, DockTo};
+    ///
+    /// let mut dock = Dock::new(["A", "B", "C"]);
+    /// // Move A after C in the same group
+    /// assert!(dock.insert("A", DockTo::Tab { with: "B", index: Some(3) }));
+    /// assert_eq!(dock.panels(), vec![&"B", &"C", &"A"]);
+    /// // Split C off to the bottom
+    /// assert!(dock.insert("C", DockTo::Split { of: "B", side: DockSide::Bottom, share: 0.4 }));
+    /// assert_eq!(dock.selected(), vec![&"A", &"C"]);
+    /// ```
+    pub fn insert(&mut self, panel: K, to: DockTo<K>) -> bool {
+        let Some(root) = &self.root else {
+            self.root = Some(Node::Tabs { panels: vec![panel], selected: 0 });
+            return true;
+        };
+        // 指す先のまとまりを、動かすパネルを抜く前に決める（指す先が動かすパネル自身なら、同じまとまりのほかのパネル）
+        let anchor = |k: &K| -> Option<K> {
+            let group = root.group_of(k)?;
+            if *k != panel {
+                return Some(k.clone());
+            }
+            group.iter().find(|p| **p != panel).cloned()
+        };
+        let moving_from = root.group_of(&panel).map(|g| (g.to_vec(), g.iter().position(|p| *p == panel).unwrap_or(0)));
+        match to {
+            DockTo::Tab { with, index } => {
+                let Some(a) = anchor(&with) else {
+                    // 自分だけのまとまりの自分の隣: 動かさない（並べ替えるものが無い）
+                    return root.group_of(&with).is_some() && with == panel;
+                };
+                // 同じまとまりの中で後ろへ動かす時は、抜いた分だけ前に詰める
+                let index = match (&moving_from, index) {
+                    (Some((g, from)), Some(i)) if g.contains(&a) && *from < i => Some(i - 1),
+                    (_, i) => i,
+                };
+                self.remove(&panel);
+                let Some(r) = &mut self.root else { return false };
+                r.put_tab(&a, panel, index)
+            }
+            DockTo::Split { of, side, share } => {
+                let Some(a) = anchor(&of) else { return false };
+                self.remove(&panel);
+                let Some(r) = self.root.take() else { return false };
+                let (r, ok) = r.split_at(&a, side, share.clamp(MIN_SHARE, MAX_SHARE), panel);
+                self.root = Some(r);
+                ok
+            }
+            DockTo::Edge { side, share } => {
+                self.remove(&panel);
+                let leaf = Node::Tabs { panels: vec![panel], selected: 0 };
+                self.root = Some(match self.root.take() {
+                    None => leaf,
+                    Some(r) => Node::join(side, share.clamp(MIN_SHARE, MAX_SHARE), leaf, r),
+                });
+                true
+            }
+        }
+    }
+
+    /// 道（根が 1、子は 2p と 2p+1）の分割の割合を、0.1〜0.9 に収めて変える。分割でなければ false
+    pub(crate) fn set_share(&mut self, path: u64, share: f32) -> bool {
+        let Some(mut n) = self.root.as_mut() else { return false };
+        let depth = 63 - path.leading_zeros();
+        for i in (0..depth).rev() {
+            let Node::Split { a, b, .. } = n else { return false };
+            n = if (path >> i) & 1 == 0 { a } else { b };
+        }
+        if let Node::Split { share: s, .. } = n {
+            *s = share.clamp(MIN_SHARE, MAX_SHARE);
+            return true;
+        }
+        false
+    }
+
+    /// The layout as text, to keep between runs: `name` gives each panel's name (names must
+    /// be different and should not contain line breaks). Read it back with [`Dock::load`].
+    ///
+    /// ```
+    /// use kargui::{Dock, DockSide, DockTo};
+    ///
+    /// let mut dock = Dock::new(["Files"]);
+    /// dock.insert("Editor", DockTo::Split { of: "Files", side: DockSide::Right, share: 0.7 });
+    /// let text = dock.save(|p| p.to_string());
+    /// assert_eq!(Dock::load(&text, |name| ["Files", "Editor"].into_iter().find(|p| *p == name)), Some(dock));
+    /// ```
+    pub fn save(&self, name: impl Fn(&K) -> String) -> String {
+        let mut out = String::from("kargui-dock 1\n");
+        if let Some(r) = &self.root {
+            r.write(&mut out, &name);
+        }
+        out
+    }
+
+    /// Reads a layout written by [`Dock::save`]. `panel` turns a saved name back into a panel;
+    /// names it does not know (`None`) are left out, and groups left empty disappear. Returns
+    /// `None` if the text is not a saved layout (or from a newer version of kargui).
+    ///
+    /// ```
+    /// use kargui::Dock;
+    ///
+    /// let text = Dock::new(["Files", "Old panel"]).save(|p| p.to_string());
+    /// let dock = Dock::load(&text, |name| (name == "Files").then_some("Files")).unwrap();
+    /// assert_eq!(dock.panels(), vec![&"Files"]);
+    /// assert_eq!(Dock::<&str>::load("not a layout", |_| None), None);
+    /// ```
+    pub fn load(text: &str, panel: impl Fn(&str) -> Option<K>) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()?.trim() != "kargui-dock 1" {
+            return None;
+        }
+        let mut rest = lines.filter(|l| !l.trim().is_empty()).peekable();
+        if rest.peek().is_none() {
+            return Some(Dock { root: None });
+        }
+        let mut seen = Vec::new();
+        let root = Node::read(&mut rest, &panel, &mut seen)?;
+        if rest.next().is_some() {
+            return None;
+        }
+        Some(Dock { root })
+    }
+}
+
+impl<K: Clone + PartialEq> Node<K> {
+    /// 前から順に（左・上が先）すべての節をたどる
+    pub(crate) fn walk<'a>(&'a self, f: &mut impl FnMut(&'a Node<K>)) {
+        f(self);
+        if let Node::Split { a, b, .. } = self {
+            a.walk(f);
+            b.walk(f);
+        }
+    }
+
+    fn walk_mut(&mut self, f: &mut impl FnMut(&mut Node<K>)) {
+        f(self);
+        if let Node::Split { a, b, .. } = self {
+            a.walk_mut(f);
+            b.walk_mut(f);
+        }
+    }
+
+    /// k を持つまとまりのパネルの並び
+    fn group_of(&self, k: &K) -> Option<&[K]> {
+        match self {
+            Node::Tabs { panels, .. } => panels.contains(k).then_some(panels.as_slice()),
+            Node::Split { a, b, .. } => a.group_of(k).or_else(|| b.group_of(k)),
+        }
+    }
+
+    /// k を抜いた木と、抜けたか。空になったまとまりは畳み、親の分割はもう片方に置き換える
+    fn without(self, k: &K) -> (Option<Node<K>>, bool) {
+        match self {
+            Node::Tabs { mut panels, selected } => {
+                let Some(i) = panels.iter().position(|p| p == k) else {
+                    return (Some(Node::Tabs { panels, selected }), false);
+                };
+                panels.remove(i);
+                if panels.is_empty() {
+                    return (None, true);
+                }
+                // 選んでいた物より前を抜いたら 1 つ詰める。選んでいた物を抜いたら、同じ位置（端なら前）の物を選ぶ
+                let selected = if i < selected { selected - 1 } else { selected.min(panels.len() - 1) };
+                (Some(Node::Tabs { panels, selected }), true)
+            }
+            Node::Split { stacked, share, a, b } => {
+                let (a, fa) = a.without(k);
+                let (b, fb) = if fa { (Some(*b), false) } else { b.without(k) };
+                let node = match (a, b) {
+                    (Some(a), Some(b)) => Some(Node::Split { stacked, share, a: Box::new(a), b: Box::new(b) }),
+                    (Some(x), None) | (None, Some(x)) => Some(x),
+                    (None, None) => None,
+                };
+                (node, fa || fb)
+            }
+        }
+    }
+
+    /// with を持つまとまりに、panel をタブとして index の前（None は最後）に入れて選ぶ
+    fn put_tab(&mut self, with: &K, panel: K, index: Option<usize>) -> bool {
+        match self {
+            Node::Tabs { panels, selected } => {
+                if !panels.contains(with) {
+                    return false;
+                }
+                let i = index.unwrap_or(panels.len()).min(panels.len());
+                panels.insert(i, panel);
+                *selected = i;
+                true
+            }
+            Node::Split { a, b, .. } => {
+                if a.group_of(with).is_some() {
+                    a.put_tab(with, panel, index)
+                } else {
+                    b.put_tab(with, panel, index)
+                }
+            }
+        }
+    }
+
+    /// of を持つまとまりを分けて、side に panel だけのまとまりを置く。share は新しいまとまりの割合
+    fn split_at(self, of: &K, side: DockSide, share: f32, panel: K) -> (Node<K>, bool) {
+        match self {
+            Node::Tabs { ref panels, .. } if panels.contains(of) => {
+                let leaf = Node::Tabs { panels: vec![panel], selected: 0 };
+                (Node::join(side, share, leaf, self), true)
+            }
+            Node::Tabs { .. } => (self, false),
+            Node::Split { stacked, share: s, a, b } => {
+                let (a, done) = a.split_at(of, side, share, panel.clone());
+                if done {
+                    return (Node::Split { stacked, share: s, a: Box::new(a), b }, true);
+                }
+                let (b, done) = b.split_at(of, side, share, panel);
+                (Node::Split { stacked, share: s, a: Box::new(a), b: Box::new(b) }, done)
+            }
+        }
+    }
+
+    /// new を old の side 側に置く分割。share は new の割合
+    fn join(side: DockSide, share: f32, new: Node<K>, old: Node<K>) -> Node<K> {
+        let stacked = side.stacked();
+        if side.first() {
+            Node::Split { stacked, share, a: Box::new(new), b: Box::new(old) }
+        } else {
+            Node::Split { stacked, share: 1.0 - share, a: Box::new(old), b: Box::new(new) }
+        }
+    }
+
+    fn write(&self, out: &mut String, name: &impl Fn(&K) -> String) {
+        match self {
+            Node::Tabs { panels, selected } => {
+                out.push_str(&format!("tabs {selected} {}\n", panels.len()));
+                for p in panels {
+                    let n: String = name(p).chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+                    out.push_str(&format!("panel {n}\n"));
+                }
+            }
+            Node::Split { stacked, share, a, b } => {
+                out.push_str(&format!("split {} {share:.4}\n", if *stacked { "v" } else { "h" }));
+                a.write(out, name);
+                b.write(out, name);
+            }
+        }
+    }
+
+    /// 保存した文字から節を 1 つ読む。知らないパネルと重なったパネルは捨て、空のまとまりは None（親の分割を畳む）。
+    /// 形が壊れていたら Err（全体を読めない）
+    fn read<'a>(lines: &mut impl Iterator<Item = &'a str>, panel: &impl Fn(&str) -> Option<K>, seen: &mut Vec<K>) -> Option<Option<Node<K>>> {
+        let line = lines.next()?;
+        let mut words = line.splitn(3, ' ');
+        match words.next()? {
+            "tabs" => {
+                let selected: usize = words.next()?.parse().ok()?;
+                let count: usize = words.next()?.trim().parse().ok()?;
+                let mut panels = Vec::new();
+                let mut keep_selected = None;
+                for i in 0..count {
+                    let l = lines.next()?;
+                    let n = l.strip_prefix("panel ")?;
+                    if let Some(k) = panel(n).filter(|k| !seen.contains(k)) {
+                        seen.push(k.clone());
+                        if i == selected {
+                            keep_selected = Some(panels.len());
+                        }
+                        panels.push(k);
+                    }
+                }
+                if panels.is_empty() {
+                    return Some(None);
+                }
+                let selected = keep_selected.unwrap_or(0);
+                Some(Some(Node::Tabs { panels, selected }))
+            }
+            "split" => {
+                let stacked = match words.next()? {
+                    "v" => true,
+                    "h" => false,
+                    _ => return None,
+                };
+                let share: f32 = words.next()?.trim().parse().ok()?;
+                let a = Node::read(lines, panel, seen)?;
+                let b = Node::read(lines, panel, seen)?;
+                Some(match (a, b) {
+                    (Some(a), Some(b)) => Some(Node::Split { stacked, share: share.clamp(MIN_SHARE, MAX_SHARE), a: Box::new(a), b: Box::new(b) }),
+                    (Some(x), None) | (None, Some(x)) => Some(x),
+                    (None, None) => None,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+// ---- 引っ張って落とす先 ----
+
+/// 描いた後の、まとまり 1 つの場所（物理ピクセル）。strip は見出しの帯、tabs は見出し 1 つずつ
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct GroupGeom {
+    pub rect: Rect,
+    pub strip: Rect,
+    pub tabs: Vec<Rect>,
+}
+
+/// 描いた後の、ドッキング全体の場所。groups は Dock::panels と同じ順（左・上が先）
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct DockGeom {
+    pub root: Rect,
+    pub groups: Vec<GroupGeom>,
+}
+
+/// 落とす先。group は DockGeom::groups の番号
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Zone {
+    /// まとまりのタブとして、index の前（None は最後）
+    Tab { group: usize, index: Option<usize> },
+    /// まとまりを分けて side に置く
+    Split { group: usize, side: DockSide },
+    /// 全体の外側の side に置く
+    Edge(DockSide),
+}
+
+/// 全体の外側の帯の幅（論理ピクセル）。ここに落とすと全体の端に置く
+const EDGE_BAND: f32 = 20.0;
+/// まとまりの中身の端からこの割合までに落とすと、その側に分ける（真ん中はタブにする）
+const SPLIT_PART: f32 = 0.25;
+/// 外側の端に置いた時の割合（Edge の share と同じにする）
+pub(crate) const EDGE_SHARE: f32 = 0.3;
+
+impl GroupGeom {
+    /// 見出しの帯の下（中身の場所）
+    fn body(&self) -> Rect {
+        let top = self.strip.bottom().max(self.rect.y);
+        Rect::new(self.rect.x, top, self.rect.w, (self.rect.bottom() - top).max(0.0))
+    }
+}
+
+impl DockGeom {
+    /// (x, y) の下のまとまり
+    pub(crate) fn group_at(&self, x: f32, y: f32) -> Option<usize> {
+        self.groups.iter().position(|g| g.rect.contains(x, y))
+    }
+
+    /// (x, y) が全体の外側の帯の中なら、その側。まとまりが 2 つ以上の時だけ（1 つならまとまりの端と同じ）。
+    /// 上の帯は、上のまとまりの見出しの帯のすぐ下に置く（見出しの帯の上はタブの間に入れる所）
+    fn edge_at(&self, x: f32, y: f32, scale: f32) -> Option<DockSide> {
+        if self.groups.len() < 2 || !self.root.contains(x, y) {
+            return None;
+        }
+        let (b, r) = (EDGE_BAND * scale, self.root);
+        let strip = self.groups.first().map_or(r.y, |g| g.strip.bottom());
+        if x < r.x + b {
+            Some(DockSide::Left)
+        } else if x >= r.right() - b {
+            Some(DockSide::Right)
+        } else if y >= r.bottom() - b {
+            Some(DockSide::Bottom)
+        } else if y >= strip && y < strip + b {
+            Some(DockSide::Top)
+        } else {
+            None
+        }
+    }
+
+    /// (x, y) に落とした時の先。見出しの帯（タブの間）、全体の外側の帯、まとまりの中身の順に見る。中身では、端から
+    /// 4 分の 1 までなら近い側に分け、真ん中ならタブにする（小さな的を狙わせない。どこに落ちるかは薄い塗りで見せる）
+    pub(crate) fn zone_at(&self, x: f32, y: f32, scale: f32) -> Option<Zone> {
+        let g = self.group_at(x, y);
+        if let Some(g) = g
+            && self.groups[g].strip.contains(x, y)
+        {
+            // 見出しの真ん中より左なら、その見出しの前
+            let index = self.groups[g].tabs.iter().position(|t| x < t.x + t.w / 2.0);
+            return Some(Zone::Tab { group: g, index });
+        }
+        if let Some(side) = self.edge_at(x, y, scale) {
+            return Some(Zone::Edge(side));
+        }
+        let g = g?;
+        let b = self.groups[g].body();
+        if b.w <= 0.0 || b.h <= 0.0 {
+            return Some(Zone::Tab { group: g, index: None });
+        }
+        let (fx, fy) = ((x - b.x) / b.w, (y - b.y) / b.h);
+        let near = [(fx, DockSide::Left), (1.0 - fx, DockSide::Right), (fy, DockSide::Top), (1.0 - fy, DockSide::Bottom)];
+        let (d, side) = near.into_iter().fold((f32::MAX, DockSide::Left), |m, n| if n.0 < m.0 { n } else { m });
+        Some(if d < SPLIT_PART { Zone::Split { group: g, side } } else { Zone::Tab { group: g, index: None } })
+    }
+
+    /// 落ちる所（薄く塗る四角）
+    pub(crate) fn preview(&self, z: Zone) -> Option<Rect> {
+        let half = |r: Rect, side: DockSide, part: f32| match side {
+            DockSide::Left => Rect::new(r.x, r.y, r.w * part, r.h),
+            DockSide::Right => Rect::new(r.right() - r.w * part, r.y, r.w * part, r.h),
+            DockSide::Top => Rect::new(r.x, r.y, r.w, r.h * part),
+            DockSide::Bottom => Rect::new(r.x, r.bottom() - r.h * part, r.w, r.h * part),
+        };
+        Some(match z {
+            Zone::Tab { group, .. } => self.groups.get(group)?.rect,
+            Zone::Split { group, side } => half(self.groups.get(group)?.rect, side, 0.5),
+            Zone::Edge(side) => half(self.root, side, EDGE_SHARE),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 左右 2 つのまとまり（左は 0〜400、右は 400〜900、どちらも高さ 600、見出しの帯は 30）
+    fn two_groups() -> DockGeom {
+        let group = |x: f32, w: f32, tabs: usize| GroupGeom {
+            rect: Rect::new(x, 0.0, w, 600.0),
+            strip: Rect::new(x, 0.0, w, 30.0),
+            tabs: (0..tabs).map(|i| Rect::new(x + i as f32 * 80.0, 0.0, 76.0, 30.0)).collect(),
+        };
+        DockGeom { root: Rect::new(0.0, 0.0, 900.0, 600.0), groups: vec![group(0.0, 400.0, 2), group(400.0, 500.0, 1)] }
+    }
+
+    #[test]
+    fn the_middle_of_a_group_adds_a_tab_and_its_sides_split_it() {
+        // 作者の手の確かめ（ドッキングの 2 回目）で、小さな的を 14 秒狙っても、隣の的と入れ替わって落とせなかった。
+        // 的を狙わせず、ポインターのいる場所で決める。右のまとまりの中身は x 400〜900、y 30〜600
+        let g = two_groups();
+        assert_eq!(g.zone_at(650.0, 315.0, 1.0), Some(Zone::Tab { group: 1, index: None }), "真ん中はタブ");
+        assert_eq!(g.zone_at(860.0, 315.0, 1.0), Some(Zone::Split { group: 1, side: DockSide::Right }), "右の 4 分の 1");
+        assert_eq!(g.zone_at(450.0, 315.0, 1.0), Some(Zone::Split { group: 1, side: DockSide::Left }));
+        assert_eq!(g.zone_at(650.0, 560.0, 1.0), Some(Zone::Split { group: 1, side: DockSide::Bottom }));
+        assert_eq!(g.zone_at(650.0, 70.0, 1.0), Some(Zone::Split { group: 1, side: DockSide::Top }));
+        // 角は近い方の辺（右まで 0.06、上まで 0.09）
+        assert_eq!(g.zone_at(870.0, 80.0, 1.0), Some(Zone::Split { group: 1, side: DockSide::Right }));
+    }
+
+    #[test]
+    fn the_outer_bands_win_and_only_with_two_groups_or_more() {
+        let g = two_groups();
+        assert_eq!(g.zone_at(10.0, 300.0, 1.0), Some(Zone::Edge(DockSide::Left)));
+        assert_eq!(g.zone_at(890.0, 300.0, 1.0), Some(Zone::Edge(DockSide::Right)));
+        assert_eq!(g.zone_at(450.0, 590.0, 1.0), Some(Zone::Edge(DockSide::Bottom)));
+        assert_eq!(g.zone_at(650.0, 40.0, 1.0), Some(Zone::Edge(DockSide::Top)), "上の帯は見出しの帯のすぐ下");
+        assert_eq!(g.zone_at(30.0, 300.0, 1.0), Some(Zone::Split { group: 0, side: DockSide::Left }), "帯の内側はまとまりの左");
+        // 2 倍の画面では帯も 2 倍
+        assert_eq!(g.zone_at(30.0, 300.0, 2.0), Some(Zone::Edge(DockSide::Left)));
+        let mut one = g.clone();
+        one.groups.truncate(1);
+        assert_eq!(one.zone_at(10.0, 300.0, 1.0), Some(Zone::Split { group: 0, side: DockSide::Left }), "1 つだけなら帯は無い");
+    }
+
+    #[test]
+    fn the_tab_strip_picks_the_place_between_tabs() {
+        let g = two_groups();
+        // 見出しは 0〜76 と 80〜156。帯は全体の外側の帯より先に見る
+        assert_eq!(g.zone_at(10.0, 15.0, 1.0), Some(Zone::Tab { group: 0, index: Some(0) }));
+        assert_eq!(g.zone_at(60.0, 15.0, 1.0), Some(Zone::Tab { group: 0, index: Some(1) }), "1 つ目の右半分は 2 つ目の前");
+        assert_eq!(g.zone_at(300.0, 15.0, 1.0), Some(Zone::Tab { group: 0, index: None }), "見出しの後ろの空き");
+        // まとまりの外（仕切りの上など）は落とす先ではない
+        assert_eq!(g.zone_at(950.0, 300.0, 1.0), None);
+    }
+
+    #[test]
+    fn previews_show_where_the_panel_lands() {
+        let g = two_groups();
+        assert_eq!(g.preview(Zone::Tab { group: 1, index: None }), Some(Rect::new(400.0, 0.0, 500.0, 600.0)));
+        assert_eq!(g.preview(Zone::Split { group: 1, side: DockSide::Right }), Some(Rect::new(650.0, 0.0, 250.0, 600.0)));
+        assert_eq!(g.preview(Zone::Edge(DockSide::Top)), Some(Rect::new(0.0, 0.0, 900.0, 180.0)));
+        assert_eq!(g.preview(Zone::Split { group: 5, side: DockSide::Left }), None);
+    }
+
+    /// 木の形を短い文字にする（試験で比べやすいように）。[A* B] はタブ（* が選んでいる物）、h(…|…) は左右、v(…|…) は上下
+    fn shape(d: &Dock<&str>) -> String {
+        fn go(n: &Node<&str>) -> String {
+            match n {
+                Node::Tabs { panels, selected } => {
+                    let names: Vec<String> = panels.iter().enumerate().map(|(i, p)| if i == *selected { format!("{p}*") } else { p.to_string() }).collect();
+                    format!("[{}]", names.join(" "))
+                }
+                Node::Split { stacked, share, a, b } => format!("{}{:.1}({}|{})", if *stacked { "v" } else { "h" }, share, go(a), go(b)),
+            }
+        }
+        d.root.as_ref().map_or("-".to_string(), go)
+    }
+
+    fn split(of: &'static str, side: DockSide) -> DockTo<&'static str> {
+        DockTo::Split { of, side, share: 0.5 }
+    }
+
+    #[test]
+    fn new_keeps_each_panel_once() {
+        assert_eq!(shape(&Dock::new(["A", "B", "A"])), "[A* B]");
+        assert_eq!(shape(&Dock::<&str>::new([])), "-");
+    }
+
+    #[test]
+    fn split_puts_the_panel_on_the_side_with_its_share() {
+        let mut d = Dock::new(["A"]);
+        assert!(d.insert("B", DockTo::Split { of: "A", side: DockSide::Right, share: 0.3 }));
+        assert_eq!(shape(&d), "h0.7([A*]|[B*])", "右に 0.3: 1 つ目（左）は 0.7");
+        assert!(d.insert("C", DockTo::Split { of: "A", side: DockSide::Top, share: 0.4 }));
+        assert_eq!(shape(&d), "h0.7(v0.4([C*]|[A*])|[B*])", "A のまとまりだけを上下に分ける");
+        // 割合は 0.1〜0.9 に収める
+        assert!(d.insert("D", DockTo::Split { of: "B", side: DockSide::Left, share: 2.0 }));
+        assert_eq!(shape(&d), "h0.7(v0.4([C*]|[A*])|h0.9([D*]|[B*]))");
+    }
+
+    #[test]
+    fn edge_wraps_the_whole_dock() {
+        let mut d = Dock::new(["A"]);
+        d.insert("B", split("A", DockSide::Right));
+        assert!(d.insert("C", DockTo::Edge { side: DockSide::Bottom, share: 0.25 }));
+        assert_eq!(shape(&d), "v0.8(h0.5([A*]|[B*])|[C*])");
+        assert!(d.insert("D", DockTo::Edge { side: DockSide::Left, share: 0.2 }));
+        assert_eq!(shape(&d), "h0.2([D*]|v0.8(h0.5([A*]|[B*])|[C*]))");
+    }
+
+    #[test]
+    fn removing_the_last_panel_of_a_group_folds_its_split() {
+        let mut d = Dock::new(["A"]);
+        d.insert("B", split("A", DockSide::Right));
+        d.insert("C", split("B", DockSide::Bottom));
+        assert_eq!(shape(&d), "h0.5([A*]|v0.5([B*]|[C*]))");
+        assert!(d.remove(&"B"));
+        assert_eq!(shape(&d), "h0.5([A*]|[C*])", "B のまとまりが消え、C が B の場所を取る");
+        assert!(d.remove(&"A"));
+        assert_eq!(shape(&d), "[C*]");
+        assert!(d.remove(&"C"));
+        assert_eq!(shape(&d), "-");
+        assert!(!d.remove(&"C"));
+    }
+
+    #[test]
+    fn removing_keeps_a_sensible_selection() {
+        let mut d = Dock::new(["A", "B", "C", "D"]);
+        d.select(&"C");
+        d.remove(&"A");
+        assert_eq!(shape(&d), "[B C* D]", "前を抜いても C のまま");
+        d.remove(&"C");
+        assert_eq!(shape(&d), "[B D*]", "選んでいた物を抜くと、同じ位置の物");
+        d.remove(&"D");
+        assert_eq!(shape(&d), "[B*]", "端なら前の物");
+    }
+
+    #[test]
+    fn tabs_move_within_a_group_and_between_groups() {
+        let mut d = Dock::new(["A", "B", "C"]);
+        // 後ろへ: index は動かす前の並びで数える（C の後ろ = 3）
+        assert!(d.insert("A", DockTo::Tab { with: "B", index: Some(3) }));
+        assert_eq!(shape(&d), "[B C A*]");
+        // 前へ
+        assert!(d.insert("A", DockTo::Tab { with: "C", index: Some(0) }));
+        assert_eq!(shape(&d), "[A* B C]");
+        // 自分を指しても、同じまとまりのほかのパネルが指す先になる
+        assert!(d.insert("A", DockTo::Tab { with: "A", index: Some(2) }));
+        assert_eq!(shape(&d), "[B A* C]");
+        // ほかのまとまりへ移ると、元のまとまりは残りで続く
+        d.insert("D", split("C", DockSide::Right));
+        assert!(d.insert("B", DockTo::Tab { with: "D", index: None }));
+        assert_eq!(shape(&d), "h0.5([A* C]|[D B*])");
+        // まとまりの最後の 1 つを動かすと、元のまとまりは消える
+        assert!(d.insert("A", DockTo::Tab { with: "D", index: Some(0) }));
+        assert!(d.insert("C", DockTo::Tab { with: "D", index: None }));
+        assert_eq!(shape(&d), "[A D B C*]");
+    }
+
+    #[test]
+    fn splitting_a_panel_off_its_own_group() {
+        let mut d = Dock::new(["A", "B"]);
+        // 自分のいるまとまりを分けて自分を右へ（ほかに B がいるので B のまとまりを指す）
+        assert!(d.insert("A", split("A", DockSide::Right)));
+        assert_eq!(shape(&d), "h0.5([B*]|[A*])");
+        // 自分だけのまとまりを自分の隣へは動かせない
+        assert!(!d.insert("A", split("A", DockSide::Left)));
+        assert_eq!(shape(&d), "h0.5([B*]|[A*])");
+        // 自分だけのまとまりにタブとして戻すのは、何もしない（成功）
+        assert!(d.insert("A", DockTo::Tab { with: "A", index: None }));
+        assert_eq!(shape(&d), "h0.5([B*]|[A*])");
+    }
+
+    #[test]
+    fn places_named_by_missing_panels_change_nothing() {
+        let mut d = Dock::new(["A"]);
+        assert!(!d.insert("B", split("X", DockSide::Right)));
+        assert!(!d.insert("B", DockTo::Tab { with: "X", index: None }));
+        assert_eq!(shape(&d), "[A*]");
+        // 動かすパネルが指す先を失わないように、抜く前に決めている
+        d.insert("B", split("A", DockSide::Right));
+        assert!(!d.insert("A", split("X", DockSide::Right)));
+        assert_eq!(shape(&d), "h0.5([A*]|[B*])", "失敗した時は A を抜かない");
+    }
+
+    #[test]
+    fn an_empty_dock_takes_any_panel() {
+        let mut d = Dock::<&str>::new([]);
+        assert!(d.insert("A", split("X", DockSide::Right)));
+        assert_eq!(shape(&d), "[A*]");
+        d.remove(&"A");
+        assert!(d.insert("B", DockTo::Edge { side: DockSide::Top, share: 0.3 }));
+        assert_eq!(shape(&d), "[B*]");
+    }
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let mut d = Dock::new(["A", "B"]);
+        d.insert("C", DockTo::Split { of: "A", side: DockSide::Right, share: 0.35 });
+        d.insert("D", DockTo::Edge { side: DockSide::Bottom, share: 0.2 });
+        d.select(&"B");
+        let text = d.save(|p| p.to_string());
+        assert!(text.starts_with("kargui-dock 1\n"), "{text}");
+        let names = ["A", "B", "C", "D"];
+        let back = Dock::load(&text, |n| names.iter().copied().find(|p| *p == n)).unwrap();
+        assert_eq!(shape(&back), shape(&d));
+        assert_eq!(back.selected(), d.selected());
+    }
+
+    #[test]
+    fn load_drops_unknown_and_repeated_panels_and_folds_empty_groups() {
+        let mut d = Dock::new(["A", "Old"]);
+        d.insert("C", split("A", DockSide::Right));
+        d.insert("Gone", split("C", DockSide::Bottom));
+        d.select(&"Old");
+        let text = d.save(|p| p.to_string());
+        let known = ["A", "C"];
+        let back = Dock::load(&text, |n| known.iter().copied().find(|p| *p == n)).unwrap();
+        assert_eq!(shape(&back), "h0.5([A*]|[C*])", "Old が選ばれていたまとまりは最初を選ぶ。Gone のまとまりは畳む");
+        // 名前が 2 回出てきたら、2 回目は捨てる
+        let twice = "kargui-dock 1\nsplit h 0.5\ntabs 0 1\npanel A\ntabs 0 2\npanel A\npanel C\n";
+        let back = Dock::load(twice, |n| known.iter().copied().find(|p| *p == n)).unwrap();
+        assert_eq!(shape(&back), "h0.5([A*]|[C*])");
+    }
+
+    #[test]
+    fn load_refuses_text_that_is_not_a_layout() {
+        let any = |n: &str| Some(n.to_string());
+        assert_eq!(Dock::load("", any), None);
+        assert_eq!(Dock::load("kargui-dock 2\ntabs 0 1\npanel A\n", any), None, "新しい版");
+        assert_eq!(Dock::load("kargui-dock 1\ntabs 0 2\npanel A\n", any), None, "パネルが足りない");
+        assert_eq!(Dock::load("kargui-dock 1\nsplit x 0.5\ntabs 0 1\npanel A\ntabs 0 1\npanel B\n", any), None, "向きが壊れている");
+        assert_eq!(Dock::load("kargui-dock 1\ntabs 0 1\npanel A\ntabs 0 1\npanel B\n", any), None, "余りの行");
+        assert_eq!(Dock::load("kargui-dock 1\n", any), Some(Dock { root: None }), "空の並べ方");
+        // 名前の中の空白はそのまま
+        let d = Dock::new(["two words".to_string()]);
+        assert_eq!(Dock::load(&d.save(|p| p.clone()), any), Some(d));
+    }
+}

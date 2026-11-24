@@ -7,6 +7,7 @@ use crate::ime::ImeField;
 use crate::ui::context::{Context, Hit, ListInfo, OverlayInfo, Prev};
 use crate::ui::edit;
 use crate::ui::layout::{self, Dir, Size};
+use crate::ui::dock::{DockGeom, GroupGeom};
 use crate::ui::{Kind, MenuMark, Overlay, OverlayKind, Place, TextKind, Tree};
 use crate::icon::Icon;
 
@@ -760,10 +761,34 @@ impl Painter<'_> {
         } else {
             self.node_body(tree, i);
         }
-        if self.cx.dnd.as_ref().is_some_and(|d| d.over == Some(id))
+        if let Some(at) = self.cx.dnd.as_ref().filter(|d| d.over == Some(id)).map(|d| d.at)
             && let Some(c) = intersect(r, self.clip)
         {
-            self.drop_highlight(c);
+            // ドッキングは全体を囲まず、落とす先の的と落ちる所を描く
+            if matches!(tree.info[i].kind, Kind::Dock) {
+                self.dock_overlay(&dock_geom(tree, i), at);
+            } else {
+                self.drop_highlight(c);
+            }
+        }
+    }
+
+    /// ドッキングにタブを引っ張っている間: 落ちる所を薄く塗る（落とす先はポインターのいる場所で決まるので、的は描かない）
+    fn dock_overlay(&mut self, geom: &DockGeom, at: (f32, f32)) {
+        let scale = self.cx.scale;
+        let a = self.cx.theme.accent;
+        let line = self.line();
+        let zone = geom.zone_at(at.0, at.1, scale);
+        // ポインターの下のまとまりと落とす先が変わったら記録する（どこを通ったか、記録から分かるように）
+        let now = format!("group={:?} zone={zone:?}", geom.group_at(at.0, at.1));
+        if self.cx.dock_zone_log.as_deref() != Some(now.as_str()) {
+            crate::log::event("dock.zone", &format!("at={:.0},{:.0}", at.0, at.1), &now);
+            self.cx.dock_zone_log = Some(now);
+        }
+        if let Some(r) = zone.and_then(|z| geom.preview(z)) {
+            // 半透明の塗りと枠は別々に描く（boxed は枠の色の上に中を重ねるので、中が透けると枠の色で埋まる）
+            self.d.fill(r, [a[0], a[1], a[2], 0.18], self.px(4.0));
+            self.outline(r, a, 2.0 * line);
         }
     }
 
@@ -811,7 +836,14 @@ impl Painter<'_> {
         match &tree.info[i].kind {
             // 重ねる物は親に付かないので、ここには来ない（Painter::overlay で描く）
             Kind::Overlay { .. } => {}
-            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar | Kind::Tabs | Kind::TabPanel | Kind::Grid | Kind::Tree | Kind::Table { .. } | Kind::DayGrid => {
+            Kind::Dock => {
+                // 全体とまとまりの場所を覚える（次のフレームで、タブを落とした先を決める）
+                self.prev.docks.insert(id, dock_geom(tree, i));
+                for &c in &tree.layout[i].children {
+                    self.node(tree, c);
+                }
+            }
+            Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar | Kind::Tabs | Kind::DockGroup | Kind::TabPanel | Kind::Grid | Kind::Tree | Kind::Table { .. } | Kind::DayGrid => {
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
                 }
@@ -1033,9 +1065,13 @@ impl Painter<'_> {
                 let t = &self.cx.theme;
                 let border = t.border;
                 self.d.fill(Rect::new(r.x, r.bottom() - line, r.w, line), border, 0.0);
+                // 帯の中のボタン（ドッキングの閉じるボタン）は、ツールバーと同じく枠を描かない
+                let was = self.toolbar;
+                self.toolbar = true;
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
                 }
+                self.toolbar = was;
             }
             Kind::Tab { text, selected } => {
                 let t = self.cx.theme.clone();
@@ -1959,6 +1995,27 @@ impl Painter<'_> {
             self.draw_thumb(id, t);
         }
     }
+}
+
+/// ドッキングの入れ物 i の、全体とまとまりの場所（今のフレームの配置から。まとまりは左・上が先）
+pub(crate) fn dock_geom(tree: &Tree, i: usize) -> DockGeom {
+    fn walk(tree: &Tree, i: usize, out: &mut Vec<GroupGeom>) {
+        for &c in &tree.layout[i].children {
+            if matches!(tree.info[c].kind, Kind::DockGroup) {
+                // まとまりの最初の子が見出しの帯（TabList）、その中の Tab が見出し
+                let strip = tree.layout[c].children.first().copied();
+                let tabs = strip.map_or(Vec::new(), |s| {
+                    tree.layout[s].children.iter().filter(|&&t| matches!(tree.info[t].kind, Kind::Tab { .. })).map(|&t| tree.layout[t].rect).collect()
+                });
+                out.push(GroupGeom { rect: tree.layout[c].rect, strip: strip.map_or(Rect::default(), |s| tree.layout[s].rect), tabs });
+            } else {
+                walk(tree, c, out);
+            }
+        }
+    }
+    let mut g = DockGeom { root: tree.layout[i].rect, groups: Vec::new() };
+    walk(tree, i, &mut g.groups);
+    g
 }
 
 /// 一覧が見える範囲を決めるのに使った高さと、決まった高さがずれていたら true（もう 1 フレーム描く）

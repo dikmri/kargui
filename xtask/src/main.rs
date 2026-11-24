@@ -599,6 +599,31 @@ fn shots() -> Vec<Shot> {
             setup: no_setup,
         },
         Shot {
+            name: "dock",
+            size: (560.0, 300.0),
+            view: |ui| {
+                use kargui::{Dock, DockSide, DockTo};
+                let mut dock = Dock::new(["Editor", "Notes"]);
+                dock.insert("Files", DockTo::Edge { side: DockSide::Left, share: 0.3 });
+                dock.insert("Output", DockTo::Split { of: "Editor", side: DockSide::Bottom, share: 0.35 });
+                ui.dock(&mut dock).grow().closable().show(|p| p.to_string(), |ui, p| match *p {
+                    "Files" => {
+                        ui.label("main.rs");
+                        ui.label("dock.rs");
+                    }
+                    "Editor" => {
+                        ui.label("fn main() {").monospace();
+                        ui.label("    kargui::run(..)").monospace();
+                        ui.label("}").monospace();
+                    }
+                    _ => {
+                        ui.label("Finished in 0.8 s").weak();
+                    }
+                });
+            },
+            setup: no_setup,
+        },
+        Shot {
             name: "more_widgets",
             size: (560.0, 330.0),
             view: |ui| {

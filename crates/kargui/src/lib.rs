@@ -79,6 +79,7 @@ pub use log::set_logger;
 pub use text::Font;
 pub use theme::Theme;
 pub use ui::{Align, Id, Size, SliderValue, Ui};
+pub use ui::dock::{Dock, DockSide, DockTo};
 pub use wake::Waker;
 
 /// An error from the operating system while opening or drawing the window.

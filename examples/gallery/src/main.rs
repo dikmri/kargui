@@ -5,13 +5,13 @@
 use std::time::{Duration, Instant};
 
 use kargui::ui::{TableColumn, TreeBuilder};
-use kargui::{App, Color, Date, FileDialog, Frame, Icon, Image, Options, Rect, Size, Time, Ui, rgb};
+use kargui::{App, Color, Date, Dock, DockSide, DockTo, FileDialog, Frame, Icon, Image, Options, Rect, Size, Time, Ui, rgb};
 use taskcore::{args, log};
 
 const DEFAULT_LOG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../logs/gallery.log");
 
 /// ページ（名前と、使う関数）
-const PAGES: [(&str, &str); 22] = [
+const PAGES: [(&str, &str); 23] = [
     ("ボタン", "button · icon_button · toggle_button · link"),
     ("チェックと切り替え", "checkbox · toggle · dark_mode_switch"),
     ("ひとつを選ぶ", "radio_group · segmented · dropdown"),
@@ -34,6 +34,7 @@ const PAGES: [(&str, &str); 22] = [
     ("ファイルのダイアログ", "file_dialog · chosen_file"),
     ("自由に描く面", "canvas"),
     ("引っ張って落とす", "drag_source · dropped · animate"),
+    ("ドッキング", "dock · Dock"),
 ];
 
 struct Gallery {
@@ -71,7 +72,20 @@ struct Gallery {
     boxes: [Vec<&'static str>; 2],
     wide: bool,
     picture: Image,
+    dock: Dock<&'static str>,
+    saved_dock: Option<String>,
 }
+
+/// ドッキングの最初の並べ方: 左にファイル、右上に編集とメモ、右下に出力
+fn default_dock() -> Dock<&'static str> {
+    let mut dock = Dock::new(["編集", "メモ"]);
+    dock.insert("ファイル", DockTo::Edge { side: DockSide::Left, share: 0.3 });
+    dock.insert("出力", DockTo::Split { of: "編集", side: DockSide::Bottom, share: 0.35 });
+    dock
+}
+
+/// ドッキングのパネルの名前（保存した文字から戻す）
+const DOCK_PANELS: [&str; 4] = ["ファイル", "編集", "メモ", "出力"];
 
 /// 見本の画像（64×64 の色の移り変わりと、透ける丸）
 fn picture() -> Image {
@@ -123,6 +137,8 @@ impl Gallery {
             boxes: [vec!["りんご", "みかん", "ぶどう"], Vec::new()],
             wide: false,
             picture: picture(),
+            dock: default_dock(),
+            saved_dock: None,
         }
     }
 
@@ -410,6 +426,56 @@ impl Gallery {
                     ui.label("動く幅");
                 })
                 .width(Size::Fixed(w));
+            }
+            22 => {
+                let mut closed = None;
+                let notes = &mut self.notes;
+                ui.column(|ui| {
+                    closed = ui.dock(&mut self.dock).grow().closable().show(|p| p.to_string(), |ui, p| match *p {
+                        "ファイル" => {
+                            ui.label("main.rs");
+                            ui.label("dock.rs");
+                        }
+                        "編集" => {
+                            ui.label("fn main() {").monospace();
+                            ui.label("    kargui::run(..)").monospace();
+                            ui.label("}").monospace();
+                        }
+                        "メモ" => {
+                            ui.text_area(notes).hint("メモ").grow();
+                        }
+                        _ => {
+                            ui.label("終わりました（0.8 秒）").weak();
+                        }
+                    });
+                })
+                .height(Size::Fixed(320.0));
+                if let Some(p) = closed {
+                    self.dock.remove(&p);
+                    log::event("gallery.dock_close", p, "removed");
+                }
+                ui.row(|ui| {
+                    if ui.button("最初の並べ方に戻す").clicked() {
+                        self.dock = default_dock();
+                        log::event("gallery.dock_reset", "", "ok");
+                    }
+                    if ui.button("並べ方を保存").clicked() {
+                        let text = self.dock.save(|p| p.to_string());
+                        log::event("gallery.dock_save", "", &text.replace('\n', "|"));
+                        self.saved_dock = Some(text);
+                    }
+                    let saved = self.saved_dock.clone();
+                    if ui.button("保存した並べ方に戻す").enabled(saved.is_some()).clicked()
+                        && let Some(text) = saved
+                    {
+                        let back = Dock::load(&text, |name| DOCK_PANELS.into_iter().find(|p| *p == name));
+                        log::event("gallery.dock_load", "", &format!("ok={}", back.is_some()));
+                        if let Some(d) = back {
+                            self.dock = d;
+                        }
+                    }
+                });
+                ui.label("タブを引っ張ると、落ちる所が薄く塗られる（まとまりの真ん中はタブ、端は分ける、全体の端の帯は外側）。タブの右クリック（Shift+F10）でも動かせる。F6 でまとまりを回る").weak().wrap();
             }
             _ => {}
         }

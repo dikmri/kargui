@@ -47,11 +47,14 @@
 
 pub(crate) mod a11y;
 pub(crate) mod context;
+pub(crate) mod dock;
+pub(crate) mod dock_view;
 pub(crate) mod draw;
 pub(crate) mod edit;
 pub(crate) mod layout;
 pub(crate) mod rich;
 
+pub use dock_view::DockArea;
 pub use rich::{RichLink, RichText, Span};
 
 use std::any::{Any, TypeId};
@@ -169,6 +172,10 @@ pub(crate) enum Kind {
     MenuButton { text: String, open: bool, icon: Option<Icon> },
     /// タブの入れ物（見出しの列と中身）
     Tabs,
+    /// ドッキングの入れ物（Ui::dock）。タブを引っ張っている間は、落とす先の的と落ちる所を描く
+    Dock,
+    /// ドッキングのタブのまとまり（中は TabList と TabPanel）
+    DockGroup,
     /// タブの見出しの列
     TabList,
     /// タブの見出し

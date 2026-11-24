@@ -1879,6 +1879,57 @@ mod tests {
     }
 
     #[test]
+    fn drawing_only_changes_shows_the_dock_targets_while_dragging_a_tab() {
+        // 作者の手の確かめ（ドッキングの 1 回目）で、十字の的と外側の的に 1 回も落とさなかった。見本のページと同じく
+        // スクロールする入れ物の中のドッキングで、引っ張っている間の絵が全部描き直した絵と同じかを比べる
+        struct Page {
+            dock: crate::Dock<&'static str>,
+        }
+        impl App for Page {
+            fn view(&mut self, ui: &mut Ui) {
+                let dock = &mut self.dock;
+                ui.scroll(|ui| {
+                    ui.heading("Dock");
+                    ui.column(|ui| {
+                        ui.dock(dock).grow().closable().show(|p| p.to_string(), |ui, p| {
+                            ui.label(format!("{p} body"));
+                        });
+                    })
+                    .height(Size::Fixed(320.0));
+                })
+                .grow();
+            }
+        }
+        let mut dock = crate::Dock::new(["Editor", "Notes"]);
+        dock.insert("Files", crate::DockTo::Edge { side: crate::DockSide::Left, share: 0.3 });
+        dock.insert("Output", crate::DockTo::Split { of: "Editor", side: crate::DockSide::Bottom, share: 0.35 });
+        let mut h = Harness::new(Page { dock });
+        let (w, hh) = (h.rt.cx.width as i32, h.rt.cx.height as i32);
+        let mut px = vec![0u32; (w * hh) as usize];
+        let mut summary = crate::damage::Summary::default();
+        let mut step = |h: &mut Harness<Page>, what: &str| {
+            let bg = h.rt.cx.theme.background;
+            let out = crate::cpu_frame::draw(&mut px, w, hh, &h.rt.draw, &h.rt.cx.text.atlas, bg, &summary, false);
+            summary = out.summary;
+            let full = h.render();
+            let diff = px.iter().zip(&full.pixels).filter(|(a, b)| a != b).count();
+            assert_eq!(diff, 0, "{what}: {diff} 画素が違う（{}）", out.mode);
+        };
+        step(&mut h, "最初");
+        let n = h.find("Notes").unwrap();
+        let (sx, sy) = (n.x + n.w / 2.0, n.y + n.h / 2.0);
+        h.send(vec![Event::PointerDown { x: sx, y: sy, shift: false, count: 1 }]);
+        step(&mut h, "押した");
+        for (k, (x, y)) in [(sx + 8.0, sy), (sx + 30.0, sy + 4.0), (sx + 40.0, sy + 60.0), (sx + 60.0, sy + 120.0), (sx - 300.0, sy + 150.0)].into_iter().enumerate() {
+            h.send(vec![Event::PointerMove { x, y }]);
+            step(&mut h, &format!("引っ張る {k}"));
+        }
+        assert!(h.rt.cx.dnd.as_ref().is_some_and(|d| d.over.is_some()), "ドッキングの上にいる");
+        h.send(vec![Event::Key { key: Key::Escape, mods: Mods::default() }]);
+        step(&mut h, "Esc");
+    }
+
+    #[test]
     fn drawing_only_changes_matches_drawing_everything_for_a_list_inside_a_scroll_area() {
         // 作者の手の確かめ（0.3.0 の 2 回目）で、部品の見本のスクロールバーが二重に見えた。見本のページは
         // スクロールする入れ物の中にあり、その中の一覧をホイールで動かすと、古いつまみの絵が残る
@@ -3540,6 +3591,188 @@ mod tests {
         h.click("3 row");
         h.type_text("d");
         assert_eq!(h.app().name, "abc", "一覧を押したので入力欄には入らない");
+    }
+
+    /// ドッキングの見本: 左に Files、右に Editor と Notes のタブ
+    struct Ide {
+        dock: crate::Dock<&'static str>,
+        closable: bool,
+        closed: Vec<&'static str>,
+    }
+
+    impl App for Ide {
+        fn view(&mut self, ui: &mut Ui) {
+            let mut area = ui.dock(&mut self.dock).grow();
+            if self.closable {
+                area = area.closable();
+            }
+            if let Some(p) = area.show(|p| p.to_string(), |ui, p| {
+                ui.label(format!("{p} content"));
+            }) {
+                self.closed.push(p);
+                self.dock.remove(&p);
+            }
+        }
+    }
+
+    fn ide(closable: bool) -> Harness<Ide> {
+        let mut dock = crate::Dock::new(["Editor", "Notes"]);
+        dock.insert("Files", crate::DockTo::Edge { side: crate::DockSide::Left, share: 0.3 });
+        Harness::new(Ide { dock, closable, closed: Vec::new() })
+    }
+
+    #[test]
+    fn docks_show_each_groups_selected_panel_and_switch_tabs_by_click() {
+        let mut h = ide(false);
+        assert!(h.find("Files content").is_some() && h.find("Editor content").is_some());
+        assert!(h.find("Notes content").is_none(), "選んでいないタブの中身は作らない");
+        let files = h.find("Files content").unwrap();
+        let editor = h.find("Editor content").unwrap();
+        assert!(files.x < editor.x, "Files は左のまとまり");
+        h.click("Notes");
+        assert!(h.find("Notes content").is_some() && h.find("Editor content").is_none());
+        assert_eq!(h.app().dock.selected(), vec![&"Files", &"Notes"]);
+        // 読み上げ: まとまりはタブの並びとタブの中身、仕切りは百分率
+        let names = h.names();
+        assert!(names.iter().any(|n| n == "Notes"), "{names:?}");
+    }
+
+    #[test]
+    fn dock_tabs_follow_the_keyboard() {
+        let mut h = ide(false);
+        h.click("Notes");
+        h.press(Key::Left);
+        assert_eq!(focused_name(&h).as_deref(), Some("Editor"));
+        assert!(h.find("Editor content").is_some(), "← で前のタブを見せる");
+        // Ctrl+Shift+PageDown で Editor を後ろへ
+        h.press_with(Key::PageDown, Mods { ctrl: true, shift: true, alt: false });
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Notes", &"Editor"]);
+        assert_eq!(focused_name(&h).as_deref(), Some("Editor"), "動かしたタブに焦点が残る");
+        // Ctrl+Shift+PageUp で戻す
+        h.press_with(Key::PageUp, Mods { ctrl: true, shift: true, alt: false });
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Editor", &"Notes"]);
+        // F6 で次のまとまり（端で回る）、Shift+F6 で前
+        h.press(Key::F6);
+        assert_eq!(focused_name(&h).as_deref(), Some("Files"));
+        h.press_with(Key::F6, Mods { shift: true, ..Mods::default() });
+        assert_eq!(focused_name(&h).as_deref(), Some("Editor"));
+        // Ctrl+Tab で次のタブ
+        h.press_with(Key::Tab, Mods { ctrl: true, ..Mods::default() });
+        assert!(h.find("Notes content").is_some());
+        assert_eq!(focused_name(&h).as_deref(), Some("Notes"));
+    }
+
+    #[test]
+    fn dock_panels_move_from_the_tab_menu() {
+        let mut h = ide(false);
+        // Notes を右の新しいまとまりへ
+        h.right_click("Notes").click("Move to a new group").click("Right");
+        assert_eq!(h.app().dock.selected(), vec![&"Files", &"Editor", &"Notes"], "3 つのまとまりになる");
+        assert!(h.find("Notes content").is_some() && h.find("Editor content").is_some());
+        let (e, n) = (h.find("Editor content").unwrap(), h.find("Notes content").unwrap());
+        assert!(e.x < n.x, "Notes は Editor の右");
+        // Notes を Files のまとまりへ（メニューには、ほかのまとまりの見せているパネルの題が並ぶ）
+        h.right_click("Notes").click("Move into group").click("Files");
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Notes", &"Editor"]);
+        assert_eq!(h.app().dock.selected(), vec![&"Notes", &"Editor"]);
+        // まとまりに 1 つだけのパネルを「新しいまとまりへ」動かすと、全体の端へ
+        h.right_click("Editor").click("Move to a new group").click("Above");
+        assert_eq!(h.app().dock.panels(), vec![&"Editor", &"Files", &"Notes"]);
+        let (e, f) = (h.find("Editor content").unwrap(), h.find("Notes content").unwrap());
+        assert!(e.y < f.y, "Editor は全体の上");
+    }
+
+    #[test]
+    fn closable_docks_only_ask_to_close() {
+        let mut h = ide(true);
+        h.click("Close Notes");
+        assert_eq!(h.app().closed, vec!["Notes"]);
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Editor"], "アプリが remove で消した");
+        // Delete と、メニューの Close
+        h.click("Editor").press(Key::Delete);
+        assert_eq!(h.app().closed, vec!["Notes", "Editor"]);
+        h.right_click("Files").click("Close");
+        assert_eq!(h.app().closed, vec!["Notes", "Editor", "Files"]);
+        assert!(h.app().dock.panels().is_empty());
+        // 閉じられない dock には閉じるボタンが無い
+        let h = ide(false);
+        assert!(h.find("Close Notes").is_none());
+    }
+
+    #[test]
+    fn dock_tabs_drag_onto_targets_and_between_tabs() {
+        use crate::ui::dock::DockGeom;
+        let mut h = ide(false);
+        let geom = |h: &Harness<Ide>| -> DockGeom { h.rt.cx.prev.docks.values().next().expect("dock の場所を覚えている").clone() };
+        let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        // パネルの中身の名前が入っているまとまりの、見出しの帯の下の場所（左上を 0、右下を 1 として fx・fy の所）
+        let body_at = |h: &Harness<Ide>, content: &str, fx: f32, fy: f32| -> (f32, f32) {
+            let g = geom(h);
+            let (cx, cy) = mid(h.find(content).unwrap());
+            let grp = g.groups.iter().find(|k| k.rect.contains(cx, cy)).unwrap();
+            let top = grp.strip.bottom();
+            (grp.rect.x + grp.rect.w * fx, top + (grp.rect.bottom() - top) * fy)
+        };
+        // タブを (x, y) まで引っ張って離す（4 画素を超えて動かしてから）
+        let drag_tab = |h: &mut Harness<Ide>, name: &str, to: (f32, f32)| {
+            let (sx, sy) = mid(h.find(name).unwrap());
+            press(h, sx, sy);
+            drag_to(h, sx + 12.0, sy + 12.0);
+            drag_to(h, to.0, to.1);
+            release(h, to.0, to.1);
+        };
+        // 1. Notes を Files のまとまりの右の 4 分の 1 へ: Files の右に分かれる（的を狙わなくてよい）
+        let right = body_at(&h, "Files content", 0.9, 0.5);
+        drag_tab(&mut h, "Notes", right);
+        assert_eq!(h.app().dock.selected(), vec![&"Files", &"Notes", &"Editor"]);
+        let (f, n) = (h.find("Files content").unwrap(), h.find("Notes content").unwrap());
+        assert!(f.x < n.x && (f.y - n.y).abs() < 1.0, "Files の右に Notes");
+        // 2. Editor を全体の左の端の帯へ
+        let root = geom(&h).root;
+        drag_tab(&mut h, "Editor", (root.x + 4.0, root.y + root.h / 2.0));
+        assert_eq!(h.app().dock.panels(), vec![&"Editor", &"Files", &"Notes"]);
+        // 3. Notes を Files のまとまりの真ん中へ: タブとして入る
+        let center = body_at(&h, "Files content", 0.5, 0.5);
+        drag_tab(&mut h, "Notes", center);
+        assert_eq!(h.app().dock.panels(), vec![&"Editor", &"Files", &"Notes"]);
+        assert_eq!(h.app().dock.selected(), vec![&"Editor", &"Notes"], "2 つのまとまり");
+        // 4. 見出しの帯の間: Notes を Files の見出しの左半分へ（Files の前）
+        let files_tab = h.find("Files").unwrap();
+        drag_tab(&mut h, "Notes", (files_tab.x + 4.0, files_tab.y + files_tab.h / 2.0));
+        assert_eq!(h.app().dock.panels(), vec![&"Editor", &"Notes", &"Files"]);
+        // 5. まとまりの間の仕切りの上に落としても、Esc で取り消しても変わらない
+        let before = h.app().dock.clone();
+        let g = geom(&h);
+        let gap = ((g.groups[0].rect.right() + g.groups[1].rect.x) / 2.0, g.groups[0].rect.y + g.groups[0].rect.h / 2.0);
+        drag_tab(&mut h, "Files", gap);
+        assert_eq!(h.app().dock, before);
+        let (sx, sy) = mid(h.find("Files").unwrap());
+        press(&mut h, sx, sy);
+        drag_to(&mut h, sx + 12.0, sy + 12.0);
+        drag_to(&mut h, right.0, right.1);
+        h.press(Key::Escape);
+        release(&mut h, right.0, right.1);
+        assert_eq!(h.app().dock, before);
+    }
+
+    #[test]
+    fn dock_dividers_share_the_space_by_drag_and_keyboard() {
+        let mut h = ide(false);
+        let share = |h: &Harness<Ide>| -> f32 {
+            let text = h.app().dock.save(|p| p.to_string());
+            text.lines().find_map(|l| l.strip_prefix("split h ")).unwrap().trim().parse().unwrap()
+        };
+        assert!((share(&h) - 0.3).abs() < 1e-3);
+        let before = h.find("Editor content").unwrap().x;
+        h.drag("Resize", 100.0, 0.0);
+        let after = h.find("Editor content").unwrap().x;
+        assert!((after - before - 100.0).abs() <= 2.0, "仕切りがポインターについて来る: {before} → {after}");
+        assert!(share(&h) > 0.38, "{}", share(&h));
+        // キー: Home で一番左（0.1）、End で一番右（0.9）
+        h.click("Resize").press(Key::Home);
+        assert!((share(&h) - 0.1).abs() < 1e-3);
+        h.press(Key::End);
+        assert!((share(&h) - 0.9).abs() < 1e-3);
     }
 
     #[test]

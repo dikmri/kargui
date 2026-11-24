@@ -483,7 +483,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 OverlayKind::Menu => Node::new(Role::Menu),
             },
             Kind::Space | Kind::SpinButton { .. } => unreachable!(),
-            Kind::Tabs => Node::new(Role::GenericContainer),
+            Kind::Tabs | Kind::Dock | Kind::DockGroup => Node::new(Role::GenericContainer),
             Kind::TabList => Node::new(Role::TabList),
             Kind::Tab { selected, .. } => {
                 let mut n = Node::new(Role::Tab);

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Docking: `ui.dock(&mut dock).show(title, content)` arranges panels in tab groups that the user
+  can rearrange. The app keeps the layout in a `Dock<K>` (`K` is its name for a panel) and builds
+  it with `Dock::new` and `Dock::insert(panel, DockTo::Tab | Split | Edge)`; groups are named by a
+  panel in them, so places stay right while panels move. While a tab is dragged, where the pointer
+  is decides where it goes, and that place is shaded: the middle of a group adds a tab, a quarter
+  from its edge splits it, a tab strip puts it between tabs, and bands along the dock's edges put
+  it along that side (no small targets to aim at). Escape cancels. Dividers keep their share when the window
+  is resized. Everything also works without a mouse: the tab's menu (Move to a new group, Move
+  into group, Close), Ctrl+Shift+PageUp/PageDown to move a tab, F6 to go to the next group, and
+  Delete to close. `.closable()` adds close buttons; closing only asks (`show` returns the panel).
+  `Dock::save` and `Dock::load` keep the layout as text, dropping panels the app no longer knows.
+  Moving groups into separate windows is not there yet. Guide chapter 23, `examples/gallery`
+  page "ドッキング".
+
 ## 0.3.0 (2026-11-24)
 
 Apps now run on Linux as well, in Wayland and X11 windows, with the input method (text-input-v3 on
