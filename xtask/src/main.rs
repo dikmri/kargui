@@ -611,10 +611,11 @@ fn shots() -> Vec<Shot> {
                         ui.label("main.rs");
                         ui.label("dock.rs");
                     }
+                    // 等幅の文字は入れない（CI の Windows には BIZ UD ゴシックが無く、広い Consolas で並んで
+                    // 文字の範囲の外まで違いが出た）
                     "Editor" => {
-                        ui.label("fn main() {").monospace();
-                        ui.label("    kargui::run(..)").monospace();
-                        ui.label("}").monospace();
+                        ui.label("Untitled");
+                        ui.label("Press Ctrl+S to save").weak();
                     }
                     _ => {
                         ui.label("Finished in 0.8 s").weak();
