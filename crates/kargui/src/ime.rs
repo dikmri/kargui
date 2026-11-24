@@ -144,14 +144,53 @@ pub(crate) fn fcitx_clauses(segments: &[(String, i32)], cursor: i32) -> (String,
     (text, Clauses { bounds, target, cursor })
 }
 
-/// fcitx5 の UpdateFormattedPreedit を kargui の入力にする。shown は今見せている変換中の文字。
+/// IBus の属性の種類（IBusAttrType）: 下線・背景の色。値は下線なら 1 本（1）・2 本（2）
+const IBUS_UNDERLINE: u32 = 1;
+const IBUS_BACKGROUND: u32 = 3;
+const IBUS_UNDERLINE_DOUBLE: u32 = 2;
+
+/// IBus の UpdatePreeditText（変換中の文字・属性の並び [種類, 値, 始まり, 終わり]・カーソル。位置は文字の数）を文節にする。
+/// IBus には文節の区切りが無いので、属性の範囲の境目を文節の境目にする。背景の色か 2 本の下線が付いた範囲を
+/// 今変換している文節にする（Mozc は今の文節に 2 本の下線と背景を、ほかの文節に 1 本の下線を付ける）
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn ibus_clauses(text: &str, attrs: &[[u32; 4]], cursor: u32) -> Clauses {
+    // 文字の数の位置 → UTF-16 の位置（units[n] は n 文字目の前）。長すぎる位置は終わりに寄せる
+    let units: Vec<usize> = std::iter::once(0)
+        .chain(text.chars().scan(0, |n, c| {
+            *n += c.len_utf16();
+            Some(*n)
+        }))
+        .collect();
+    let last = units.len() - 1;
+    let at = |p: u32| units[(p as usize).min(last)];
+    let mut bounds = vec![0, units[last]];
+    let mut target: Option<(usize, usize)> = None;
+    for &[kind, value, start, end] in attrs {
+        let (a, b) = (at(start), at(end));
+        if a >= b {
+            continue;
+        }
+        bounds.extend([a, b]);
+        if kind == IBUS_BACKGROUND || (kind == IBUS_UNDERLINE && value == IBUS_UNDERLINE_DOUBLE) {
+            target = Some(target.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
+        }
+    }
+    bounds.sort_unstable();
+    bounds.dedup();
+    if bounds.len() < 2 {
+        bounds = vec![0, units[last]];
+    }
+    Clauses { bounds, target, cursor: Some(at(cursor)) }
+}
+
+/// 変換中の文字（text と文節）を kargui の入力にする。shown は今見せている変換中の文字。
 /// 変換中の文字が空になったら（取り消し・確定の後）、見せていた時だけ消す
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn fcitx_preedit_events(shown: &str, segments: &[(String, i32)], cursor: i32) -> Vec<Event> {
-    let (text, Clauses { bounds, target, cursor }) = fcitx_clauses(segments, cursor);
+pub(crate) fn preedit_events(shown: &str, text: String, clauses: Clauses) -> Vec<Event> {
     if text.is_empty() {
         return if shown.is_empty() { Vec::new() } else { vec![Event::ImePreedit(String::new())] };
     }
+    let Clauses { bounds, target, cursor } = clauses;
     vec![Event::ImePreedit(text), Event::ImeClauses { bounds, target, cursor }]
 }
 
@@ -322,13 +361,43 @@ mod tests {
     }
 
     #[test]
-    fn fcitx_preedit_events_clear_an_empty_composition_once() {
+    fn preedit_events_clear_an_empty_composition_once() {
         let seg = |t: &str, f: i32| (t.to_string(), f);
-        let ev = fcitx_preedit_events("", &[seg("あ", 8)], 3);
+        let (text, c) = fcitx_clauses(&[seg("あ", 8)], 3);
+        let ev = preedit_events("", text, c);
         assert_eq!(ev, vec![Event::ImePreedit("あ".into()), Event::ImeClauses { bounds: vec![0, 1], target: None, cursor: Some(1) }]);
         // 変換中の文字が空になった（取り消し）。見せていた時だけ消す
-        assert_eq!(fcitx_preedit_events("あ", &[], 0), vec![Event::ImePreedit(String::new())]);
-        assert_eq!(fcitx_preedit_events("", &[], 0), Vec::<Event>::new());
+        let (text, c) = fcitx_clauses(&[], 0);
+        assert_eq!(preedit_events("あ", text.clone(), c.clone()), vec![Event::ImePreedit(String::new())]);
+        assert_eq!(preedit_events("", text, c), Vec::<Event>::new());
+    }
+
+    #[test]
+    fn ibus_attributes_become_clauses_and_the_background_is_the_target() {
+        // ibus-mozc が実際に送った形（検証機で受けた物）: 「私は|学生です」の「私は」を変換中。
+        // 今の文節に 2 本の下線・背景・前の色、ほかの文節に 1 本の下線。カーソルは 0 文字目
+        let attrs = [[1, 2, 0, 2], [3, 13757183, 0, 2], [2, 0, 0, 2], [1, 1, 2, 6]];
+        assert_eq!(ibus_clauses("私は学生です", &attrs, 0), Clauses { bounds: vec![0, 2, 6], target: Some((0, 2)), cursor: Some(0) });
+        // → で次の文節へ（カーソルは 2 文字目）
+        let attrs = [[1, 1, 0, 2], [1, 2, 2, 6], [3, 13757183, 2, 6], [2, 0, 2, 6]];
+        assert_eq!(ibus_clauses("私は学生です", &attrs, 2), Clauses { bounds: vec![0, 2, 6], target: Some((2, 6)), cursor: Some(2) });
+        // かなを打っている途中（1 本の下線が全体に 1 つ）
+        assert_eq!(ibus_clauses("わたしは", &[[1, 1, 0, 4]], 4), Clauses { bounds: vec![0, 4], target: None, cursor: Some(4) });
+    }
+
+    #[test]
+    fn ibus_clauses_take_a_background_inside_one_underline_and_count_in_utf16() {
+        // 全体に 1 本の下線、今の文節に背景だけを付ける IME（ibus-anthy など）
+        let attrs = [[1, 1, 0, 6], [3, 0xc8c8f0, 3, 6]];
+        assert_eq!(ibus_clauses("明日は東京に", &attrs, 6), Clauses { bounds: vec![0, 3, 6], target: Some((3, 6)), cursor: Some(6) });
+        // IBus の位置は文字の数、kargui は UTF-16。😀 は UTF-16 の 2 単位
+        let attrs = [[1, 1, 0, 1], [1, 2, 1, 2]];
+        assert_eq!(ibus_clauses("😀あ", &attrs, 2), Clauses { bounds: vec![0, 2, 3], target: Some((2, 3)), cursor: Some(3) });
+        // 長すぎる範囲・逆さの範囲・長すぎるカーソルは、文字の終わりに寄せるか捨てる（IME の誤りで止まらない）
+        let attrs = [[3, 0, 1, 99], [1, 1, 2, 1]];
+        assert_eq!(ibus_clauses("あいう", &attrs, 99), Clauses { bounds: vec![0, 1, 3], target: Some((1, 3)), cursor: Some(3) });
+        // 属性が無い
+        assert_eq!(ibus_clauses("あ", &[], 1), Clauses { bounds: vec![0, 1], target: None, cursor: Some(1) });
     }
 
     #[test]

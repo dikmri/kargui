@@ -36,10 +36,13 @@
   with libxkbcommon-x11 (loaded at run time, like libxcb), lets the server repeat keys, and has the
   same clipboard, screen reader tree, file dialogs (now attached to their window), second windows
   (with their position and icon) and files dropped from other apps (XDND) as on Wayland. The input
-  method on X11 is fcitx5 through its D-Bus interface: keys go to the input method first, and only
+  method on X11 is fcitx5 or IBus through D-Bus: keys go to the input method first, and only
   the keys it does not use reach the app; the composition, the clause being converted and the
-  candidate window under the caret work as on Wayland (checked with fcitx5 and Mozc under
-  XWayland). IBus is not there yet. New Linux-only dependencies: wayland-client,
+  candidate window under the caret work as on Wayland. kargui uses the one that is running on the
+  session bus (it does not start one): fcitx5 when both are (fcitx5 also answers as IBus, so a
+  name owned by fcitx5 does not count as IBus), and IBus first when `XMODIFIERS` is `@im=ibus`.
+  IBus is reached through its portal (ibus-portal); its own panel draws the candidate window
+  (checked with fcitx5 and Mozc, and with IBus 1.5 and ibus-mozc, under XWayland). New Linux-only dependencies: wayland-client,
   wayland-protocols, xkbcommon-dl, rustix, accesskit_unix, zbus and x11rb (89 crates in all; 71 of
   them come with accesskit_unix, that is zbus and AT-SPI).
 - Password fields turn the input method off (on Windows, Wayland and X11): what is typed there is

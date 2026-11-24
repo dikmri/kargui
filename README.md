@@ -151,8 +151,8 @@ with fcitx5 and Mozc), screen readers (AT-SPI through accesskit_unix, with the s
 Windows; checked with Orca), file dialogs and the system dark mode (xdg-desktop-portal), more
 than one window (`ui.window`), files dragged in from other apps, and a title bar drawn by kargui
 where the compositor draws none (GNOME). X11 windows work too (`x11.rs`, chosen when there is no
-Wayland compositor or with `KARGUI_BACKEND=x11`; the input method there is fcitx5 through D-Bus,
-IBus is not there yet). It is checked on Hyprland, GNOME and XWayland. On macOS, `kargui::run` still returns an `Err` saying the
+Wayland compositor or with `KARGUI_BACKEND=x11`; the input method there is fcitx5 or IBus through
+D-Bus). It is checked on Hyprland, GNOME and XWayland. On macOS, `kargui::run` still returns an `Err` saying the
 system is not supported.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).

@@ -10,12 +10,13 @@
 //! クリップボードは CLIPBOARD の選択（文字だけ。大きい物は INCR で受け取る）。読み上げ・OS の明暗の設定・
 //! ファイルのダイアログは Wayland と同じ（linux.rs と portal.rs）。題の帯はウィンドウマネージャーが描く。
 //!
-//! 日本語入力は fcitx5 の D-Bus（fcitx.rs）。キーをまず IME に渡し、使わなかったキーだけをアプリに渡す。
+//! 日本語入力は fcitx5 か IBus の D-Bus（ime_dbus.rs が選ぶ。fcitx.rs・ibus.rs）。キーをまず IME に渡し、
+//! 使わなかったキーだけをアプリに渡す。
 //!
 //! ほかのアプリから引っ張ってきたファイルは XDND（版 5）。最初に動いた時（XdndPosition）に text/uri-list を受け取り、
 //! Wayland と同じ FileDragEnter にする。
 //!
-//! まだ無い物: IBus（日本語入力は fcitx5 だけ）、窓の外への引っ張り出し。
+//! まだ無い物: 窓の外への引っ張り出し。
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -42,7 +43,7 @@ use x11rb::xcb_ffi::XCBConnection;
 use crate::app::{App, Frame, Options};
 use crate::cpu_frame;
 use crate::damage::Summary;
-use crate::fcitx;
+use crate::ime_dbus;
 use crate::geom::{Color, IRect};
 use crate::ime;
 use crate::input::{A11yAction, Event, Mods};
@@ -228,10 +229,10 @@ struct XDrag {
     accepting: bool,
 }
 
-/// 日本語入力（fcitx5 の D-Bus）の状態
+/// 日本語入力（fcitx5 か IBus の D-Bus）の状態
 struct XIme {
-    tx: Sender<fcitx::Cmd>,
-    rx: Receiver<fcitx::Msg>,
+    tx: Sender<ime_dbus::Cmd>,
+    rx: Receiver<ime_dbus::Msg>,
     /// 入力の文脈ができた
     ready: bool,
     /// IME の焦点を持つ（持っていた）窓。焦点を外した後に届く確定もこの窓に渡す
@@ -371,7 +372,7 @@ struct State {
     font_files: Vec<std::borrow::Cow<'static, [u8]>>,
     main_icon: Option<crate::Image>,
     xkb: Option<Keyboard>,
-    /// 日本語入力（fcitx5 が無ければ None）
+    /// 日本語入力（fcitx5 も IBus も無ければ None）
     ime: Option<XIme>,
     /// ほかのアプリから引っ張ってきている物
     dnd: Option<XDrag>,
@@ -750,24 +751,24 @@ impl State {
         let id = m.next_id;
         m.next_id += 1;
         m.pending.push_back((id, win, code, repeat, release));
-        let _ = m.tx.send(fcitx::Cmd::Key { id, keyval, keycode: code as u32, state: state as u32, release, time });
+        let _ = m.tx.send(ime_dbus::Cmd::Key { id, keyval, keycode: code as u32, state: state as u32, release, time });
     }
 
     /// IME から届いた知らせ（キーの答え・確定・変換中の文字・送り返したキー）を、IME の焦点の窓の入力にする
     fn take_ime(&mut self) {
         while let Some(msg) = self.ime.as_ref().and_then(|m| m.rx.try_recv().ok()) {
             match msg {
-                fcitx::Msg::Ready => {
+                ime_dbus::Msg::Ready(engine) => {
                     if let Some(m) = self.ime.as_mut() {
                         m.ready = true;
                     }
-                    log::event("ime.ready", "fcitx5", "ok");
+                    log::event("ime.ready", engine.name(), "ok");
                     for w in &mut self.windows {
                         w.need_frame = true;
                     }
                 }
-                fcitx::Msg::Failed(e) => {
-                    log::event("ime.unavailable", "fcitx5", &format!("error={e} (keys go straight to the app)"));
+                ime_dbus::Msg::Failed(e) => {
+                    log::event("ime.unavailable", "fcitx5 / ibus", &format!("error={e} (keys go straight to the app)"));
                     let pending: Vec<_> = self.ime.take().map(|mut m| m.pending.drain(..).collect()).unwrap_or_default();
                     for (_, win, code, repeat, release) in pending {
                         if !release {
@@ -776,7 +777,7 @@ impl State {
                     }
                     return;
                 }
-                fcitx::Msg::KeyDone { id, handled } => {
+                ime_dbus::Msg::KeyDone { id, handled } => {
                     let Some(m) = self.ime.as_mut() else { return };
                     let mut earlier = Vec::new();
                     let mut hit = None;
@@ -803,7 +804,7 @@ impl State {
                         }
                     }
                 }
-                fcitx::Msg::Commit(text) => {
+                ime_dbus::Msg::Commit(text) => {
                     let Some(m) = self.ime.as_mut() else { return };
                     m.shown.clear();
                     let win = m.win;
@@ -813,15 +814,11 @@ impl State {
                         w.push(Event::ImeCommit(text));
                     }
                 }
-                fcitx::Msg::Preedit(segments, cursor) => {
+                ime_dbus::Msg::Preedit(text, clauses) => {
                     let Some(m) = self.ime.as_mut() else { return };
-                    let events = ime::fcitx_preedit_events(&m.shown, &segments, cursor);
-                    let text: String = segments.iter().map(|(t, _)| t.as_str()).collect();
-                    let clauses = events.iter().find_map(|e| match e {
-                        Event::ImeClauses { bounds, target, cursor } => Some(format!(" clauses={bounds:?} target={target:?} cursor={cursor:?}")),
-                        _ => None,
-                    });
-                    log::event("ime.preedit", &format!("text={text:?} segments={} cursor={cursor}", segments.len()), &format!("events={}{}", events.len(), clauses.unwrap_or_default()));
+                    let shown = format!(" clauses={:?} target={:?} cursor={:?}", clauses.bounds, clauses.target, clauses.cursor);
+                    let events = ime::preedit_events(&m.shown, text.clone(), clauses);
+                    log::event("ime.preedit", &format!("text={text:?}"), &format!("events={}{}", events.len(), if text.is_empty() { "" } else { &shown }));
                     m.shown = text;
                     let win = m.win;
                     if let Some(w) = win.and_then(|id| self.win(id)) {
@@ -830,7 +827,7 @@ impl State {
                         }
                     }
                 }
-                fcitx::Msg::Forward { keyval, state, release } => {
+                ime_dbus::Msg::Forward { keyval, state, release } => {
                     if release {
                         continue;
                     }
@@ -877,16 +874,16 @@ impl State {
         let Some(m) = self.ime.as_mut() else { return };
         let mut cmds = Vec::new();
         if cancel && !m.shown.is_empty() {
-            cmds.push(fcitx::Cmd::Reset);
+            cmds.push(ime_dbus::Cmd::Reset);
             m.shown.clear();
         }
         let was_on = m.enabled.is_some() && m.win == Some(id);
         let now_on = focus.is_some();
         if now_on && !was_on {
-            cmds.push(fcitx::Cmd::FocusIn);
+            cmds.push(ime_dbus::Cmd::FocusIn);
             m.win = Some(id);
         } else if !now_on && was_on {
-            cmds.push(fcitx::Cmd::FocusOut);
+            cmds.push(ime_dbus::Cmd::FocusOut);
         }
         let changed = m.enabled != focus;
         m.enabled = focus;
@@ -896,7 +893,7 @@ impl State {
             if let Some(r) = rect
                 && (Some(r) != m.rect || !was_on)
             {
-                cmds.push(fcitx::Cmd::Rect(r.0, r.1, r.2, r.3));
+                cmds.push(ime_dbus::Cmd::Rect(r.0, r.1, r.2, r.3));
                 m.rect = Some(r);
             }
         } else {
@@ -906,7 +903,7 @@ impl State {
         if changed || cancel {
             let fmt = |f: Option<Id>| f.map_or("none".to_string(), |f| format!("{:x}", f.0));
             log::event("ime.focus", &format!("why={} to={} rect={:?}{}", if cancel { "cancel" } else { "focus" }, fmt(focus), m.rect, self.windows[i].tag()), &format!("cmds={}", cmds.len()));
-        } else if cmds.iter().any(|c| matches!(c, fcitx::Cmd::Rect(..))) {
+        } else if cmds.iter().any(|c| matches!(c, ime_dbus::Cmd::Rect(..))) {
             log::event("ime.rect", &format!("{:?}", m.rect), "sent");
         }
         let Some(m) = self.ime.as_ref() else { return };
@@ -1535,7 +1532,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     };
     if st.xkb.is_some() {
         let display = format!("x11:{}", std::env::var("DISPLAY").unwrap_or_default());
-        let (tx, rx) = fcitx::spawn(app_id(), display, wake_fd.clone());
+        let (tx, rx) = ime_dbus::spawn(app_id(), display, wake_fd.clone());
         st.ime = Some(XIme { tx, rx, ready: false, win: None, enabled: None, rect: None, caret: None, moved: true, shown: String::new(), pending: VecDeque::new(), next_id: 1 });
     }
     let rt = st.runtime(&options.title, options.dark.unwrap_or(false), &options.font)?;

@@ -46,6 +46,10 @@ mod wic;
 #[cfg(target_os = "linux")]
 mod fcitx;
 #[cfg(target_os = "linux")]
+mod ibus;
+#[cfg(target_os = "linux")]
+mod ime_dbus;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod portal;
