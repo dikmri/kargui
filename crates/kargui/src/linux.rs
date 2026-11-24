@@ -266,6 +266,19 @@ impl Drop for Keyboard {
     }
 }
 
+/// キーの記号 → kargui のキー。base は段 0 の記号（Shift で大文字にならない）、now は修飾キーと NumLock を入れた今の記号。
+/// テンキーは段 0 が KP_Left などの矢印なので、NumLock が入っている時（今の記号が数字）は数字のキーにする
+pub(crate) fn key_for(base: u32, now: u32) -> Option<Key> {
+    const DIGITS: [Key; 10] = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+    match now {
+        // KP_0〜KP_9
+        0xffb0..=0xffb9 => Some(DIGITS[(now - 0xffb0) as usize]),
+        // KP_Separator・KP_Decimal（文字だけ。段 0 の KP_Delete を送らない）
+        0xffac | 0xffae => None,
+        _ => key_of(base),
+    }
+}
+
 /// xkb の記号（段 0）→ kargui のキー
 pub(crate) fn key_of(sym: u32) -> Option<Key> {
     const LETTERS: [Key; 26] = [Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I, Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R, Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z];
@@ -422,6 +435,19 @@ mod tests {
     fn pick(vars: &[(&str, &str)], sockets: &[&str]) -> Backend {
         let vars: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         choose_backend(|k| vars.get(k).cloned(), |p| sockets.iter().any(|s| p == std::path::Path::new(s)))
+    }
+
+    #[test]
+    fn number_pad_keys_follow_num_lock() {
+        // テンキーの 4: 段 0 は KP_Left（0xff96）。NumLock が入っていると今の記号は KP_4（0xffb4）
+        assert_eq!(key_for(0xff96, 0xff96), Some(Key::Left), "NumLock なしは矢印");
+        assert_eq!(key_for(0xff96, 0xffb4), Some(Key::Num4), "NumLock ありは数字（矢印を送らない）");
+        assert_eq!(key_for(0xff9e, 0xffb0), Some(Key::Num0));
+        // 小数点（KP_Delete / KP_Decimal）は文字だけ（Delete を送らない）
+        assert_eq!(key_for(0xff9f, 0xffae), None);
+        // ふつうのキーは段 0 のまま（Shift+a は A のキー）
+        assert_eq!(key_for(0x61, 0x41), Some(Key::A));
+        assert_eq!(key_for(0x35, 0x25), Some(Key::Num5));
     }
 
     #[test]

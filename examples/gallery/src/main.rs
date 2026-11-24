@@ -179,7 +179,7 @@ impl Gallery {
             3 => {
                 ui.slider(&mut self.volume, 0.0..=100.0).label("音量");
                 ui.number(&mut self.copies, 1..=99).label("部数");
-                ui.label(format!("音量 {:.0}・部数 {}（小さいボタンは押したままで進む）", self.volume, self.copies)).weak();
+                ui.label(format!("音量 {:.0}・部数 {}（小さいボタンは押したままで進む）", self.volume, self.copies)).weak().wrap();
             }
             4 => {
                 ui.text_input(&mut self.name).hint("名前").grow();
@@ -249,7 +249,7 @@ impl Gallery {
                 ui.list(1000, 28.0).height(Size::Fixed(240.0)).selection(&mut self.row).type_ahead(|i| format!("{i} 行目")).show(|ui, i| {
                     ui.label(format!("{i} 行目"));
                 });
-                ui.label("1000 行（見えている行だけを作る）。数字を打つと、その数字で始まる行へ飛ぶ").weak();
+                ui.label("1000 行（見えている行だけを作る）。数字を打つと、その数字で始まる行へ飛ぶ").weak().wrap();
             }
             11 => {
                 const ROWS: [(&str, &str, &str); 5] = [("東京", "13,960,000", "関東"), ("大阪", "8,780,000", "近畿"), ("名古屋", "2,330,000", "中部"), ("札幌", "1,970,000", "北海道"), ("福岡", "1,640,000", "九州")];
@@ -272,7 +272,7 @@ impl Gallery {
                     row.text(r.1);
                     row.text(r.2);
                 });
-                ui.label("見出しを押すと並べ替える。見出しに焦点を置いて Shift+←→ で列の幅").weak();
+                ui.label("見出しを押すと並べ替える。見出しに焦点を置いて Shift+←→ で列の幅").weak().wrap();
             }
             12 => {
                 ui.tree(&mut self.node, |t: &mut TreeBuilder<&'static str>| {
@@ -374,7 +374,7 @@ impl Gallery {
                 if let Some(at) = canvas.label("点を打つ面").clicked_at() {
                     self.dots.push(at);
                 }
-                ui.label("押した所に点を打つ（画像も描ける）").weak();
+                ui.label("押した所に点を打つ（画像も描ける）").weak().wrap();
             }
             21 => {
                 let mut moved = None;

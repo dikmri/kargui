@@ -5349,11 +5349,16 @@ fn take_key(cx: &mut Context, key: Key) -> bool {
     cx.keys.len() != before
 }
 
-/// 文字のキーの小文字（A〜Z だけ）
+/// 文字のキーの小文字（A〜Z）と数字（0〜9）
 fn letter_of(key: Key) -> Option<char> {
     use Key::*;
     const LETTERS: [Key; 26] = [A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z];
-    LETTERS.iter().position(|&k| k == key).map(|i| (b'a' + i as u8) as char)
+    const DIGITS: [Key; 10] = [Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9];
+    LETTERS
+        .iter()
+        .position(|&k| k == key)
+        .map(|i| (b'a' + i as u8) as char)
+        .or_else(|| DIGITS.iter().position(|&k| k == key).map(|i| (b'0' + i as u8) as char))
 }
 
 /// アプリへ行くはずだった文字のキー（修飾キー無しか Shift）を取り出す（打った文字で項目へ移るのに使う）
@@ -6143,6 +6148,13 @@ pub(crate) const CELL_PAD: f32 = 8.0;
 
 /// 列の幅を変えるつまみの幅と、列の狭さの下限（論理ピクセル）
 const GRIP_W: f32 = 8.0;
+
+/// 表の見出しの行に、列の幅を変えるつまみを置く
+fn push_column_grip(ui: &mut Ui, gid: Id, grip_w: f32) {
+    let (g, _) = ui.push(gid, Kind::ColumnGrip, Dir::Leaf);
+    ui.tree.layout[g].width = Size::Fixed(grip_w);
+    ui.tree.info[g].label = Some("Resize column".to_string());
+}
 const MIN_COLUMN_W: f32 = 40.0;
 
 /// A table being set up. See [`Ui::table`].
@@ -6300,10 +6312,22 @@ impl<'u> Table<'u, '_> {
         }
         let scale = ui.cx.scale;
         let grip_w = (GRIP_W * scale).round();
-        // 見出しに焦点がある時: Shift+左右でその列の幅を COLUMN_KEY_STEP ずつ変える（キーボードだけでも幅を変えられる。
-        // 仕切りの矢印と同じ 10。幅を決めていない列は変えない）。Shift の無い左右は見出しを移る（下で使う）
+        // 残りの幅を使う最初の列。それより右の列は右の端が動かないので、つまみを左の端に置き、左の端で幅を変える
+        let first_fill = columns.iter().position(|c| c.width.is_none());
+        let grip_left = |k: usize| first_fill.is_some_and(|f| k > f);
+        // Shift+左右で幅を変える列と向き。幅を決めた列はその列。残りの幅の列は、隣の幅を決めた列（右を先に）を
+        // 逆の向きに変える（残りの幅の列が広がる・狭まる）
+        let key_target = |k: usize| -> Option<(usize, f32)> {
+            if columns[k].width.is_some() {
+                return Some((k, 1.0));
+            }
+            [k + 1, k.wrapping_sub(1)].into_iter().find(|&j| columns.get(j).is_some_and(|c| c.width.is_some())).map(|j| (j, -1.0))
+        };
+        // 見出しに焦点がある時: Shift+左右でその列の幅を COLUMN_KEY_STEP ずつ変える（→ で広く、← で狭く。キーボードだけでも
+        // 幅を変えられる。仕切りの矢印と同じ 10）。Shift の無い左右は見出しを移る（下で使う）
         if let Some(k) = (0..columns.len()).find(|&k| ui.cx.focus == Some(Id(hash_of((id.0, k, "heading")))))
-            && let Some(start) = columns[k].width
+            && let Some((j, sign)) = key_target(k)
+            && let Some(start) = columns[j].width
             && !ui.disabled
         {
             let mut d = 0.0;
@@ -6319,9 +6343,9 @@ impl<'u> Table<'u, '_> {
                 _ => true,
             });
             if d != 0.0 {
-                let w = ui.cx.column_widths.entry((id, k)).or_insert(start);
-                *w = (*w + d).max(MIN_COLUMN_W);
-                crate::log::event("table.column_width", &format!("column={k} by={d}"), &format!("width={w}"));
+                let w = ui.cx.column_widths.entry((id, j)).or_insert(start);
+                *w = (*w + sign * d).max(MIN_COLUMN_W);
+                crate::log::event("table.column_width", &format!("heading={k} by={d}"), &format!("column={j} width={w}"));
             }
         }
         // 列の幅（論理ピクセル）。つまみをつかんで動かすと変わり、kargui が覚える
@@ -6332,13 +6356,29 @@ impl<'u> Table<'u, '_> {
                 continue;
             };
             let grip = Id(hash_of((id.0, k, "grip")));
+            let head = Id(hash_of((id.0, k, "heading")));
             let cx = &mut *ui.cx;
             let mut w = *cx.column_widths.entry((id, k)).or_insert(start);
-            if !ui.disabled && (cx.pressed == Some(grip) || cx.released == Some(grip))
-                && let (Some((px, _)), Some(h)) = (cx.pointer, cx.prev.hits.iter().find(|h| h.id == grip)) {
-                    w = (w + (px - (h.rect.x + h.rect.w / 2.0)) / scale).round().max(MIN_COLUMN_W);
-                    cx.column_widths.insert((id, k), w);
+            // つまみを押している間: 動かない側の端（右のつまみなら見出しの左、左のつまみなら見出しの右）からマウスまでを幅にする。
+            // つまみの位置との差を足していくと、つまみが動かない並び（残りの幅の列が左）では幅が足され続けるため
+            if !ui.disabled
+                && (cx.pressed == Some(grip) || cx.released == Some(grip))
+                && let (Some((px, _)), Some(g), Some(hd)) = (cx.pointer, cx.prev.hits.iter().find(|h| h.id == grip).map(|h| h.rect), cx.prev.hits.iter().find(|h| h.id == head).map(|h| h.rect))
+            {
+                let off = match cx.column_grab {
+                    Some((gid, off)) if gid == grip => off,
+                    _ => cx.press_at.map_or(px, |(x, _)| x) - (g.x + g.w / 2.0),
+                };
+                cx.column_grab = Some((grip, off));
+                let center = px - off;
+                let w_px = if grip_left(k) { hd.right() - (center + grip_w / 2.0) } else { center - grip_w / 2.0 - hd.x };
+                w = (w_px / scale).round().max(MIN_COLUMN_W);
+                cx.column_widths.insert((id, k), w);
+                if cx.released == Some(grip) {
+                    cx.column_grab = None;
+                    crate::log::event("table.column_width", &format!("column={k} by=drag"), &format!("width={w}"));
                 }
+            }
             widths.push(Some(w));
         }
         let px_widths: Vec<Option<f32>> = widths.iter().map(|w| w.map(|w| (w * scale).round())).collect();
@@ -6361,7 +6401,11 @@ impl<'u> Table<'u, '_> {
                 let dir = current.filter(|&(col, _)| col == k).map(|(_, asc)| asc);
                 // 幅を変えられる列がある表では、並べ替えられなくても見出しに焦点を置ける（キーボードで幅を変えるため）
                 let focusable = sortable || px_widths.iter().any(Option::is_some);
-                let (h, _) = hui.push(hid, Kind::ColumnHeader { text: c.title.clone(), sort: dir, right: c.right, sortable, focusable, resizable: px_widths[k].is_some(), column: k }, Dir::Leaf);
+                // 左の端のつまみは見出しの前に置く
+                if px_widths[k].is_some() && grip_left(k) {
+                    push_column_grip(&mut hui, Id(hash_of((id.0, k, "grip"))), grip_w);
+                }
+                let (h, _) = hui.push(hid, Kind::ColumnHeader { text: c.title.clone(), sort: dir, right: c.right, sortable, focusable, resizable: key_target(k).is_some(), column: k }, Dir::Leaf);
                 hui.tree.layout[h].width = px_widths[k].map_or(Size::Fill(1.0), Size::Fixed);
                 // 見出しの文字が列より広い時は切り取る（行の升と同じ幅を保つ）
                 hui.tree.layout[h].clip = true;
@@ -6371,11 +6415,8 @@ impl<'u> Table<'u, '_> {
                     && let Some(s) = sort.as_deref_mut() {
                         *s = Some((k, !matches!(*s, Some((col, true)) if col == k)));
                     }
-                if px_widths[k].is_some() {
-                    let gid = Id(hash_of((id.0, k, "grip")));
-                    let (g, _) = hui.push(gid, Kind::ColumnGrip, Dir::Leaf);
-                    hui.tree.layout[g].width = Size::Fixed(grip_w);
-                    hui.tree.info[g].label = Some("Resize column".to_string());
+                if px_widths[k].is_some() && !grip_left(k) {
+                    push_column_grip(&mut hui, Id(hash_of((id.0, k, "grip"))), grip_w);
                 }
             }
             // 見出しに焦点がある時: 左右・Home・End で見出しを移る
@@ -6385,7 +6426,8 @@ impl<'u> Table<'u, '_> {
                 let mut next = at;
                 for e in std::mem::take(&mut cx.keys) {
                     if let Event::Key { key, mods } = e {
-                        if mods.ctrl || mods.alt {
+                        // Shift+左右は幅（上で使う）。幅を変えられない見出しでも、焦点は移さない
+                        if mods.ctrl || mods.alt || mods.shift {
                             continue;
                         }
                         next = match key {
@@ -6904,7 +6946,9 @@ impl<'u> List<'u, '_> {
                 // 文字で飛ぶ（List::type_ahead）: 打った文字で始まる次の行。見えない行の文字もアプリから受け取る
                 if let Some(text) = &type_ahead {
                     for c in take_letters(cx) {
-                        if let Some(j) = next_starting_by(count, next, c, &|i| text(i)) {
+                        let found = next_starting_by(count, next, c, &|i| text(i));
+                        crate::log::event("list.type_ahead", &format!("char={c:?} from={next}"), &found.map_or("none".to_string(), |j| format!("row={j}")));
+                        if let Some(j) = found {
                             next = j;
                         }
                     }
@@ -6938,7 +6982,9 @@ impl<'u> List<'u, '_> {
         let last = ((((off_px + view_h) / row_h).ceil() as usize) + 1).min(count);
         // Tab で移る行: 選んだ行。無ければ見えている最初の行
         let tab_row = sel.unwrap_or(((off_px / row_h).floor() as usize).min(count.saturating_sub(1)));
-        for i in first..last {
+        // 選んだ行は、ホイールで遠くへ動かしても作る（焦点と Tab で移る行が残り、矢印や文字で続けて選べる）
+        let far_sel = sel.filter(|s| !(first..last).contains(s));
+        for i in (first..last).chain(far_sel) {
             let rid = row_id(i);
             let kind = if selection.is_some() { Kind::Item { selected: sel == Some(i), tab_stop: i == tab_row } } else { Kind::Row };
             let mut list_ui = ui.child(idx);

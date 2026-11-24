@@ -1878,13 +1878,80 @@ mod tests {
         step(&mut h, "棒から離れる");
     }
 
-    fn press(h: &mut Harness<Book>, x: f32, y: f32) {
+    #[test]
+    fn drawing_only_changes_matches_drawing_everything_for_a_list_inside_a_scroll_area() {
+        // 作者の手の確かめ（0.3.0 の 2 回目）で、部品の見本のスクロールバーが二重に見えた。見本のページは
+        // スクロールする入れ物の中にあり、その中の一覧をホイールで動かすと、古いつまみの絵が残る
+        struct Page {
+            row: Option<usize>,
+            below: usize,
+        }
+        impl App for Page {
+            fn view(&mut self, ui: &mut Ui) {
+                let (row, below) = (&mut self.row, self.below);
+                ui.scroll(|ui| {
+                    ui.label("Above");
+                    ui.list(200, 28.0).height(crate::Size::Fixed(240.0)).selection(row).show(|ui, i| {
+                        ui.label(format!("{i} row"));
+                    });
+                    for k in 0..below {
+                        ui.label(format!("Below {k}"));
+                    }
+                })
+                .grow();
+            }
+        }
+        // 入れ物が中身より高い時（見本の一覧のページ）と、入れ物もスクロールする時
+        for below in [1, 40] {
+            let mut h = Harness::new(Page { row: None, below });
+            let (w, hh) = (h.rt.cx.width as i32, h.rt.cx.height as i32);
+            let mut px = vec![0u32; (w * hh) as usize];
+            let mut summary = crate::damage::Summary::default();
+            let mut step = |h: &mut Harness<Page>, what: &str| {
+                let bg = h.rt.cx.theme.background;
+                let out = crate::cpu_frame::draw(&mut px, w, hh, &h.rt.draw, &h.rt.cx.text.atlas, bg, &summary, false);
+                summary = out.summary;
+                let full = h.render();
+                let mut diff = 0;
+                let mut area = IRect::default();
+                for (i, (a, b)) in px.iter().zip(&full.pixels).enumerate() {
+                    if a != b {
+                        diff += 1;
+                        area = area.union(&IRect::new(i as i32 % w, i as i32 / w, 1, 1));
+                    }
+                }
+                assert_eq!(diff, 0, "下に {below} 行: {what}: {diff} 画素が違う。範囲 {area:?}（{}）", out.mode);
+                if what.starts_with("一覧を") {
+                    assert!(out.mode.starts_with("blits=1"), "{what}: 絵をずらす道を通る（{}）", out.mode);
+                }
+            };
+            step(&mut h, "最初");
+            let list = h.rt.cx.prev.lists.iter().find(|l| l.rect.h < 300.0).unwrap().rect;
+            let (x, y) = (list.x + list.w / 2.0, list.y + list.h / 2.0);
+            for k in 0..12 {
+                h.send(vec![Event::Wheel { x, y, dy: 96.0 }]);
+                step(&mut h, &format!("一覧を下へ {} 回目", k + 1));
+            }
+            for k in 0..6 {
+                h.send(vec![Event::Wheel { x, y, dy: -64.0 }]);
+                step(&mut h, &format!("一覧を上へ {} 回目", k + 1));
+            }
+            // 入れ物の方を動かす（一覧の外でホイール）
+            let (ox, oy) = (list.x + list.w / 2.0, list.bottom() + 40.0);
+            for k in 0..4 {
+                h.send(vec![Event::Wheel { x: ox, y: oy, dy: 48.0 }]);
+                step(&mut h, &format!("入れ物を下へ {} 回目", k + 1));
+            }
+        }
+    }
+
+    fn press<A: App>(h: &mut Harness<A>, x: f32, y: f32) {
         h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }]);
     }
-    fn drag_to(h: &mut Harness<Book>, x: f32, y: f32) {
+    fn drag_to<A: App>(h: &mut Harness<A>, x: f32, y: f32) {
         h.send(vec![Event::PointerMove { x, y }]);
     }
-    fn release(h: &mut Harness<Book>, x: f32, y: f32) {
+    fn release<A: App>(h: &mut Harness<A>, x: f32, y: f32) {
         h.send(vec![Event::PointerUp { x, y }]);
     }
     fn done_count(h: &Harness<Book>) -> usize {
@@ -3348,9 +3415,60 @@ mod tests {
         // Shift の無い矢印は今までどおり見出しを移る（幅は変えない）
         h.press(Key::Left);
         assert_eq!(h.find("Size").unwrap().w, before + 10.0);
-        // 残りの幅の列（幅を決めていない）は変えない
+        // 残りの幅の列（幅を決めていない）の見出しでは、右の端（隣の Size との境）を動かす。焦点は動かない
+        assert_eq!(focused_name(&h).as_deref(), Some("Name"));
+        let name = h.find("Name").unwrap().w;
         h.press_with(Key::Right, Mods::SHIFT);
-        assert_eq!(h.find("Size").unwrap().w, before + 10.0);
+        assert_eq!(focused_name(&h).as_deref(), Some("Name"), "Shift+→ は見出しを移らない");
+        assert_eq!(h.find("Size").unwrap().w, before, "Name の右の端が 10 右へ（Size が 10 狭く）");
+        assert_eq!(h.find("Name").unwrap().w, name + 10.0);
+        h.press_with(Key::Left, Mods::SHIFT).press_with(Key::Left, Mods::SHIFT);
+        assert_eq!(h.find("Size").unwrap().w, before + 20.0);
+        // 読み上げも、残りの幅の列の見出しで幅を変えられることを伝える
+        assert!(a11y_node(&h, "Name").description().is_some_and(|d| d.contains("Shift+Left")));
+    }
+
+    /// 残りの幅を使う列が左端にある表（ファイルの閲覧と部品の見本と同じ並び）
+    #[derive(Default)]
+    struct CityTable;
+
+    impl App for CityTable {
+        fn view(&mut self, ui: &mut Ui) {
+            let rows = [("Tokyo", "13,960,000", "Kanto"), ("Osaka", "8,780,000", "Kinki")];
+            let columns = [crate::ui::TableColumn::new("City").fill(), crate::ui::TableColumn::new("People").width(120.0).right(), crate::ui::TableColumn::new("Region").width(100.0)];
+            ui.table(&columns, rows.len(), 30.0).label("Cities").show(|row, i| {
+                row.text(rows[i].0);
+                row.text(rows[i].1);
+                row.text(rows[i].2);
+            });
+        }
+    }
+
+    #[test]
+    fn grips_right_of_a_fill_column_sit_on_the_left_edge_and_follow_the_pointer() {
+        let mut h = Harness::new(CityTable);
+        let people = h.find("People").unwrap();
+        let grip = h.find("Resize column").unwrap();
+        // 残りの幅を使う列（City）より右の列は、右の端が動かないので、左の端で幅を変える
+        assert!((grip.right() - people.x).abs() <= 1.0, "People のつまみは People の左: {grip:?} {people:?}");
+        let (x, y) = (grip.x + grip.w / 2.0, grip.y + grip.h / 2.0);
+        // 押して、2 回に分けて左へ 40 動かし、何もないフレームも挟んでから離す（幅はフレームの数によらない）
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }]);
+        h.send(vec![Event::PointerMove { x: x - 20.0, y }]);
+        h.frame();
+        h.send(vec![Event::PointerMove { x: x - 40.0, y }]);
+        h.frame();
+        h.send(vec![Event::PointerUp { x: x - 40.0, y }]);
+        let after = h.find("People").unwrap();
+        assert!((after.w - (people.w + 40.0)).abs() <= 1.0, "People が 40 広がる: {people:?} → {after:?}");
+        assert!((after.right() - people.right()).abs() <= 1.0, "右の端は動かない");
+        let g = h.find("Resize column").unwrap();
+        assert!((g.x + g.w / 2.0 - (x - 40.0)).abs() <= 1.0, "つまみはマウスについて来る: {g:?}");
+        // 右寄せの升の文字は、見出しの右の 8 内側で終わる（見出しと升がそろう）
+        let cell = h.find("13,960,000").unwrap();
+        assert!((cell.right() - (after.right() - 8.0)).abs() <= 1.0, "{cell:?} {after:?}");
+        let tokyo = h.find("Tokyo").unwrap();
+        assert!((tokyo.x - (h.find("City").unwrap().x + 8.0)).abs() <= 1.0, "1 列目の升も見出しにそろう");
     }
 
     /// 文字で飛べる一覧と表（行は見えている所しか作らないので、行の文字はアプリが渡す）
@@ -3370,6 +3488,110 @@ mod tests {
             ui.table(&columns, names.len(), 28.0).selection(&mut self.table).type_ahead(|i| names[i].clone()).label("Table").show(|row, i| {
                 row.text(format!("{} (t)", names[i]));
             });
+        }
+    }
+
+    #[test]
+    fn lists_jump_by_typed_digits() {
+        // 部品の見本の一覧と同じく、行の文字が数字で始まる（「0 row」〜「59 row」）
+        let names: Vec<String> = (0..60).map(|i| format!("{i} row")).collect();
+        let mut h = Harness::new(Fruits { list: None, table: None, names });
+        h.frame();
+        h.click("2 row");
+        assert_eq!(h.app().list, Some(2));
+        h.press(Key::Num5);
+        assert_eq!(h.app().list, Some(5), "5 で始まる次の行");
+        h.press(Key::Num5).press(Key::Num5);
+        assert_eq!(h.app().list, Some(51), "続けて 50、51");
+    }
+
+    #[test]
+    fn lists_keep_the_focus_after_the_wheel_scrolls_the_selected_row_away() {
+        // 作者の手の確かめ（0.3.0 の 2 回目）で、行を選んでからホイールで遠くへ動かすと、数字を打っても飛ばなかった
+        let names: Vec<String> = (0..60).map(|i| format!("{i} row")).collect();
+        let mut h = Harness::new(Fruits { list: None, table: None, names });
+        h.frame();
+        // 一覧の見えている範囲に、その名前の部品があるか（見えない所に作った行は数えない）
+        let shown = |h: &Harness<Fruits>, name: &str, table: bool| {
+            let lists = &h.rt.cx.prev.lists;
+            let view = if table { lists.iter().max_by(|a, b| a.rect.y.total_cmp(&b.rect.y)).unwrap().rect } else { lists[0].rect };
+            h.find(name).is_some_and(|r| r.y < view.bottom() && r.bottom() > view.y)
+        };
+        for (pick, near, table) in [("2 row", "3 row", false), ("2 row (t)", "3 row (t)", true)] {
+            h.click(pick);
+            h.scroll(near, 800.0);
+            assert!(!shown(&h, pick, table), "{pick}: 選んだ行は見えない所にある");
+            h.press(Key::Num5);
+            h.press(Key::Down);
+            let app = h.app();
+            assert_eq!(if table { app.table } else { app.list }, Some(6), "{pick}: 5 で 5 行目、↓ で 6 行目");
+            assert!(shown(&h, &pick.replace('2', "6"), table), "{pick}: 選んだ行が見えるまで戻る");
+        }
+    }
+
+    #[test]
+    fn the_scroll_bar_of_a_text_area_can_be_pressed_and_dragged() {
+        // 入力欄そのものの当たりが、中のスクロールの棒を覆っていた（一覧の行と同じ）
+        struct Notes {
+            text: String,
+        }
+        impl App for Notes {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.text_area(&mut self.text).hint("Notes").rows(4);
+            }
+        }
+        let text = (0..40).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let mut h = Harness::new(Notes { text });
+        h.frame();
+        let l = h.rt.cx.prev.lists[0].clone();
+        let thumb = l.thumb.expect("40 行ならつまみがある");
+        let x = thumb.x + thumb.w / 2.0;
+        assert_eq!(h.rt.hover_at(x, l.rect.bottom() - 4.0), None, "棒の上では入力欄に乗ったことにしない");
+        // 作者の手の確かめ（0.3.0 の 3 回目）で、入力欄の棒の上でもポインターが I の形のままだった
+        use crate::ui::context::PointerShape;
+        assert_eq!(h.rt.cx.pointer_shape(x, l.rect.bottom() - 4.0), PointerShape::Default, "棒の上は矢印");
+        assert_eq!(h.rt.cx.pointer_shape(l.rect.x + 20.0, l.rect.y + 8.0), PointerShape::Text, "文字の上は I の形");
+        press(&mut h, x, l.rect.bottom() - 4.0);
+        release(&mut h, x, l.rect.bottom() - 4.0);
+        assert_eq!(h.rt.cx.scrolls.get(&l.id).copied(), Some(l.rect.h), "空いた所を押すと 1 ページ動く");
+        let thumb = h.rt.cx.prev.lists[0].thumb.unwrap();
+        press(&mut h, x, thumb.y + 3.0);
+        drag_to(&mut h, x, l.rect.y - 100.0);
+        release(&mut h, x, l.rect.y - 100.0);
+        assert_eq!(h.rt.cx.scrolls.get(&l.id).copied(), Some(0.0), "つまみで一番上へ戻る");
+        assert!(h.app().text.starts_with("line 0\nline 1"), "文字は変わらない");
+    }
+
+    #[test]
+    fn the_scroll_bar_of_a_selectable_list_is_not_covered_by_its_rows() {
+        // 作者の手の確かめ（0.3.0 の 2 回目）で、部品の見本の一覧のつまみを押すと、行が選ばれてスクロールしなかった。
+        // 選べる一覧の行は一覧の幅いっぱいの当たりなので、右端の棒を覆っていた
+        let names: Vec<String> = (0..60).map(|i| format!("{i} row")).collect();
+        let mut h = Harness::new(Fruits { list: None, table: None, names });
+        h.frame();
+        for which in ["list", "table"] {
+            let lists = h.rt.cx.prev.lists.clone();
+            let l = if which == "list" { lists[0].clone() } else { lists.iter().max_by(|a, b| a.rect.y.total_cmp(&b.rect.y)).unwrap().clone() };
+            let thumb = l.thumb.expect("60 行ならつまみがある");
+            let x = thumb.x + thumb.w / 2.0;
+            assert_eq!(h.rt.hover_at(x, l.rect.bottom() - 6.0), None, "{which}: 棒の上では行に乗ったことにしない");
+            // つまみより下の空いた所を押すと、行を選ばずに一覧の高さ 1 つ分動く
+            press(&mut h, x, l.rect.bottom() - 6.0);
+            release(&mut h, x, l.rect.bottom() - 6.0);
+            assert_eq!((h.app().list, h.app().table), (None, None), "{which}: 行は選ばれない");
+            assert_eq!(h.rt.cx.scrolls.get(&l.id).copied(), Some(l.rect.h), "{which}: 1 ページ動く");
+            // つまみをつかんで一番上まで戻す
+            let thumb = h.rt.cx.prev.lists.iter().find(|m| m.id == l.id).unwrap().thumb.unwrap();
+            press(&mut h, x, thumb.y + 5.0);
+            drag_to(&mut h, x, l.rect.y - 100.0);
+            release(&mut h, x, l.rect.y - 100.0);
+            assert_eq!(h.rt.cx.scrolls.get(&l.id).copied(), Some(0.0), "{which}: つまみで戻る");
+            // 作者の手の確かめ（0.3.0 の 3 回目）で、つまみを狙って一覧の右の端から 1 画素外を押し、
+            // 何も無い所を押したことになって焦点が外れた。棒の押せる範囲は、つまみの左と同じく右にも余白を持つ
+            press(&mut h, l.rect.right() + 1.0, l.rect.bottom() - 6.0);
+            release(&mut h, l.rect.right() + 1.0, l.rect.bottom() - 6.0);
+            assert_eq!(h.rt.cx.scrolls.get(&l.id).copied(), Some(l.rect.h), "{which}: 右の端の外でも 1 ページ動く");
+            assert_eq!((h.app().list, h.app().table), (None, None), "{which}: 引いても行は選ばれない");
         }
     }
 

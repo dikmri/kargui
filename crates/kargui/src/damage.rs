@@ -121,11 +121,12 @@ pub(crate) fn summarize(list: &DrawList, size: (i32, i32)) -> Summary {
             }
         }
     }
-    // スクロールする層に重なる、層の外の物を集める
+    // スクロールする層に重なる、層の外の物を集める。外側のスクロールする層の物も含める
+    // （入れ物の中の一覧のつまみは、外側の入れ物の層に描く。含めないと古いつまみの絵がずれた先に残る）
     for (id, &fi) in &first_layer {
         let clip = s.scrolls[id].clip;
         let mut sticky = Vec::new();
-        for (li, layer) in list.layers.iter().enumerate().filter(|(_, l)| l.scroll.is_none()) {
+        for (li, layer) in list.layers.iter().enumerate().filter(|(_, l)| l.scroll.is_none_or(|sc| sc.id != *id)) {
             for q in &list.quads[layer.start..layer.end] {
                 let Some(r) = IRect::covering(q.bounds()).intersect(&layer.clip).and_then(|r| r.intersect(&clip)) else {
                     continue;

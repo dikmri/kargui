@@ -47,12 +47,12 @@ use crate::ime_dbus;
 use crate::geom::{Color, IRect};
 use crate::ime;
 use crate::input::{A11yAction, Event, Mods};
-use crate::linux::{A11ySink, DOUBLE_CLICK_DIST, DOUBLE_CLICK_MS, Keyboard, PortalSettings, WHEEL_STEP, app_id, key_of};
+use crate::linux::{A11ySink, DOUBLE_CLICK_DIST, DOUBLE_CLICK_MS, Keyboard, PortalSettings, WHEEL_STEP, app_id, key_for};
 use crate::log;
 use crate::runtime::Runtime;
 use crate::text::Text;
 use crate::ui::Id;
-use crate::ui::context::Clipboard;
+use crate::ui::context::{Clipboard, PointerShape};
 
 /// クリップボードの答えを待つ長さ（Wayland と同じ）
 const PASTE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -668,14 +668,12 @@ impl State {
         let Some(id) = self.pointer_win else { return };
         let Some(i) = self.index(id) else { return };
         let (x, y) = (self.px, self.py);
-        let cx = &self.windows[i].rt.cx;
-        let hit = cx.hit(x, y).cloned();
-        let name = match hit.as_ref().and_then(|h| cx.prev.split_bars.get(&h.id).copied()) {
-            Some(true) => "ns-resize",
-            Some(false) => "ew-resize",
-            None if hit.as_ref().is_some_and(|h| h.text_input) => "text",
-            None if hit.as_ref().is_some_and(|h| h.link && h.enabled) => "pointer",
-            None => "default",
+        let name = match self.windows[i].rt.cx.pointer_shape(x, y) {
+            PointerShape::NsResize => "ns-resize",
+            PointerShape::EwResize => "ew-resize",
+            PointerShape::Text => "text",
+            PointerShape::Pointer => "pointer",
+            PointerShape::Default => "default",
         };
         self.set_cursor(id, name);
     }
@@ -723,7 +721,7 @@ impl State {
     fn key_down(&mut self, id: WinId, code: u32, repeat: bool) {
         let Some(kb) = self.xkb.as_ref() else { return };
         let mods = kb.mods();
-        let key = key_of(kb.base_sym(code));
+        let key = key_for(kb.base_sym(code), kb.sym(code));
         let text = if mods.ctrl || mods.alt { String::new() } else { kb.utf8(code) };
         let Some(w) = self.win(id) else { return };
         if let Some(key) = key {
@@ -833,7 +831,7 @@ impl State {
                     }
                     let win = self.ime.as_ref().and_then(|m| m.win);
                     let mods = Mods { shift: state & 1 != 0, ctrl: state & 4 != 0, alt: state & 8 != 0 };
-                    let key = key_of(keyval);
+                    let key = key_for(keyval, keyval);
                     let text = if mods.ctrl || mods.alt { String::new() } else { self.xkb.as_ref().map_or(String::new(), |k| k.keysym_text(keyval)) };
                     log::event("ime.forward", &format!("keyval=0x{keyval:x} state={state}"), &format!("key={key:?} text={text:?}"));
                     if let Some(w) = win.and_then(|id| self.win(id)) {

@@ -112,25 +112,25 @@ pub enum Key {
     Y,
     /// The Z key (undo with Ctrl in text fields).
     Z,
-    /// The 0 key on the main keyboard.
+    /// The 0 key above the letters, or on the number pad while Num Lock is on.
     Num0,
-    /// The 1 key on the main keyboard.
+    /// The 1 key above the letters, or on the number pad while Num Lock is on.
     Num1,
-    /// The 2 key on the main keyboard.
+    /// The 2 key above the letters, or on the number pad while Num Lock is on.
     Num2,
-    /// The 3 key on the main keyboard.
+    /// The 3 key above the letters, or on the number pad while Num Lock is on.
     Num3,
-    /// The 4 key on the main keyboard.
+    /// The 4 key above the letters, or on the number pad while Num Lock is on.
     Num4,
-    /// The 5 key on the main keyboard.
+    /// The 5 key above the letters, or on the number pad while Num Lock is on.
     Num5,
-    /// The 6 key on the main keyboard.
+    /// The 6 key above the letters, or on the number pad while Num Lock is on.
     Num6,
-    /// The 7 key on the main keyboard.
+    /// The 7 key above the letters, or on the number pad while Num Lock is on.
     Num7,
-    /// The 8 key on the main keyboard.
+    /// The 8 key above the letters, or on the number pad while Num Lock is on.
     Num8,
-    /// The 9 key on the main keyboard.
+    /// The 9 key above the letters, or on the number pad while Num Lock is on.
     Num9,
     /// F1.
     F1,

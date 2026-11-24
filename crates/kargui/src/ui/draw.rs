@@ -1671,7 +1671,9 @@ impl Painter<'_> {
         let y = r.y + (offset / (content_h - r.h)).clamp(0.0, 1.0) * (r.h - h);
         let x = r.right() - w - self.px(3.0);
         let thumb = Rect::new(x, y, w, h);
-        let bar = Rect::new(x - self.px(sz::SCROLLBAR_SLOP), r.y, r.right() - x + self.px(sz::SCROLLBAR_SLOP), r.h);
+        // 押せる範囲は、つまみの左に余白、右は部品の右の端からさらに余白（端のすぐ外を押しても棒に当たる）
+        let slop = self.px(sz::SCROLLBAR_SLOP);
+        let bar = Rect::new(x - slop, r.y, r.right() - x + 2.0 * slop, r.h);
         (Some(thumb), Some(bar))
     }
 

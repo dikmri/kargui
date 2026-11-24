@@ -46,7 +46,7 @@ use crate::log;
 use crate::runtime::Runtime;
 use crate::text::{ATLAS_SIZE, Text};
 use crate::ui::Id;
-use crate::ui::context::Clipboard;
+use crate::ui::context::{Clipboard, PointerShape};
 
 const WM_APP_A11Y: u32 = WM_APP + 1;
 /// ほかのスレッドが Waker::wake で窓を起こした
@@ -530,6 +530,19 @@ pub(crate) fn local_time() -> Option<(u32, u32)> {
     Some((t.wHour as u32, t.wMinute as u32))
 }
 
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn number_pad_digits_are_digit_keys() {
+        // NumLock が入っている時のテンキーの数字（VK_NUMPAD0〜9）は、上の段の数字と同じキー
+        assert_eq!(key_of(VIRTUAL_KEY(0x60)), Some(Key::Num0));
+        assert_eq!(key_of(VIRTUAL_KEY(0x65)), Some(Key::Num5));
+        assert_eq!(key_of(VIRTUAL_KEY(0x35)), Some(Key::Num5));
+    }
+}
+
 fn key_of(vk: VIRTUAL_KEY) -> Option<Key> {
     const LETTERS: [Key; 26] = [Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I, Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R, Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z];
     const DIGITS: [Key; 10] = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
@@ -540,6 +553,10 @@ fn key_of(vk: VIRTUAL_KEY) -> Option<Key> {
     }
     if (0x30..=0x39).contains(&v) {
         return Some(DIGITS[(v - 0x30) as usize]);
+    }
+    // NumLock が入っている時のテンキーの数字（VK_NUMPAD0〜9）も数字のキー（切れている時は VK_LEFT などで届く）
+    if (0x60..=0x69).contains(&v) {
+        return Some(DIGITS[(v - 0x60) as usize]);
     }
     if (VK_F1.0..=VK_F12.0).contains(&v) {
         return Some(FKEYS[(v - VK_F1.0) as usize]);
@@ -630,6 +647,8 @@ struct State {
     tracking_leave: bool,
     /// 前に押した時（メッセージの時刻 ms, x, y, 何回目か）。2 回押し・3 回押しを数える
     last_press: Option<(u32, f32, f32, u8)>,
+    /// 最後に見せたポインターの形。変わった時だけ記録する
+    shape: Option<PointerShape>,
     /// 引っ張っている間に最後に決めたポインターの形（true は矢印、false は禁止の形）。変わった時だけ記録する
     drag_cursor: Option<bool>,
     /// ほかのアプリからファイルを受け取る係（OS に届け出た物。窓を壊す時に取り消す）と、届け出を頼んだか
@@ -1307,14 +1326,18 @@ impl State {
                     let _ = GetCursorPos(&mut p);
                     let _ = ScreenToClient(self.hwnd, &mut p);
                 }
-                let hit = self.rt.cx.hit(p.x as f32, p.y as f32).cloned();
-                // 仕切りの上は左右か上下の矢印、入力欄の上は I の形、押せるリンクの上は手の形
-                let cursor = match hit.as_ref().and_then(|h| self.rt.cx.prev.split_bars.get(&h.id).copied()) {
-                    Some(true) => IDC_SIZENS,
-                    Some(false) => IDC_SIZEWE,
-                    None if hit.as_ref().is_some_and(|h| h.text_input) => IDC_IBEAM,
-                    None if hit.as_ref().is_some_and(|h| h.link && h.enabled) => IDC_HAND,
-                    None => IDC_ARROW,
+                // 形は部品とスクロールの棒から決める（3 つの窓の仕組みで同じ）
+                let shape = self.rt.cx.pointer_shape(p.x as f32, p.y as f32);
+                if self.shape != Some(shape) {
+                    self.shape = Some(shape);
+                    log::event("cursor.shape", &format!("x={} y={}", p.x, p.y), &format!("{shape:?}"));
+                }
+                let cursor = match shape {
+                    PointerShape::NsResize => IDC_SIZENS,
+                    PointerShape::EwResize => IDC_SIZEWE,
+                    PointerShape::Text => IDC_IBEAM,
+                    PointerShape::Pointer => IDC_HAND,
+                    PointerShape::Default => IDC_ARROW,
                 };
                 if let Ok(c) = unsafe { LoadCursorW(None, cursor) } {
                     unsafe { SetCursor(Some(c)) };
@@ -1727,6 +1750,7 @@ fn create_window(
         dark_title: None,
         tracking_leave: false,
         last_press: None,
+        shape: None,
         drag_cursor: None,
         file_drop: None,
         file_drop_asked: false,

@@ -1,4 +1,4 @@
-<!-- source: ja/15-trees-tables-dates.md fnv=5add5f8d1405a104 -->
+<!-- source: ja/15-trees-tables-dates.md fnv=5e3df40027cae45c -->
 <!-- covers: Ui::tree TreeBuilder::leaf TreeBuilder::branch TreeView::changed Ui::table Table::sort Table::selection Table::label Table::grow Table::show Table::show_keyed TableRow::cell TableRow::text TableRow::context_menu TableColumn::new TableColumn::width TableColumn::fill TableColumn::right Ui::date_picker DatePicker::changed Ui::set_date_text Ui::today Date::new Date::today Date::year Date::month Date::day Date::weekday Date::add_days Date::add_months Date::days_in_month Date::from_unix_days Date::unix_days DateText::english DateText::japanese sig=1e24c244697ffaa8 -->
 # Trees, tables and dates
 
@@ -61,7 +61,7 @@ ui.table(&columns, files.len(), 30.0).sort(&mut sort).selection(&mut selected).l
 - In a row, add the cells in column order with `row.text(text)` or `row.cell(|ui| ..)`
 - `row.context_menu(|m| ..)` adds a menu that opens when the row is right-clicked
 
-Drag the small grip at the right of a heading to change the column's width (kargui remembers it). Tab stops once on the headings; Left and Right move between them, and Enter or Space sorts. Without `.grow()`, the table is 8 rows tall and scrolls.
+Drag the small grip beside a heading to change the column's width (kargui remembers it). The grip is on the column's right edge; columns to the right of a `.fill()` column keep their right edge in place, so theirs is on the left edge. With a heading focused, Shift+Right widens the column and Shift+Left narrows it (on a `.fill()` column, the edge it shares with its neighbor moves). Tab stops once on the headings; Left and Right move between them, and Enter or Space sorts. Without `.grow()`, the table is 8 rows tall and scrolls.
 
 Screen readers hear a table, a heading row (with the sort order), rows and cells, with their row and column numbers.
 

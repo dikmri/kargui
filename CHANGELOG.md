@@ -64,12 +64,35 @@ Upgrading from 0.2 (compared with the published 0.2.0; nothing was removed):
   not sent to the input method's conversion or learning, as with Windows' own password boxes.
 - Number fields: holding a small step button steps once at once, then every 60 ms after 400 ms
   (counted from the time held, so slow frames do not slow it down).
-- Tables: Shift+Left and Shift+Right on a focused heading change that column's width (by 10).
-  Headings of a table with resizable columns can now take the focus even when it does not sort;
-  screen readers hear how to resize.
+- Tables: Shift+Left and Shift+Right on a focused heading change that column's width (by 10); on
+  a `.fill()` column they move the edge it shares with the next fixed column (or the previous
+  one), and they never move the focus to another heading. Headings of a table with resizable
+  columns can now take the focus even when it does not sort; screen readers hear how to resize.
+- Tables: in a table whose `.fill()` column comes before fixed columns (as in `examples/files`),
+  dragging a column's grip made the column grow by itself (the grip stayed where it was, so every
+  frame added the distance to the pointer again). The grips of columns right of the fill column now
+  sit on their left edge, and a grip follows the pointer from where it was pressed. Width changes
+  are logged as `table.column_width`, and jumps by typing as `list.type_ahead`.
+- Keyboard: the digits on the number pad (while Num Lock is on) are the same keys as the digits
+  above the letters (`Key::Num0` to `Key::Num9`) on every system. On Linux they also arrived as the
+  number pad's arrow keys, so typing a digit there moved the caret before inserting it.
 - Lists and tables: `List::type_ahead(|i| text)` and `Table::type_ahead(|i| text)` let the user
   jump to the next row that starts with a typed letter or digit (wrapping, ignoring case). Rows off
   screen are not built, so the app gives their text.
+- Lists and tables: after the wheel scrolled the selected row far out of view, the arrow keys,
+  typing and Tab no longer reached the list (the row was not built, so the focus had nowhere to
+  be). The selected row is now always built, and the list scrolls back to it.
+- Scroll bars: the bar of a selectable list or table, and of a text area, could not be pressed or
+  dragged; the rows (and the text area itself) span the whole width and took the click. Anything
+  that covers the bar's whole width now leaves it to the bar (a widget that only reaches into it,
+  such as a button at the end of a row, still gets its click). Over the bar the pointer is an arrow
+  (it stayed the text I-beam over a text area's bar) and the row under it is not highlighted, on
+  Windows, Wayland and X11 alike. The bar can also be pressed a few pixels past the widget's right
+  edge, as it already could left of the thumb: a click just outside it used to land on nothing and
+  take the focus away from the list.
+- CPU renderer: scrolling a list inside a scroll area (as on every page of `examples/gallery`)
+  could leave a copy of the old scroll thumb behind. The list's thumb is drawn on the outer area's
+  layer, which the partial redraw did not count as covering the list.
 - The Direct3D 11 renderer (`Renderer::Gpu`) now draws images (they were left out before), with
   the same linear filtering as the CPU renderer.
 - A new example, `examples/gallery`, shows every widget on its own page with its disabled state.

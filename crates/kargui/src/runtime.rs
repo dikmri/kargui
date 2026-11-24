@@ -191,6 +191,10 @@ impl Runtime {
 
     /// 前のフレームで (x, y) にあった押せる部品（ポインターが乗っている部品）
     pub fn hover_at(&self, x: f32, y: f32) -> Option<Id> {
+        // スクロールの棒の上では、押すと棒が動くので、下の行や入力欄に乗ったことにしない
+        if self.cx.scrollbar_at(x, y).is_some() {
+            return None;
+        }
         self.cx.hit(x, y).filter(|h| h.enabled).map(|h| h.id)
     }
 }

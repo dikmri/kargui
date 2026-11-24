@@ -53,11 +53,12 @@ use crate::geom::Color;
 use crate::ime;
 use crate::input::{A11yAction, Event, Mods};
 use crate::log;
+use crate::ui::context::PointerShape;
 use crate::runtime::Runtime;
 use crate::text::Text;
 use crate::ui::Id;
 use crate::ui::context::{Clipboard, Csd, CsdButton, CsdRequest};
-use crate::linux::{A11ySink, DOUBLE_CLICK_DIST, DOUBLE_CLICK_MS, Keyboard, PortalSettings, WHEEL_STEP, app_id, key_of, local_date, local_time};
+use crate::linux::{A11ySink, DOUBLE_CLICK_DIST, DOUBLE_CLICK_MS, Keyboard, PortalSettings, WHEEL_STEP, app_id, key_for, local_date, local_time};
 
 /// マウスのボタン（linux/input-event-codes.h）
 const BTN_LEFT: u32 = 0x110;
@@ -898,14 +899,12 @@ impl State {
             self.set_shape(resize_shape(edge));
             return;
         }
-        let cx = &self.windows[i].rt.cx;
-        let hit = cx.hit(x, y).cloned();
-        let shape = match hit.as_ref().and_then(|h| cx.prev.split_bars.get(&h.id).copied()) {
-            Some(true) => Shape::NsResize,
-            Some(false) => Shape::EwResize,
-            None if hit.as_ref().is_some_and(|h| h.text_input) => Shape::Text,
-            None if hit.as_ref().is_some_and(|h| h.link && h.enabled) => Shape::Pointer,
-            None => Shape::Default,
+        let shape = match self.windows[i].rt.cx.pointer_shape(x, y) {
+            PointerShape::NsResize => Shape::NsResize,
+            PointerShape::EwResize => Shape::EwResize,
+            PointerShape::Text => Shape::Text,
+            PointerShape::Pointer => Shape::Pointer,
+            PointerShape::Default => Shape::Default,
         };
         self.set_shape(shape);
     }
@@ -954,7 +953,7 @@ impl State {
     fn key_down(&mut self, code: u32, repeat: bool) {
         let Some(kb) = self.xkb.as_ref() else { return };
         let mods = kb.mods();
-        let key = key_of(kb.base_sym(code));
+        let key = key_for(kb.base_sym(code), kb.sym(code));
         // 文字は Ctrl と Alt の無い時だけ（Windows の WM_CHAR と同じく、ショートカットはキーとして受ける）
         let text = if mods.ctrl || mods.alt { String::new() } else { kb.utf8(code) };
         let Some(w) = self.keyboard_win.and_then(|id| self.windows.iter_mut().find(|w| w.id == id)) else { return };

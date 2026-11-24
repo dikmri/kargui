@@ -171,6 +171,21 @@ fn distance2(r: &Rect, x: f32, y: f32) -> f32 {
     dx * dx + dy * dy
 }
 
+/// ポインターの形（窓の仕組みごとに、OS の形の名前に直して使う）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PointerShape {
+    /// ふつうの矢印
+    Default,
+    /// 文字を選ぶ I の形
+    Text,
+    /// 押せるリンクの手の形
+    Pointer,
+    /// 上下の仕切りを動かす形
+    NsResize,
+    /// 左右の仕切りを動かす形
+    EwResize,
+}
+
 /// 一覧の、前のフレームでの場所と中身の高さ（物理ピクセル）
 #[derive(Clone, Debug)]
 pub(crate) struct ListInfo {
@@ -356,6 +371,10 @@ pub(crate) struct Context {
     pub expanded: HashMap<Id, bool>,
     /// 表の列の幅（表, 何列目 → 論理ピクセル）。つまみで変えた幅を覚える
     pub column_widths: HashMap<(Id, usize), f32>,
+    /// 押している列のつまみと、押した所のつまみの真ん中からのずれ（物理ピクセル）。押している間、ずれを保って幅を決める
+    pub column_grab: Option<(Id, f32)>,
+    /// 最後に押した位置（物理ピクセル）。押す・動かす・離すが 1 つのフレームに届いても、押した所が分かる
+    pub press_at: Option<(f32, f32)>,
     /// 日付の部品の言葉（Ui::set_date_text）
     pub date_text: crate::date::DateText,
     /// 今日の日付を決めておく（試験台は 2026-11-22。None なら OS に聞く）
@@ -503,6 +522,8 @@ impl Context {
             toolbar_last: HashMap::new(),
             expanded: HashMap::new(),
             column_widths: HashMap::new(),
+            column_grab: None,
+            press_at: None,
             date_text: crate::date::DateText::english(),
             today: None,
             calendar_cursor: HashMap::new(),
@@ -752,12 +773,35 @@ impl Context {
             .min_by(|a, b| distance2(&a.rect, x, y).total_cmp(&distance2(&b.rect, x, y)))
     }
 
-    /// (x, y) にあるスクロールの棒の一覧。部品の本来の範囲の中なら None（部品が勝つ）
+    /// (x, y) にあるスクロールの棒の一覧。部品の本来の範囲の中なら None（部品が勝つ）。
+    /// ただし棒を横に全部覆う当たり（選べる一覧の行、複数行の入力欄そのもの）は棒に譲る。
+    /// 覆われたままだと、棒を押しても行が選ばれるだけで、つまみを引けなかった
     pub fn scrollbar_at(&self, x: f32, y: f32) -> Option<&ListInfo> {
-        if self.prev.hits.iter().any(|h| h.rect.contains(x, y)) {
+        let l = self.prev.lists.iter().rev().find(|l| l.bar.is_some_and(|b| b.contains(x, y)))?;
+        let bar = l.bar?;
+        // 棒は部品の右の端の外まで押せるので、覆うかどうかは部品の中にある分で決める
+        let bar_right = bar.right().min(l.rect.right());
+        let covers_bar = |r: &Rect| r.x <= bar.x && r.right() >= bar_right;
+        if self.prev.hits.iter().any(|h| h.rect.contains(x, y) && !covers_bar(&h.rect)) {
             return None;
         }
-        self.prev.lists.iter().rev().find(|l| l.bar.is_some_and(|b| b.contains(x, y)))
+        Some(l)
+    }
+
+    /// (x, y) で見せるポインターの形。仕切りの上は上下か左右の矢印、入力欄の上は I の形、押せるリンクの上は手の形。
+    /// スクロールの棒の上は、入力欄の中でも矢印（押すと棒が動くので）
+    pub fn pointer_shape(&self, x: f32, y: f32) -> PointerShape {
+        if self.scrollbar_at(x, y).is_some() {
+            return PointerShape::Default;
+        }
+        let hit = self.hit(x, y);
+        match hit.and_then(|h| self.prev.split_bars.get(&h.id).copied()) {
+            Some(true) => PointerShape::NsResize,
+            Some(false) => PointerShape::EwResize,
+            None if hit.is_some_and(|h| h.text_input) => PointerShape::Text,
+            None if hit.is_some_and(|h| h.link && h.enabled) => PointerShape::Pointer,
+            None => PointerShape::Default,
+        }
     }
 
     /// 一覧のスクロールの位置（論理ピクセル）を、端で止めて設定する
@@ -959,6 +1003,8 @@ impl Context {
                     }
                     self.pressed = hit.as_ref().map(|h| h.id);
                     self.pointer = Some((x, y));
+                    self.press_at = Some((x, y));
+                    self.column_grab = None;
                     self.focus_visible = false;
                     // 引っ張り出せる部品の上なら、動かした時に引っ張り始める（引っ張りを自分で使う部品の上は除く）
                     if !hit.as_ref().is_some_and(|h| h.drags) {
