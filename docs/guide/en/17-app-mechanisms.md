@@ -1,4 +1,4 @@
-<!-- source: ja/17-app-mechanisms.md fnv=71239366e1ef6394 -->
+<!-- source: ja/17-app-mechanisms.md fnv=2af021f6df3c20bb -->
 <!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # App mechanisms
 
@@ -31,7 +31,7 @@ if let Some(path) = ui.chosen_file("save") {
 - `.filter(name, &[extensions])` sets the kinds of files, `.title(..)` the title, `.file_name(..)` the starting name and `.folder(..)` the starting folder
 - `.multiple()` lets the user choose several files; take all of them with `ui.chosen_files(key)`
 
-On Linux and macOS, nothing happens yet, until windows exist there.
+On Linux, the dialog of xdg-desktop-portal opens (the desktop's own file chooser). On macOS, nothing happens yet.
 
 ## Asking before closing
 

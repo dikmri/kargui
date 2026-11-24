@@ -1,6 +1,6 @@
 # kargui
 
-> A light native GUI framework for Rust (Windows 10/11). Immediate-mode code, CPU rendering that only redraws what changed, input methods (IME) and screen readers built in.
+> A light native GUI framework for Rust (Windows 10/11 and Linux). Immediate-mode code, CPU rendering that only redraws what changed, input methods (IME) and screen readers built in.
 
 This file is generated from the source by `cargo run -p xtask -- llms`. Do not edit by hand.
 

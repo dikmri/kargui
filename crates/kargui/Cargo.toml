@@ -1,16 +1,16 @@
 [package]
 name = "kargui"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "A light native GUI framework for Rust on Windows: immediate-mode code, CPU rendering that redraws only what changed, input methods and screen readers built in"
+description = "A light native GUI framework for Rust on Windows and Linux: immediate-mode code, CPU rendering that redraws only what changed, input methods and screen readers built in"
 readme = "../../README.md"
 repository = "https://github.com/dikmri/kargui"
-keywords = ["gui", "windows", "immediate-mode", "ime", "accessibility"]
+keywords = ["gui", "windows", "linux", "ime", "accessibility"]
 categories = ["gui"]
 
-# 窓を開けるのは Windows だけなので、docs.rs でも Windows 向けに説明を作る
+# 公開の API はどの OS でも同じなので、docs.rs は Windows 向けだけ作る（Linux 向けは fontconfig の開発用ファイルが要る）
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
 targets = ["x86_64-pc-windows-msvc"]

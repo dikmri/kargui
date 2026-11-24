@@ -1,6 +1,6 @@
 # kargui
 
-Rust で書く、軽いネイティブ GUI フレームワーク（Windows 10/11。版は 0.2）。名前は「軽い」「Rust」「GUI」から。[English README](README.md)（この文の訳）。
+Rust で書く、軽いネイティブ GUI フレームワーク（Windows 10/11 と Linux。版は 0.3）。名前は「軽い」「Rust」「GUI」から。[English README](README.md)（この文の訳）。
 
 Tauri・egui・GPUI で同じアプリ（タスク帳）を作って比べた実験（[AI コーディングノートの実験レポート番外編](https://dikmri.github.io/ai-coding-notes/reports/rust-gui/)）から生まれた。3 つにはそれぞれ優れた所がある。egui は書きやすく、GPUI はメモリが少なく、Tauri は GPU が無い PC でも滑らかに描く。kargui はそれらを 1 つにまとめることを目指し、前回と同じ道具・同じ条件で測りながら作っている。作った過程は[実験レポート番外編 2](https://dikmri.github.io/ai-coding-notes/reports/kargui/)にまとめた。3 つのフレームワークと、その作者・貢献者から多くを学んだ。
 
@@ -90,19 +90,19 @@ cargo run -p xtask -- check                      # 説明と例の割合・部�
 
 ## 今の状態と今後
 
-0.1 は最初の版。0.2 で、ふつうのデスクトップアプリに要る部品と仕組みの多くを足した（変わった所と、0.1 から上げる時に直す所は [CHANGELOG.md](CHANGELOG.md)）。確かめとして、メモ帳・家計簿・ファイルの閲覧の 3 本を kargui だけで書き（`examples/notepad`・`examples/expenses`・`examples/files`）、書いて見つかった不足は kargui の側で直した。次は、下の残りと、Linux と macOS の窓。足すたびに、同じ道具で軽さが保たれているかを測る。
+0.1 は最初の版。0.2 で、ふつうのデスクトップアプリに要る部品と仕組みの多くを足し、0.3 で Linux でも動くようにした（変わった所と、前の版から上げる時に直す所は [CHANGELOG.md](CHANGELOG.md)）。確かめとして、メモ帳・家計簿・ファイルの閲覧の 3 本を kargui だけで書き（`examples/notepad`・`examples/expenses`・`examples/files`）、書いて見つかった不足は kargui の側で直した。`examples/gallery` は、部品を 1 つずつページに分けて見せる。足すたびに、同じ道具で軽さが保たれているかを測る。
 
 まだ無い主な物:
 
-- **部品:** 書式付きの文字の編集（押せない状態、浮き出し、窓の中のダイアログ、ツールチップ、アイコン、画像、複数行の入力欄、ラジオボタン、進み具合、カードと枠、開閉する節、リンク、パスワード、ドロップダウン、メニュー（メニューバー・メニューボタン・入れ子・右クリック）、タブ、数の入力、ツールバー、格子、仕切り、自由に描く面、木の表示、見出しのある表、日付の選択は 0.2 で足した。画像は GPU の道ではまだ描かない。書式付きの文字の表示（`ui.rich_text`）は main にある）
-- **アプリの仕組み:** 通知領域のアイコン、OS の通知（ショートカット・タイマー・ほかのスレッドから描き直す仕組み・複数の窓・ファイルを開く・保存するダイアログ・窓のアイコン・最小の大きさ・閉じる前の確認は 0.2 で足した。窓の中のドラッグ＆ドロップと、ほかのアプリからファイルを落とす仕組み、アニメーションの道具、書体の指定、色と時刻の選択は main にある）
-- **環境:** 窓を開けるのは Windows 10/11 だけ。GPU の道（既定ではない）では、まれに長い途切れが出る。読み上げはナレーターで確かめ、NVDA では確かめていない。アプリから再変換を始める仕組みが無い
+- **部品:** 書式付きの文字の編集（表示する `ui.rich_text` はある）と、ドッキングするパネル
+- **アプリの仕組み:** 通知領域のアイコン、OS の通知、Windows でアプリが描く題の帯、ハイコントラストに従うこと、アプリを多言語にする仕組み
+- **環境:** macOS（`kargui::run` は、対応していないことを伝える `Err` を返す）。Linux の X11 は XWayland の上で確かめ、Xorg のサーバーでは確かめていない。GPU の道（既定ではない）では、まれに長い途切れが出る。読み上げはナレーターと Orca で確かめ、NVDA では確かめていない。アプリから再変換を始める仕組みが無い
 
 ### Linux と macOS
 
-対応する予定。OS に頼る所（窓・入力・日本語入力・文字・画面に出す・クリップボード・読み上げの橋渡し）は、`platform.rs`・`gdi.rs`・`gpu.rs`・`text/dwrite.rs`・`wic.rs`（画像のファイルを読む）の 5 つのファイルにまとめてある。それ以外（部品・並べ方・描き方・試験台）は Linux と macOS でも組み立てられ、文字は parley と swash で並べて描く。Linux で組み立てるには fontconfig の開発用ファイルが要る（Debian と Ubuntu では `libfontconfig1-dev` と `pkg-config`）。parley の中の fontique が、OS のフォントを探すのに fontconfig を使うため。送るたびに、Windows・Linux・macOS で試験を走らせる（GitHub Actions）。
+OS に頼る所は、いくつかのファイルにまとめてある。Windows は `platform.rs`・`gdi.rs`・`gpu.rs`・`text/dwrite.rs`・`wic.rs`（画像のファイルを読む）。Linux は `wayland.rs`・`x11.rs`・`linux.rs`（両方で分け合う物）・`portal.rs`（xdg-desktop-portal）と、X11 の日本語入力の `ime_dbus.rs`・`fcitx.rs`・`ibus.rs`。それ以外（部品・並べ方・描き方・試験台）はどの OS でも同じで、Windows 以外では文字を parley と swash で並べて描く。Linux で組み立てるには fontconfig の開発用ファイルが要る（Debian と Ubuntu では `libfontconfig1-dev` と `pkg-config`）。parley の中の fontique が、OS のフォントを探すのに fontconfig を使うため。送るたびに、Windows・Linux・macOS で試験を走らせる（GitHub Actions）。
 
-Linux では、アプリが Wayland の窓を開く（`wayland.rs`、作っている途中）。CPU の絵を共有メモリで出し、中途半端な倍率（1.5 倍など）・マウス（2 回押し・3 回押し・ホイール・右クリック・ポインターの形）・キー（OS のキー配列を libxkbcommon で読む。動く時に読むので組み立てに開発用の部品は要らない。押し続けも）・OS のクリップボード（文字）・地元の日付と時刻・日本語入力（text-input-v3。変換中の文字と今変換している文節、文字の真下の候補の窓。fcitx5 と Mozc で確かめた）・読み上げ（AT-SPI。accesskit_unix で、Windows と同じ木を渡す。Orca で確かめた）・ファイルのダイアログと OS の明暗の設定（xdg-desktop-portal）・2 つ目からの窓（`ui.window`）・ほかのアプリから引っ張ってきたファイル・合成が題の帯を描かない時（GNOME）に kargui が描く題の帯が動く。X11 の窓も開ける（`x11.rs`。Wayland の合成が無い時か `KARGUI_BACKEND=x11` の時。日本語入力は fcitx5 か IBus の D-Bus）。確かめたのは Hyprland・GNOME・XWayland の上。macOS で `kargui::run` を呼ぶと、今までどおり対応していないことを伝える `Err` を返す。
+Linux では、アプリが Wayland の窓を開く。Wayland の合成が無い時（か `KARGUI_BACKEND=x11` の時）は X11 の窓を開く。どちらも、CPU の絵を共有メモリで出し、倍率（Wayland は 1.5 倍などの中途半端な倍率、X11 は `Xft.dpi`）・マウス（2 回押し・3 回押し・ホイール・右クリック・ポインターの形）・キー（OS のキー配列を libxkbcommon で読む。動く時に読むので組み立てに開発用の部品は要らない。押し続けも）・OS のクリップボード（文字）・地元の日付と時刻・日本語入力（Wayland は text-input-v3、X11 は fcitx5 か IBus の D-Bus。変換中の文字と今変換している文節、文字の真下の候補の窓。fcitx5 と Mozc、IBus と Mozc で確かめた）・読み上げ（AT-SPI。accesskit_unix で、Windows と同じ木を渡す。Orca で確かめた）・ファイルのダイアログと OS の明暗の設定（xdg-desktop-portal）・2 つ目からの窓（`ui.window`）・ほかのアプリから引っ張ってきたファイル・合成が題の帯を描かない時（GNOME）に kargui が描く題の帯が動く。確かめたのは Hyprland・GNOME・XWayland の上。macOS で `kargui::run` を呼ぶと、今までどおり対応していないことを伝える `Err` を返す。
 
 0.x の間は API が変わることがある。変わった所は [CHANGELOG.md](CHANGELOG.md) に書く。
 

@@ -30,7 +30,7 @@ if let Some(path) = ui.chosen_file("save") {
 - `.filter(名前, &[拡張子])` で選べる種類、`.title(..)` で題、`.file_name(..)` で始めの名前、`.folder(..)` で始めのフォルダー
 - `.multiple()` で複数のファイルを選べるようにし、`ui.chosen_files(キー)` で全部を受け取る
 
-Linux と macOS では、窓の道ができるまで、頼んでも何も起きません。
+Linux では、xdg-desktop-portal のダイアログ（デスクトップのファイルを選ぶ画面）が開きます。macOS では、まだ何も起きません。
 
 ## 閉じる前の確認
 

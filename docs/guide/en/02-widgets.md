@@ -1,4 +1,4 @@
-<!-- source: ja/02-widgets.md fnv=e585deb90c7d2997 -->
+<!-- source: ja/02-widgets.md fnv=20762cedb078aa1e -->
 <!-- covers: Ui::label Ui::heading Ui::button Ui::checkbox Ui::toggle Ui::dark_mode_switch Ui::segmented Ui::text_input Ui::text_area TextArea::hint TextArea::rows Ui::slider Label::weak Label::small Label::bold Label::size Button::primary Button::small Button::enabled Ui::enabled Ui::popup Ui::dialog Handle::tooltip Ui::icon Ui::icon_button Button::icon Ui::image Image::from_rgba Image::open Toggled::changed Toggled::strike Slider::changed sig=a0f2ab3741c86140 -->
 # Widgets
 
@@ -209,4 +209,4 @@ let h = kargui::test::Harness::new(Album { photo });
 assert!(h.find("The office at night").is_some());
 ```
 
-Icons and images without a name are treated as decoration, and screen readers skip them. Describe pictures that carry information with `.label(..)`. Image files can be read only on Windows for now (PNG, JPEG, GIF, BMP and more); on other systems, create images from pixels with `Image::from_rgba`. The Direct3D 11 renderer (not the default) does not draw images yet.
+Icons and images without a name are treated as decoration, and screen readers skip them. Describe pictures that carry information with `.label(..)`. Image files can be read only on Windows for now (PNG, JPEG, GIF, BMP and more); on other systems, create images from pixels with `Image::from_rgba`.

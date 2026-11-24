@@ -1,6 +1,6 @@
 # Working on kargui (for AI agents and contributors)
 
-kargui is a light native GUI framework for Rust on Windows 10/11. This file is for agents and people
+kargui is a light native GUI framework for Rust on Windows 10/11 and Linux. This file is for agents and people
 who change kargui itself. To write an app with kargui, read `docs/llms.txt` and `docs/guide/en/`.
 
 ## Rules

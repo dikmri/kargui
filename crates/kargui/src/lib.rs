@@ -6,7 +6,7 @@
 //!   and the Enter that confirms a conversion does not submit.
 //! - Every widget appears to screen readers with a role and a name.
 //!
-//! Windows 10 and 11 only for now.
+//! Runs on Windows 10 and 11 and on Linux (Wayland and X11). macOS is not supported yet.
 //!
 //! In the repository, `docs/widgets.md` shows every widget in light and dark mode and
 //! `docs/llms.txt` is an index for AI assistants. Both are generated from the source.

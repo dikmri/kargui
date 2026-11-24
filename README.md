@@ -1,6 +1,6 @@
 # kargui
 
-A light native GUI framework for Rust (Windows 10/11; version 0.2). The name comes from
+A light native GUI framework for Rust (Windows 10/11 and Linux; version 0.3). The name comes from
 the Japanese word *karui* (light), Rust and GUI. [日本語の README](README.ja.md) (the original; this is
 a translation).
 
@@ -110,50 +110,46 @@ The input method checks type into the foreground window, so they run only while 
 
 ## Status and next steps
 
-0.1 was the first release. 0.2 adds the widgets and mechanisms most everyday desktop apps need
-(changes and how to upgrade: [CHANGELOG.md](CHANGELOG.md)). As a check, three ordinary apps were
-written with kargui alone: a text editor, a household budget and a file browser (`examples/notepad`,
-`examples/expenses`, `examples/files`); what they showed was fixed in kargui. Next: the items below,
-and windows on Linux and macOS. Each addition is measured with the same tools to keep kargui light.
+0.1 was the first release. 0.2 added the widgets and mechanisms most everyday desktop apps need,
+and 0.3 brings apps to Linux (changes and how to upgrade: [CHANGELOG.md](CHANGELOG.md)). As a check,
+three ordinary apps were written with kargui alone: a text editor, a household budget and a file
+browser (`examples/notepad`, `examples/expenses`, `examples/files`); what they showed was fixed in
+kargui. `examples/gallery` shows every widget on its own page. Each addition is measured with the
+same tools to keep kargui light.
 
 Not there yet:
 
-- **Widgets:** editing rich text (disabled widgets, popups, in-window dialogs, tooltips,
-  icons, images, multi-line text input, radio buttons, progress, cards and groups, expanders, links,
-  passwords, drop-downs, menus (menu bar, menu buttons, submenus and context menus), tabs, number
-  inputs, toolbars, grids, split panes, drawing surfaces, trees, tables with headings and date
-  pickers were added in 0.2; images are not drawn on the Direct3D 11 renderer yet; showing rich text
-  with `ui.rich_text` is on the main branch).
-- **App mechanisms:** a tray icon and system notifications (shortcuts, timers, waking from other
-  threads, multiple windows, open and save file dialogs, the window icon, a minimum window size and
-  asking before closing were added in 0.2; drag and drop inside the window, dropping files from
-  other apps, animation helpers, choosing fonts, and color and time pickers are on the main branch).
-- **Platforms:** windows open on Windows 10/11 only. The Direct3D 11 renderer (not the default)
-  occasionally stalls for a long frame. Screen reading has been checked with Narrator but not with
-  NVDA. Apps cannot start a reconversion themselves.
+- **Widgets:** editing rich text (showing it, `ui.rich_text`, is there) and docking panels.
+- **App mechanisms:** a tray icon, system notifications, a title bar drawn by the app on Windows,
+  following the high contrast mode, and support for translating an app.
+- **Platforms:** macOS (`kargui::run` returns an `Err` saying the system is not supported). On
+  Linux, X11 has been checked under XWayland but not on an Xorg server. The Direct3D 11 renderer
+  (not the default) occasionally stalls for a long frame. Screen reading has been checked with
+  Narrator and Orca but not with NVDA. Apps cannot start a reconversion themselves.
 
 ### Linux and macOS
 
-They are planned. Everything that depends on the operating system (window, input, input method,
-text, putting pixels on screen, clipboard, screen-reader adapter) is kept in five files:
-`platform.rs`, `gdi.rs`, `gpu.rs`, `text/dwrite.rs` and `wic.rs` (reading image files). The rest (widgets, layout, drawing, the
-test harness) builds on Linux and macOS as well, with text laid out and drawn by parley and swash.
+Everything that depends on the operating system is kept in a few files: on Windows `platform.rs`,
+`gdi.rs`, `gpu.rs`, `text/dwrite.rs` and `wic.rs` (reading image files); on Linux `wayland.rs`,
+`x11.rs`, `linux.rs` (what both share), `portal.rs` (xdg-desktop-portal), and `ime_dbus.rs`,
+`fcitx.rs` and `ibus.rs` (the input method on X11). The rest (widgets, layout, drawing, the test
+harness) is the same everywhere, with text laid out and drawn by parley and swash outside Windows.
 On Linux, building needs the fontconfig development files (`libfontconfig1-dev` and `pkg-config` on
 Debian and Ubuntu); fontique, inside parley, uses fontconfig to find the system fonts.
 Every push runs the tests on Windows, Linux and macOS (GitHub Actions).
 
-On Linux, apps open a Wayland window (`wayland.rs`, work in progress): the CPU picture through
-shared memory, fractional scaling, the mouse (double and triple clicks, wheel, right click, pointer
+On Linux, apps open a Wayland window, or an X11 window when there is no Wayland compositor (or with
+`KARGUI_BACKEND=x11`). Both have the CPU picture through shared memory, fractional scaling
+(Wayland) or `Xft.dpi` (X11), the mouse (double and triple clicks, wheel, right click, pointer
 shapes), the keyboard (the system key map through libxkbcommon, loaded at run time, and key
-repeat), the system clipboard (text), the local date and time, and the input method (text-input-v3:
-the composition with its clause being converted, and the candidate window under the caret; checked
-with fcitx5 and Mozc), screen readers (AT-SPI through accesskit_unix, with the same tree as on
-Windows; checked with Orca), file dialogs and the system dark mode (xdg-desktop-portal), more
-than one window (`ui.window`), files dragged in from other apps, and a title bar drawn by kargui
-where the compositor draws none (GNOME). X11 windows work too (`x11.rs`, chosen when there is no
-Wayland compositor or with `KARGUI_BACKEND=x11`; the input method there is fcitx5 or IBus through
-D-Bus). It is checked on Hyprland, GNOME and XWayland. On macOS, `kargui::run` still returns an `Err` saying the
-system is not supported.
+repeat), the system clipboard (text), the local date and time, the input method (text-input-v3 on
+Wayland, fcitx5 or IBus through D-Bus on X11: the composition with its clause being converted, and
+the candidate window under the caret; checked with fcitx5 and Mozc, and with IBus and Mozc), screen
+readers (AT-SPI through accesskit_unix, with the same tree as on Windows; checked with Orca), file
+dialogs and the system dark mode (xdg-desktop-portal), more than one window (`ui.window`), files
+dragged in from other apps, and a title bar drawn by kargui where the compositor draws none
+(GNOME). They are checked on Hyprland, GNOME and XWayland. On macOS, `kargui::run` still returns an
+`Err` saying the system is not supported.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).
 

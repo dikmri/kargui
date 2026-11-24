@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-24)
+
+Apps now run on Linux as well, in Wayland and X11 windows, with the input method (text-input-v3 on
+Wayland; fcitx5 or IBus on X11), screen readers (AT-SPI), the system clipboard, file dialogs and
+dark mode (xdg-desktop-portal), more windows, files dropped from other apps, and a title bar drawn
+by kargui where the compositor draws none (GNOME). They were checked on a Debian 13 laptop with
+Hyprland, GNOME and XWayland. A new example, `examples/gallery`, shows every widget on its own page.
+
+Upgrading from 0.2 (compared with the published 0.2.0; nothing was removed):
+
+- `Options` has two new fields, `font` and `fonts`. Code that builds it by listing every field
+  must add them, or use `..Options::new(title)`.
+- `DateText` has three new fields, `time_empty`, `hours` and `minutes` (for the time picker).
+  Code that builds it by listing every field must add them, or start from `DateText::english()` or
+  `DateText::japanese()` with `..`.
+- Password fields no longer send what is typed to the input method (below).
 
 - Linux: apps open a Wayland window (first part). `kargui::run` no longer returns an `Err` on
   Linux. The window is an xdg-shell toplevel drawn by the CPU path into shared memory, at the

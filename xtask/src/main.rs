@@ -869,7 +869,7 @@ fn make_llms(check: bool) -> bool {
         test_src.lines().take_while(|l| l.starts_with("//!")).map(|l| l.trim_start_matches("//!").strip_prefix(' ').unwrap_or("")).collect();
     let mut out = String::new();
     out.push_str("# kargui\n\n");
-    out.push_str("> A light native GUI framework for Rust (Windows 10/11). Immediate-mode code, CPU rendering that only redraws what changed, input methods (IME) and screen readers built in.\n\n");
+    out.push_str("> A light native GUI framework for Rust (Windows 10/11 and Linux). Immediate-mode code, CPU rendering that only redraws what changed, input methods (IME) and screen readers built in.\n\n");
     out.push_str("This file is generated from the source by `cargo run -p xtask -- llms`. Do not edit by hand.\n\n");
     out.push_str("## Writing a screen\n\n");
     out.push_str(&module_doc.join("\n"));

@@ -208,4 +208,4 @@ let h = kargui::test::Harness::new(Album { photo });
 assert!(h.find("夜の事務所").is_some());
 ```
 
-アイコンも画像も、名前を付けない時は飾りとして扱い、読み上げソフトは読みません。内容を伝える画像には `.label(..)` で説明を付けます。画像のファイルを読めるのは今は Windows だけで（PNG・JPEG・GIF・BMP など）、ほかの OS では `Image::from_rgba` で画素から作ります。GPU の道（既定ではない）では、画像はまだ描きません。
+アイコンも画像も、名前を付けない時は飾りとして扱い、読み上げソフトは読みません。内容を伝える画像には `.label(..)` で説明を付けます。画像のファイルを読めるのは今は Windows だけで（PNG・JPEG・GIF・BMP など）、ほかの OS では `Image::from_rgba` で画素から作ります。
