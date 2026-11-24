@@ -1010,12 +1010,17 @@ impl Context {
                     if !hit.as_ref().is_some_and(|h| h.drags) {
                         self.press_source = self.source_at(x, y).map(|s| (s.0, x, y));
                     }
-                    // ダイアログや浮き出しの空いた所を押しても、焦点は中に残す
-                    let in_layer = self.top_dialog().is_some() || self.prev.overlays.iter().any(|o| o.kind != OverlayKind::Tooltip && o.rect.contains(x, y));
-                    if hit.is_some() || !in_layer {
-                        // 数の入力欄の小さいボタンは、焦点を欄に置く
-                        let spin = hit.as_ref().and_then(|h| self.prev.spins.get(&h.id).copied());
-                        self.focus = spin.or(hit.as_ref().filter(|h| h.focusable).map(|h| h.id));
+                    // 焦点を持てる部品を押した時だけ焦点を移す。何も無い所や、焦点を持たない部品（文字など）を
+                    // 押しても、焦点は前の部品に残す（Windows・GTK・Qt の部品と同じ。ウェブのページとは違う）。
+                    // 数の入力欄の小さいボタンは、焦点を欄に置く
+                    let spin = hit.as_ref().and_then(|h| self.prev.spins.get(&h.id).copied());
+                    match spin.or(hit.as_ref().filter(|h| h.focusable).map(|h| h.id)) {
+                        Some(f) => self.focus = Some(f),
+                        None => {
+                            if let Some(f) = self.focus {
+                                log::event("focus.kept", &format!("x={x} y={y}"), &format!("target={:x}", f.0));
+                            }
+                        }
                     }
                     self.press_text = None;
                     if let Some(h) = hit.filter(|h| h.text_input) {

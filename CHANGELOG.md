@@ -90,6 +90,11 @@ Upgrading from 0.2 (compared with the published 0.2.0; nothing was removed):
   Windows, Wayland and X11 alike. The bar can also be pressed a few pixels past the widget's right
   edge, as it already could left of the thumb: a click just outside it used to land on nothing and
   take the focus away from the list.
+- Focus: clicking where there is nothing, or on a widget that cannot take the focus (such as a
+  label), now leaves the focus where it was, as with Windows', GTK's and Qt's controls; it used to
+  clear it, so the keys stopped reaching the list or text field the user was in (dialogs and
+  popups already kept it). Only clicking a widget that can take the focus moves it. When a click
+  keeps it, the log gets a `focus.kept` line.
 - CPU renderer: scrolling a list inside a scroll area (as on every page of `examples/gallery`)
   could leave a copy of the old scroll thumb behind. The list's thumb is drawn on the outer area's
   layer, which the partial redraw did not count as covering the list.

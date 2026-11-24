@@ -3506,6 +3506,43 @@ mod tests {
     }
 
     #[test]
+    fn clicking_where_nothing_is_keeps_the_focus() {
+        // 作者の手の確かめ（0.3.0 の 3 回目）で、一覧の右の何も無い所を押すと焦点が外れ、数字で飛べなくなった。
+        // Windows・GTK・Qt の部品と同じく、焦点を持てる部品を押した時だけ焦点を移す
+        struct Form {
+            name: String,
+            row: Option<usize>,
+        }
+        impl App for Form {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.text_input(&mut self.name).hint("Name");
+                ui.label("Just text");
+                ui.list(60, 28.0).height(Size::Fixed(200.0)).selection(&mut self.row).type_ahead(|i| format!("{i} row")).show(|ui, i| {
+                    ui.label(format!("{i} row"));
+                });
+            }
+        }
+        let mut h = Harness::new(Form { name: String::new(), row: None });
+        h.frame();
+        let blank = (h.rt.cx.width - 10.0, h.rt.cx.height - 10.0);
+        // 一覧の行を選び、窓の右下の何も無い所と、文字（焦点を持たない部品）を押してから数字を打つ
+        h.click("2 row");
+        h.click_at(blank.0, blank.1);
+        h.click("Just text");
+        h.press(Key::Num5);
+        assert_eq!(h.app().row, Some(5), "焦点は一覧に残る");
+        // 入力欄も同じ。何も無い所を押しても、続けて打てる
+        h.click("Name").type_text("ab");
+        h.click_at(blank.0, blank.1);
+        h.type_text("c");
+        assert_eq!(h.app().name, "abc", "焦点は入力欄に残る");
+        // 焦点を持てる部品を押せば、焦点はそちらへ移る
+        h.click("3 row");
+        h.type_text("d");
+        assert_eq!(h.app().name, "abc", "一覧を押したので入力欄には入らない");
+    }
+
+    #[test]
     fn lists_keep_the_focus_after_the_wheel_scrolls_the_selected_row_away() {
         // 作者の手の確かめ（0.3.0 の 2 回目）で、行を選んでからホイールで遠くへ動かすと、数字を打っても飛ばなかった
         let names: Vec<String> = (0..60).map(|i| format!("{i} row")).collect();

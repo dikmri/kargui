@@ -1,4 +1,4 @@
-<!-- source: ja/08-accessibility.md fnv=9d284a07af1ec0c2 -->
+<!-- source: ja/08-accessibility.md fnv=b8278841dea88050 -->
 <!-- covers: Handle::label Ui::checkbox Ui::slider List::selection sig=3d4f35766a528b40 -->
 # Screen readers and the keyboard
 
@@ -24,7 +24,8 @@ If a control has no name, the log (wherever you sent it with `set_logger`) gets 
 - Space and Enter press the focused control.
 - Sliders move with the arrow keys, Home and End; selectable lists move with the up and down arrows, Home and End.
 - The focus ring appears only when focus was moved with the keyboard.
+- Clicking a control that can take the focus moves the focus to it. Clicking where there is nothing, or on plain text, leaves the focus where it was (as with Windows' own controls), so you can go on typing in a text field.
 
 ## Lists
 
-List rows carry "item N of M". Only the visible rows go into the screen-reader tree, so a list of ten thousand items stays light.
+List rows carry "item N of M". Only the visible rows (and the selected row) go into the screen-reader tree, so a list of ten thousand items stays light.
