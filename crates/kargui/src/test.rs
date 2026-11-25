@@ -94,6 +94,8 @@ pub struct Harness<A: App> {
     pointer_held: Option<(f32, f32)>,
     /// アプリが渡した書体のファイル（ほかの窓にも読み込む）
     font_files: Rc<Vec<Cow<'static, [u8]>>>,
+    /// 主の窓が見えているか（Ui::hide_window・show_window）
+    shown: bool,
 }
 
 impl<A: App> Harness<A> {
@@ -201,7 +203,7 @@ impl<A: App> Harness<A> {
         rt.cx.font = rt.cx.text.fonts.id(font);
         // 窓の場所: 主の窓は画面の (100, 50) にあり、中の左上は (100, 80)（論理の画素）
         rt.cx.place = Some(crate::ui::context::WindowPlace { outer: (100.0, 50.0), client: (100.0, 80.0), unit: 1.0 / scale });
-        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None, font_files };
+        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None, font_files, shown: true };
         h.frame();
         h
     }
@@ -334,7 +336,163 @@ impl<A: App> Harness<A> {
                 self.closed = true;
             }
         }
+        if let Some(shown) = self.rt.cx.show_request.take() {
+            self.shown = shown;
+        }
         self
+    }
+
+    /// Whether the main window's view made a tray icon ([`Ui::tray`]) in the last frame.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Notes;
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.tray(|t| {
+    ///             t.tooltip("Notes");
+    ///         });
+    ///     }
+    /// }
+    ///
+    /// assert!(Harness::new(Notes).tray_shown());
+    /// ```
+    pub fn tray_shown(&self) -> bool {
+        self.rt.cx.tray.is_some()
+    }
+
+    /// The tray icon's tooltip ([`Tray::tooltip`](crate::ui::Tray::tooltip)), if there is a tray.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Notes;
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.tray(|t| {
+    ///             t.tooltip("Notes");
+    ///         });
+    ///     }
+    /// }
+    ///
+    /// assert_eq!(Harness::new(Notes).tray_tooltip(), Some("Notes"));
+    /// ```
+    pub fn tray_tooltip(&self) -> Option<&str> {
+        self.rt.cx.tray.as_ref().map(|t| t.tooltip.as_str())
+    }
+
+    /// The tray icon's menu, one line per item: check items start with `[x] ` or `[ ] `, gray
+    /// items end with ` (disabled)`, submenus end with ` >` and their items are indented by two
+    /// spaces, and separators are `-`. Empty without a tray.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Notes {
+    ///     muted: bool,
+    /// }
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.tray(|t| {
+    ///             t.menu(|m| {
+    ///                 m.check(&mut self.muted, "Mute");
+    ///                 m.separator();
+    ///                 m.item("Quit");
+    ///             });
+    ///         });
+    ///     }
+    /// }
+    ///
+    /// let h = Harness::new(Notes { muted: true });
+    /// assert_eq!(h.tray_menu(), ["[x] Mute", "-", "Quit"]);
+    /// ```
+    pub fn tray_menu(&self) -> Vec<String> {
+        self.rt.cx.tray.as_ref().map(|t| crate::ui::tray::lines(&t.menu)).unwrap_or_default()
+    }
+
+    /// Clicks the tray icon (as the left button on Windows), and draws a frame of the main window.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Notes {
+    ///     clicks: u32,
+    /// }
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.tray(|t| {
+    ///             if t.clicked() {
+    ///                 self.clicks += 1;
+    ///             }
+    ///         });
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.tray_click();
+    /// assert_eq!(h.app().clicks, 1);
+    /// ```
+    pub fn tray_click(&mut self) -> &mut Self {
+        self.main_window();
+        self.send(vec![Event::Tray(crate::ui::tray::TrayInput::Click)])
+    }
+
+    /// Chooses the first item of the tray icon's menu whose text is `text` (submenus included),
+    /// and draws a frame of the main window. Panics if there is no such item.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Notes {
+    ///     muted: bool,
+    /// }
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.tray(|t| {
+    ///             t.menu(|m| {
+    ///                 m.check(&mut self.muted, "Mute");
+    ///             });
+    ///         });
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.tray_choose("Mute");
+    /// assert!(h.app().muted);
+    /// ```
+    pub fn tray_choose(&mut self, text: &str) -> &mut Self {
+        let menu = self.rt.cx.tray.as_ref().map(|t| t.menu.clone()).unwrap_or_default();
+        let id = crate::ui::tray::find(&menu, text).unwrap_or_else(|| panic!("no tray menu item {text:?} in {:?}", crate::ui::tray::lines(&menu)));
+        self.main_window();
+        self.send(vec![Event::Tray(crate::ui::tray::TrayInput::Choose(id))])
+    }
+
+    /// Whether the main window is shown: false after the view called
+    /// [`Ui::hide_window`], true again after [`Ui::show_window`].
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Hidden;
+    ///
+    /// impl App for Hidden {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         ui.hide_window();
+    ///     }
+    /// }
+    ///
+    /// assert!(!Harness::new(Hidden).window_shown());
+    /// ```
+    pub fn window_shown(&self) -> bool {
+        self.shown
     }
 
     /// The names a screen reader would read, in screen order.
@@ -4497,6 +4655,134 @@ mod tests {
         assert!(h.find("Notes").is_none());
         h.click("New");
         assert_eq!(h.app().news, 1);
+    }
+
+    /// トレイを持つアプリ（閉じるとトレイに隠れる）
+    #[derive(Default)]
+    struct Tray {
+        no_tray: bool,
+        clicks: u32,
+        mute: bool,
+        opened: Option<String>,
+        quits: u32,
+        hide_now: bool,
+        show_now: bool,
+        hides: u32,
+    }
+
+    impl App for Tray {
+        fn view(&mut self, ui: &mut Ui) {
+            if !self.no_tray {
+                ui.tray(|t| {
+                    t.tooltip("Notes");
+                    if t.clicked() {
+                        self.clicks += 1;
+                        self.show_now = true;
+                    }
+                    t.menu(|m| {
+                        m.item("Show");
+                        m.check(&mut self.mute, "Mute");
+                        m.separator();
+                        m.submenu("Recent", |m| {
+                            if m.item("a.txt").clicked() {
+                                self.opened = Some("a.txt".into());
+                            }
+                        });
+                        if m.item("Quit").enabled(false).clicked() {
+                            self.quits += 1;
+                        }
+                    });
+                });
+            }
+            // 窓を出す・隠すのは、出来事（閉じた・トレイを押した）の時だけ頼む
+            if std::mem::take(&mut self.hide_now) {
+                ui.hide_window();
+                self.hides += 1;
+            }
+            if std::mem::take(&mut self.show_now) {
+                ui.show_window();
+            }
+            ui.label("Body");
+        }
+
+        fn close_requested(&mut self) -> bool {
+            self.hide_now = true;
+            false
+        }
+    }
+
+    #[test]
+    fn the_tray_shows_what_the_view_describes_and_goes_away_when_the_view_stops() {
+        let mut h = Harness::new(Tray::default());
+        assert!(h.tray_shown());
+        assert_eq!(h.tray_tooltip(), Some("Notes"));
+        assert_eq!(h.tray_menu(), ["Show", "[ ] Mute", "-", "Recent >", "  a.txt", "Quit (disabled)"]);
+        h.app_mut().no_tray = true;
+        h.frame();
+        assert!(!h.tray_shown());
+        assert_eq!(h.tray_menu(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn tray_clicks_and_menu_choices_reach_the_view_once() {
+        let mut h = Harness::new(Tray::default());
+        h.tray_click();
+        assert_eq!(h.app().clicks, 1);
+        h.frame();
+        assert_eq!(h.app().clicks, 1, "a click counts once");
+        h.tray_choose("Mute");
+        assert!(h.app().mute);
+        assert_eq!(h.tray_menu()[1], "[x] Mute");
+        h.tray_choose("a.txt");
+        assert_eq!(h.app().opened.as_deref(), Some("a.txt"));
+        // 押せない項目は、選んでも clicked にならない（OS は灰色の項目を選ばせないが、念のため）
+        h.tray_choose("Quit");
+        assert_eq!(h.app().quits, 0);
+    }
+
+    #[test]
+    fn a_tray_click_and_a_menu_choice_in_the_same_frame_both_reach_the_view() {
+        // 作者の手の確かめで、Windows の窓の処理がフレームを回さないうちに、左クリックとメニューの選択が 1 つの
+        // フレームにまとめて届いた。トレイの知らせを 1 つしか持てず、左クリックが消えた
+        let mut h = Harness::new(Tray::default());
+        let menu = h.rt.cx.tray.as_ref().map(|t| t.menu.clone()).unwrap();
+        let mute = crate::ui::tray::find(&menu, "Mute").unwrap();
+        use crate::ui::tray::TrayInput as T;
+        h.send(vec![Event::Tray(T::Click), Event::Tray(T::Choose(mute))]);
+        assert_eq!(h.app().clicks, 1);
+        assert!(h.app().mute);
+    }
+
+    #[test]
+    fn closing_hides_the_window_to_the_tray_and_a_tray_click_shows_it_again() {
+        let mut h = Harness::new(Tray::default());
+        assert!(h.window_shown());
+        h.request_close();
+        assert!(!h.is_closed());
+        assert!(!h.window_shown());
+        assert_eq!(h.app().hides, 1);
+        h.frame();
+        assert!(!h.window_shown(), "the window stays hidden until something shows it");
+        h.tray_click();
+        assert!(h.window_shown());
+    }
+
+    #[test]
+    fn only_the_main_window_has_a_tray() {
+        struct Two;
+        impl App for Two {
+            fn view(&mut self, ui: &mut Ui) {
+                let mut open = true;
+                ui.window("tool", &crate::Options::new("Tool"), &mut open);
+            }
+            fn window(&mut self, _key: &str, ui: &mut Ui) {
+                ui.tray(|t| {
+                    t.tooltip("From another window");
+                });
+            }
+        }
+        let h = Harness::new(Two);
+        assert!(!h.tray_shown());
     }
 
     #[test]

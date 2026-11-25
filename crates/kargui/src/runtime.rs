@@ -69,6 +69,7 @@ impl Runtime {
     /// ビューを 1 回回す。開くように頼まれた窓（Ui::window）の一覧は、回すたびに作り直す
     fn view_pass(&mut self, view: &mut dyn FnMut(&mut Ui), tree: &mut Tree) {
         self.cx.windows.clear();
+        self.cx.tray = None;
         Ui::new(&mut self.cx, tree).with_title_bar(view);
     }
 

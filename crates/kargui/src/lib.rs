@@ -42,6 +42,9 @@ mod platform;
 // 画像のファイルを読む Windows の道
 #[cfg(windows)]
 mod wic;
+// トレイ（通知領域のアイコン）の Windows の道
+#[cfg(windows)]
+mod tray_win;
 // OS との境目の Linux の版（Wayland と X11 の窓と入力。分け合う物は linux.rs、ポータルは portal.rs）
 #[cfg(target_os = "linux")]
 mod fcitx;
@@ -53,6 +56,9 @@ mod ime_dbus;
 mod linux;
 #[cfg(target_os = "linux")]
 mod portal;
+// トレイ（StatusNotifierItem と dbusmenu）の Linux の道
+#[cfg(target_os = "linux")]
+mod sni;
 #[cfg(target_os = "linux")]
 mod wayland;
 #[cfg(target_os = "linux")]

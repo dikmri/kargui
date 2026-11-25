@@ -344,6 +344,10 @@ struct Win {
     /// fractional-scale が無い時の整数の倍率（wl_surface の preferred_buffer_scale）
     int_scale: i32,
     configured: bool,
+    /// 隠している（Ui::hide_window）。ビューは回すが描かない（描くと地図に戻ってしまう）
+    hidden: bool,
+    /// 中の大きさの下限（論理。出し直す時に合成へ送り直す）
+    min: Option<(i32, i32)>,
     pending_size: Option<(i32, i32)>,
     events: Vec<Event>,
     need_frame: bool,
@@ -554,6 +558,9 @@ struct State {
     drag: Option<Drag>,
     /// OS の設定（明暗・題の帯のボタンの並び）の答え。届いたら None にする
     settings_rx: Option<Receiver<PortalSettings>>,
+    /// トレイ（主の窓のビューが Ui::tray を呼んでいる間）と、アプリがアイコンを渡さない時の画像
+    tray: Option<crate::sni::Tray>,
+    tray_fallback: Option<crate::Image>,
     running: bool,
     /// ポインターとキーボードの焦点がある窓
     pointer_win: Option<WinId>,
@@ -649,6 +656,8 @@ impl State {
             scale120: 120,
             int_scale: 1,
             configured: false,
+            hidden: false,
+            min: min_size.map(|(w, h)| (w.round() as i32, h.round() as i32)),
             pending_size: None,
             events: Vec::new(),
             need_frame: true,
@@ -824,6 +833,55 @@ impl State {
         }
     }
 
+    /// 窓を出すか隠す（Ui::show_window・hide_window）。隠す時は絵を外して地図から下ろす。出す時は、窓の役目
+    /// （xdg_surface・xdg_toplevel・題の帯の頼み）を作り直し、合成の最初の設定（configure）を待ってから描く。
+    /// xdg-shell の決まりでは、絵の無い commit で出し直せるが、Hyprland 0.55 は一度下ろした窓のその commit に
+    /// 設定を返さなかった（窓が戻らず、設定待ちの間はビューも回らない）
+    fn present(&mut self, id: WinId, show: bool) {
+        let (qh, wm_base, deco_mgr) = (self.qh.clone(), self.wm_base.clone(), self.deco_mgr.clone());
+        let Some(w) = self.win(id) else { return };
+        if show {
+            if !w.hidden {
+                // Wayland には最小化を戻す頼みが無い（Hyprland は最小化そのものが無い）
+                log::event("window.show", &w.tag(), "already shown");
+                return;
+            }
+            // 作った順の逆に壊す（題の帯の頼み → toplevel → xdg_surface）。wl_surface はそのまま使う
+            if let Some(d) = w.decoration.take() {
+                d.destroy();
+            }
+            w.toplevel.destroy();
+            w.xdg_surface.destroy();
+            w.xdg_surface = wm_base.get_xdg_surface(&w.surface, &qh, id);
+            w.toplevel = w.xdg_surface.get_toplevel(&qh, id);
+            w.toplevel.set_title(w.title.clone());
+            w.toplevel.set_app_id(app_id());
+            if let Some((mw, mh)) = w.min {
+                w.toplevel.set_min_size(mw, mh);
+            }
+            w.decoration = deco_mgr.as_ref().map(|m| {
+                let d = m.get_toplevel_decoration(&w.toplevel, &qh, id);
+                d.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+                d
+            });
+            w.hidden = false;
+            w.configured = false;
+            w.frame_callback = false;
+            w.full = true;
+            w.surface.commit();
+            log::event("window.show", &w.tag(), "new toplevel (wait for configure)");
+        } else {
+            if w.hidden {
+                return;
+            }
+            w.hidden = true;
+            w.configured = false;
+            w.surface.attach(None, 0, 0);
+            w.surface.commit();
+            log::event("window.hide", &w.tag(), "unmap");
+        }
+    }
+
     /// 別のスレッドから届いた答え（ファイルのダイアログ・OS の明暗）を受け取る
     fn take_answers(&mut self) {
         while let Ok((win, key, files)) = self.dialog_rx.try_recv() {
@@ -841,6 +899,36 @@ impl State {
         {
             self.settings_rx = None;
             self.apply_settings(s, "late (after the first frame)");
+        }
+        // トレイを押した・項目を選んだ（主の窓の入力にする）
+        let inputs: Vec<crate::ui::tray::TrayInput> = self.tray.as_ref().map(|t| t.rx.try_iter().collect()).unwrap_or_default();
+        for t in inputs {
+            if let Some(w) = self.windows.iter_mut().find(|w| w.key.is_none()) {
+                log::event("tray.input", &format!("{t:?}"), "main window");
+                w.events.push(crate::input::Event::Tray(t));
+                w.need_frame = true;
+                w.why = "input";
+            }
+        }
+    }
+
+    /// 主の窓のビューが作ったトレイの中身を、トレイのスレッドに渡す（無ければトレイを消す）
+    fn sync_tray(&mut self, want: Option<crate::ui::tray::TrayDesc>) {
+        match want {
+            Some(d) => {
+                if self.tray.is_none() {
+                    log::event("tray.start", &format!("tip={:?}", d.tooltip), "spawn");
+                    self.tray = Some(crate::sni::spawn(self.tray_fallback.clone(), self.wake.clone()));
+                }
+                if let Some(t) = self.tray.as_mut() {
+                    t.set(&d);
+                }
+            }
+            None => {
+                if self.tray.take().is_some() {
+                    log::event("tray.stop", "", "the view stopped making the tray");
+                }
+            }
         }
     }
 
@@ -1071,7 +1159,8 @@ impl State {
 
     /// 窓 i の 1 フレーム: 入力を渡してビューを回し、描いて画面に出す
     fn frame(&mut self, i: usize) {
-        if !self.windows[i].configured {
+        // 隠している窓は、設定（configure）が無くてもビューを回す（トレイを押して出し直すため）
+        if !self.windows[i].configured && !self.windows[i].hidden {
             return;
         }
         let t = Instant::now();
@@ -1088,6 +1177,8 @@ impl State {
         let dialog = w.rt.cx.file_dialog_request.take();
         let title_bar = w.rt.cx.csd_request.take();
         let requested = is_main.then(|| w.rt.cx.windows.clone());
+        let tray = is_main.then(|| w.rt.cx.tray.clone());
+        let show = w.rt.cx.show_request.take();
         w.wake_at = out.wake_after.map(|d| Instant::now() + d);
         w.animating = out.want_frame;
         w.need_frame = false;
@@ -1097,6 +1188,12 @@ impl State {
         }
         if let Some((key, d)) = dialog {
             self.open_file_dialog(id, key, d);
+        }
+        if let Some(t) = tray {
+            self.sync_tray(t);
+        }
+        if let Some(s) = show {
+            self.present(id, s);
         }
         if let Some(r) = title_bar {
             self.title_bar_request(id, r);
@@ -1112,7 +1209,8 @@ impl State {
         let rt = &mut w.rt;
         w.a11y.update_if_active(|| rt.a11y().0);
         let t_build = t.elapsed().as_secs_f64() * 1000.0;
-        let drawn = w.draw(&self.shm, &self.qh, why, t_build);
+        // 隠している間と、出し直して設定を待つ間は描かない（絵を付けると地図に載る）
+        let drawn = w.configured && !w.hidden && w.draw(&self.shm, &self.qh, why, t_build);
         if drawn {
             let w = &mut self.windows[i];
             let first = !w.shown;
@@ -1218,6 +1316,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         last_folder: None,
         drag: None,
         settings_rx,
+        tray: None,
+        tray_fallback: options.icon.clone(),
         running: true,
         pointer_win: None,
         keyboard_win: None,
@@ -1284,7 +1384,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         for id in ids {
             if let Some(i) = st.index(id)
                 && st.windows[i].need_frame
-                && st.windows[i].configured
+                && (st.windows[i].configured || st.windows[i].hidden)
             {
                 st.frame(i);
             }

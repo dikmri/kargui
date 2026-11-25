@@ -68,6 +68,7 @@ x11rb::atom_manager! {
         _NET_WM_NAME,
         _NET_WM_PID,
         _NET_WM_ICON,
+        _NET_ACTIVE_WINDOW,
         UTF8_STRING,
         CLIPBOARD,
         TARGETS,
@@ -387,6 +388,9 @@ struct State {
     dialog_open: bool,
     last_folder: Option<PathBuf>,
     settings_rx: Option<Receiver<PortalSettings>>,
+    /// トレイ（主の窓のビューが Ui::tray を呼んでいる間）と、アプリがアイコンを渡さない時の画像
+    tray: Option<crate::sni::Tray>,
+    tray_fallback: Option<crate::Image>,
     running: bool,
     pointer_win: Option<WinId>,
     keyboard_win: Option<WinId>,
@@ -594,6 +598,22 @@ impl State {
         }
     }
 
+    /// 窓を出す（地図に載せて前に出す）か隠す（地図から外す）。Ui::show_window・hide_window
+    fn present(&mut self, id: WinId, show: bool) {
+        if show {
+            let _ = self.conn.map_window(id);
+            let _ = self.conn.configure_window(id, &xproto::ConfigureWindowAux::new().stack_mode(xproto::StackMode::ABOVE));
+            // 窓の管理役に、前に出して焦点を移すよう頼む（1 はアプリからの頼み）
+            let ev = xproto::ClientMessageEvent::new(32, id, self.atoms._NET_ACTIVE_WINDOW, [1, 0, 0, 0, 0]);
+            let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT, ev);
+            log::event("window.show", &format!("win={id}"), "map");
+        } else {
+            let _ = self.conn.unmap_window(id);
+            log::event("window.hide", &format!("win={id}"), "unmap");
+        }
+        let _ = self.conn.flush();
+    }
+
     /// 別のスレッドから届いた答え（ファイルのダイアログ・OS の設定）を受け取る
     fn take_answers(&mut self) {
         while let Ok((win, key, files)) = self.dialog_rx.try_recv() {
@@ -611,6 +631,36 @@ impl State {
         {
             self.settings_rx = None;
             self.apply_settings(s, "late (after the first frame)");
+        }
+        // トレイを押した・項目を選んだ（主の窓の入力にする）
+        let inputs: Vec<crate::ui::tray::TrayInput> = self.tray.as_ref().map(|t| t.rx.try_iter().collect()).unwrap_or_default();
+        for t in inputs {
+            if let Some(w) = self.windows.iter_mut().find(|w| w.key.is_none()) {
+                log::event("tray.input", &format!("{t:?}"), "main window");
+                w.events.push(crate::input::Event::Tray(t));
+                w.need_frame = true;
+                w.why = "input";
+            }
+        }
+    }
+
+    /// 主の窓のビューが作ったトレイの中身を、トレイのスレッドに渡す（無ければトレイを消す）
+    fn sync_tray(&mut self, want: Option<crate::ui::tray::TrayDesc>) {
+        match want {
+            Some(d) => {
+                if self.tray.is_none() {
+                    log::event("tray.start", &format!("tip={:?}", d.tooltip), "spawn");
+                    self.tray = Some(crate::sni::spawn(self.tray_fallback.clone(), self.wake.clone()));
+                }
+                if let Some(t) = self.tray.as_mut() {
+                    t.set(&d);
+                }
+            }
+            None => {
+                if self.tray.take().is_some() {
+                    log::event("tray.stop", "", "the view stopped making the tray");
+                }
+            }
         }
     }
 
@@ -1281,6 +1331,8 @@ impl State {
         let quit = std::mem::take(&mut w.rt.cx.quit);
         let dialog = w.rt.cx.file_dialog_request.take();
         let requested = is_main.then(|| w.rt.cx.windows.clone());
+        let tray = is_main.then(|| w.rt.cx.tray.clone());
+        let show = w.rt.cx.show_request.take();
         w.wake_at = out.wake_after.map(|d| Instant::now() + d);
         if out.want_frame {
             w.wake_at = Some(w.wake_at.map_or(Instant::now() + ANIMATION_STEP, |t| t.min(Instant::now() + ANIMATION_STEP)));
@@ -1293,6 +1345,12 @@ impl State {
         }
         if let Some((key, d)) = dialog {
             self.open_file_dialog(id, key, d);
+        }
+        if let Some(t) = tray {
+            self.sync_tray(t);
+        }
+        if let Some(s) = show {
+            self.present(id, s);
         }
         let w = &mut self.windows[i];
         let rt = &mut w.rt;
@@ -1543,6 +1601,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         dialog_open: false,
         last_folder: None,
         settings_rx,
+        tray: None,
+        tray_fallback: options.icon.clone(),
         running: true,
         pointer_win: None,
         keyboard_win: None,

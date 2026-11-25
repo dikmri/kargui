@@ -53,9 +53,11 @@ pub(crate) mod draw;
 pub(crate) mod edit;
 pub(crate) mod layout;
 pub(crate) mod rich;
+pub(crate) mod tray;
 
 pub use dock_view::DockArea;
 pub use rich::{RichLink, RichText, Span};
+pub use tray::{Tray, TrayItem, TrayMenu};
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -2915,6 +2917,104 @@ impl<'a> Ui<'a> {
     pub fn quit(&mut self) {
         crate::log::event("app.quit", "", "requested");
         self.cx.quit = true;
+    }
+
+    /// An icon in the notification area (the system tray) while the main window's view calls
+    /// this; when the view stops calling it, the icon goes away. The icon has a tooltip, a
+    /// click ([`Tray::clicked`]) and a menu that the system draws ([`Tray::menu`]). `ui` is in use
+    /// inside, so note what happened and act after it.
+    ///
+    /// On Windows the icon is in the notification area of the taskbar. On Linux it uses the
+    /// StatusNotifierItem protocol, which KDE, most bars of tiling compositors (for example
+    /// Waybar and Quickshell) and GNOME with the AppIndicator extension show; plain GNOME shows
+    /// nothing. Only the main window's view makes the tray ([`App::window`](crate::App::window)
+    /// views are ignored).
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// # let mut muted = false;
+    /// let (mut show, mut quit) = (false, false);
+    /// ui.tray(|t| {
+    ///     t.tooltip("Notes");
+    ///     show = t.clicked();
+    ///     t.menu(|m| {
+    ///         show |= m.item("Show window").clicked();
+    ///         m.check(&mut muted, "Mute");
+    ///         m.separator();
+    ///         quit = m.item("Quit").clicked();
+    ///     });
+    /// });
+    /// if show {
+    ///     ui.show_window();
+    /// }
+    /// if quit {
+    ///     ui.quit();
+    /// }
+    /// # });
+    /// ```
+    pub fn tray(&mut self, f: impl FnOnce(&mut Tray)) {
+        if self.cx.window_key.is_some() {
+            return;
+        }
+        let mut desc = tray::TrayDesc::default();
+        f(&mut Tray { desc: &mut desc, input: self.cx.tray_input.clone() });
+        self.cx.tray = Some(desc);
+    }
+
+    /// Hides this window after this frame (it leaves the screen and the taskbar). The app keeps
+    /// running; show the window again with [`show_window`](Self::show_window). Call it when
+    /// something happens, not every frame. Apps with a [`tray`](Self::tray) icon hide the main
+    /// window when the user closes it: return `false` from
+    /// [`App::close_requested`](crate::App::close_requested), and hide it in the next view.
+    ///
+    /// ```
+    /// use kargui::{App, Ui};
+    ///
+    /// #[derive(Default)]
+    /// struct Notes {
+    ///     hide: bool,
+    /// }
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         let mut show = false;
+    ///         ui.tray(|t| {
+    ///             show = t.clicked();
+    ///         });
+    ///         if std::mem::take(&mut self.hide) {
+    ///             ui.hide_window();
+    ///         }
+    ///         if show {
+    ///             ui.show_window();
+    ///         }
+    ///         ui.label("Notes");
+    ///     }
+    ///
+    ///     // the close button hides the window to the tray
+    ///     fn close_requested(&mut self) -> bool {
+    ///         self.hide = true;
+    ///         false
+    ///     }
+    /// }
+    /// ```
+    pub fn hide_window(&mut self) {
+        self.cx.show_request = Some(false);
+    }
+
+    /// Shows this window after this frame if it was hidden ([`hide_window`](Self::hide_window))
+    /// or minimized, and brings it to the front. Call it when something happens (a click on the
+    /// tray icon), not every frame: each call brings the window back, so calling it every frame
+    /// would undo the user's minimizing.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Show").clicked() {
+    ///     ui.show_window();
+    /// }
+    /// # });
+    /// ```
+    pub fn show_window(&mut self) {
+        self.cx.show_request = Some(true);
     }
 
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:

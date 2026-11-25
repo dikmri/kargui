@@ -443,6 +443,13 @@ pub(crate) struct Context {
     pub file_results: HashMap<String, Vec<std::path::PathBuf>>,
     /// アプリを終える（Ui::quit。窓の処理が主の窓を閉じる）
     pub quit: bool,
+    /// トレイの中身（主の窓のビューの Ui::tray。回すたびに作り直す。窓の処理がフレームの後で OS に渡す）
+    pub tray: Option<crate::ui::tray::TrayDesc>,
+    /// OS から届いたトレイの知らせ（入力を渡す回のビューの Ui::tray が読む。窓の処理がフレームを回す前に、左クリック
+    /// とメニューの選択がまとめて届くことがあるので並びで持つ）
+    pub tray_input: Vec<crate::ui::tray::TrayInput>,
+    /// 窓を出す（true）か隠す（false）頼み（Ui::show_window・hide_window。窓の処理がフレームの後で取り出す）
+    pub show_request: Option<bool>,
     /// アプリが描く題の帯（合成が描かない時。Linux の GNOME など。窓の処理が毎フレーム入れる）
     pub csd: Option<Csd>,
     /// 題の帯の操作で、窓の処理に頼む事（動かす・最大化など。窓の処理がフレームの後で取り出す）
@@ -586,6 +593,9 @@ impl Context {
             file_dialog_request: None,
             file_results: HashMap::new(),
             quit: false,
+            tray: None,
+            tray_input: Vec::new(),
+            show_request: None,
             csd: None,
             csd_request: None,
             title_press: None,
@@ -1231,6 +1241,10 @@ impl Context {
                         self.context_request = Some(req);
                     }
                 }
+                // トレイのアイコンを押した・メニューの項目を選んだ（主の窓のビューの Ui::tray が読む）
+                Event::Tray(t) => {
+                    self.tray_input.push(t);
+                }
                 // 右クリック: 開いている物の外なら閉じて、その場所の部品の右クリックのメニューを開く
                 Event::ContextMenu { x, y } => {
                     self.commit_preedit("context");
@@ -1391,6 +1405,7 @@ impl Context {
         self.released = None;
         self.press_now = None;
         self.context_request = None;
+        self.tray_input.clear();
     }
 }
 

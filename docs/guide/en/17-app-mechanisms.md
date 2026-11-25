@@ -1,4 +1,4 @@
-<!-- source: ja/17-app-mechanisms.md fnv=41c83d284c55d76e -->
+<!-- source: ja/17-app-mechanisms.md fnv=fe30a9fdd1f1029e -->
 <!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # App mechanisms
 
@@ -114,6 +114,61 @@ options.custom_title_bar = true;
 - On GNOME (Wayland where the compositor draws no title bars), kargui always draws the bar and puts the `ui.title_bar` widgets in it, whatever `custom_title_bar` says.
 - Where the system or compositor draws the bar (X11, Wayland compositors that draw bars, compositors with no bars) and on Windows with `custom_title_bar` false, the `ui.title_bar` widgets make the top row of the window. Call `ui.title_bar` first in the view so this works everywhere.
 
+## Tray (notification area icon)
+
+While the main window's view calls `ui.tray`, the app has an icon in the notification area. The icon has a tooltip, a click, and a menu that opens with a right click. The system draws the menu, so it takes items, check items, separators and submenus.
+
+```rust
+use kargui::{App, Ui};
+
+#[derive(Default)]
+struct Notes {
+    muted: bool,
+    hide: bool,
+}
+
+impl App for Notes {
+    fn view(&mut self, ui: &mut Ui) {
+        let (mut show, mut quit) = (false, false);
+        ui.tray(|t| {
+            t.tooltip("Notes");
+            show = t.clicked();
+            t.menu(|m| {
+                show |= m.item("Show window").clicked();
+                m.check(&mut self.muted, "Mute");
+                m.separator();
+                quit = m.item("Quit").clicked();
+            });
+        });
+        if std::mem::take(&mut self.hide) {
+            ui.hide_window();
+        }
+        if show {
+            ui.show_window();
+        }
+        if quit {
+            ui.quit();
+        }
+        ui.label("Body");
+    }
+
+    // the close button hides the window to the tray instead of ending the app
+    fn close_requested(&mut self) -> bool {
+        self.hide = true;
+        false
+    }
+}
+# let _ = Notes::default();
+```
+
+- `ui` is in use inside `ui.tray`, so note what was clicked or chosen, and show the window or end the app after it.
+- `t.clicked()` and `m.item(..).clicked()` are true only in the frame of the click or choice. `m.check` flips its value when chosen.
+- Give the icon's picture with `t.icon(&image)`. Without one, the tray uses the window's icon (`Options::icon`), or a plain kargui icon. Keep the image in the app's state: the same image is not sent to the system again.
+- When the view stops calling `ui.tray`, the icon goes away. Only the main window's view makes the tray (`App::window` views are ignored).
+- `ui.hide_window()` takes the window off the screen and the taskbar, and `ui.show_window()` brings a hidden or minimized window back to the front. Call them when something happens (a click on the tray, a close), not every frame: calling `ui.show_window()` every frame would undo the user's minimizing.
+- On Windows the icon is in the notification area of the taskbar. On Linux it uses the StatusNotifierItem protocol, which KDE, the bars of tiling compositors (Waybar, Quickshell and others) and GNOME with the AppIndicator extension show. Plain GNOME shows nothing.
+- Wayland has no request to bring back a minimized window. There, `ui.show_window()` brings back only a window hidden with `ui.hide_window()`.
+
 ## Tests
 
-In the test harness, read the requested dialog with `h.file_dialog_key()` and `h.file_dialog()`, and answer it with `h.choose_files(&[..])` or `h.cancel_file_dialog()`. `h.request_close()` acts as if the close button was clicked, and `h.is_closed()` tells whether the app closed.
+In the test harness, read the requested dialog with `h.file_dialog_key()` and `h.file_dialog()`, and answer it with `h.choose_files(&[..])` or `h.cancel_file_dialog()`. `h.request_close()` acts as if the close button was clicked, and `h.is_closed()` tells whether the app closed. Read the tray with `h.tray_shown()`, `h.tray_tooltip()` and `h.tray_menu()` (one line per item), click it with `h.tray_click()`, and choose an item with `h.tray_choose("Quit")`. `h.window_shown()` tells whether the window is hidden.

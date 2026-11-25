@@ -116,6 +116,41 @@ impl Image {
     pub fn height(&self) -> u32 {
         self.0.height
     }
+
+    /// 大きさを変えた画像（トレイのアイコンなど、OS が決まった大きさで求める時）。縮める時は元の範囲の平均、
+    /// 大きくする時は近い画素を繰り返す。乗算済みのまま計算するので、透明な縁が暗くならない。同じ大きさならそのまま
+    pub(crate) fn resized(&self, width: u32, height: u32) -> Image {
+        let (sw, sh) = (self.0.width as usize, self.0.height as usize);
+        let (tw, th) = (width.max(1) as usize, height.max(1) as usize);
+        if (sw, sh) == (tw, th) {
+            return self.clone();
+        }
+        // 目の画素 t が使う元の範囲 [a, b)（少なくとも 1 画素）
+        let span = |t: usize, s: usize, n: usize| {
+            let a = t * s / n;
+            (a, ((t + 1) * s / n).max(a + 1))
+        };
+        let src = &self.0.pixels;
+        let mut out = Vec::with_capacity(tw * th * 4);
+        for ty in 0..th {
+            let (y0, y1) = span(ty, sh, th);
+            for tx in 0..tw {
+                let (x0, x1) = span(tx, sw, tw);
+                let mut sum = [0u32; 4];
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let i = (y * sw + x) * 4;
+                        for c in 0..4 {
+                            sum[c] += src[i + c] as u32;
+                        }
+                    }
+                }
+                let n = ((y1 - y0) * (x1 - x0)) as u32;
+                out.extend(sum.map(|v| ((v + n / 2) / n) as u8));
+            }
+        }
+        Image::premultiplied(tw as u32, th as u32, out)
+    }
 }
 
 impl PartialEq for Image {
@@ -145,5 +180,25 @@ mod tests {
         let again = Image::from_rgba(2, 1, vec![255, 0, 0, 255, 200, 100, 50, 128]).unwrap();
         assert_ne!(img, again);
         assert_eq!(img, img.clone());
+    }
+
+    #[test]
+    fn resizing_averages_when_smaller_and_repeats_when_larger() {
+        // 左半分が白・右半分が透明の 4 × 2 を 2 × 1 に: 左は白、右は透明（乗算済みのまま平均する）
+        let mut px = Vec::new();
+        for _ in 0..2 {
+            px.extend([255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0]);
+        }
+        let img = Image::from_rgba(4, 2, px).unwrap();
+        let small = img.resized(2, 1);
+        assert_eq!((small.width(), small.height()), (2, 1));
+        assert_eq!(small.0.pixels, [255, 255, 255, 255, 0, 0, 0, 0]);
+        // 2 × 1 を 1 × 1 に: 白と透明の平均は、乗算済みで半分（赤・緑・青・不透明度とも 128）
+        assert_eq!(small.resized(1, 1).0.pixels, [128, 128, 128, 128]);
+        // 1 × 1 を 2 × 2 に: 同じ画素を繰り返す
+        let dot = Image::from_rgba(1, 1, vec![10, 20, 30, 255]).unwrap();
+        assert_eq!(dot.resized(2, 2).0.pixels, [10, 20, 30, 255].repeat(4));
+        // 同じ大きさなら同じ画像（作り直さない）
+        assert_eq!(dot.resized(1, 1), dot);
     }
 }

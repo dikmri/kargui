@@ -273,4 +273,6 @@ pub(crate) enum Event {
     A11y { target: Id, action: A11yAction },
     /// 右クリック（その場所の部品の右クリックのメニューを開く）。位置は物理ピクセル
     ContextMenu { x: f32, y: f32 },
+    /// トレイのアイコンを押した・メニューの項目を選んだ（主の窓に届く）
+    Tray(crate::ui::tray::TrayInput),
 }

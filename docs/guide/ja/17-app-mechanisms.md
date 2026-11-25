@@ -113,6 +113,61 @@ options.custom_title_bar = true;
 - GNOME（合成が題の帯を描かない Wayland）では、`custom_title_bar` にかかわらず kargui が帯を描き、`ui.title_bar` の部品を帯に入れます。
 - OS や合成が帯を描く所（X11、帯を描く Wayland、帯の無い合成）と、`custom_title_bar` が false の Windows では、`ui.title_bar` の部品は窓のいちばん上の行になります。どの OS でも使えるように、`ui.title_bar` はビューの最初に呼んでください。
 
+## トレイ（通知領域のアイコン）
+
+主の窓のビューで `ui.tray` を呼んでいる間、通知領域にアプリのアイコンを出します。アイコンには、ポインターを乗せた時の説明、押した時の知らせ、右クリックで開くメニューがあります。メニューは OS が描くので、項目・印の付く項目・区切り・入れ子のメニューを置けます。
+
+```rust
+use kargui::{App, Ui};
+
+#[derive(Default)]
+struct Notes {
+    muted: bool,
+    hide: bool,
+}
+
+impl App for Notes {
+    fn view(&mut self, ui: &mut Ui) {
+        let (mut show, mut quit) = (false, false);
+        ui.tray(|t| {
+            t.tooltip("メモ");
+            show = t.clicked();
+            t.menu(|m| {
+                show |= m.item("窓を出す").clicked();
+                m.check(&mut self.muted, "音を消す");
+                m.separator();
+                quit = m.item("終わる").clicked();
+            });
+        });
+        if std::mem::take(&mut self.hide) {
+            ui.hide_window();
+        }
+        if show {
+            ui.show_window();
+        }
+        if quit {
+            ui.quit();
+        }
+        ui.label("本文");
+    }
+
+    // 閉じるボタンでは終わらず、トレイに隠れる
+    fn close_requested(&mut self) -> bool {
+        self.hide = true;
+        false
+    }
+}
+# let _ = Notes::default();
+```
+
+- `ui` は `ui.tray` の中で使えないので、押した・選んだことを変数に覚え、`ui.tray` の後で窓を出す・アプリを終えるなどを行います。
+- `t.clicked()` と `m.item(..).clicked()` は、押した・選んだフレームでだけ true になります。`m.check` は、選ぶと値を入れ替えます。
+- アイコンの画像は `t.icon(&image)` で渡します。渡さなければ窓のアイコン（`Options::icon`）を使い、それも無ければ kargui の無地のアイコンを使います。画像はアプリの状態に持っておいてください。同じ画像なら OS に送り直しません。
+- `ui.tray` を呼ばなくなると、アイコンを消します。トレイを作るのは主の窓のビューだけです（`App::window` のビューで呼んでも何もしません）。
+- `ui.hide_window()` は窓を画面とタスクバーから隠し、`ui.show_window()` は隠した窓・最小化した窓を戻して前に出します。どちらも、出来事（トレイを押した・閉じた）の時だけ呼んでください。毎フレーム `ui.show_window()` を呼ぶと、利用者が最小化してもすぐ戻ります。
+- Windows は、タスクバーの通知領域に出します。Linux は StatusNotifierItem の決まりで出し、KDE、タイル型の合成の帯（Waybar・Quickshell など）、AppIndicator の拡張機能を入れた GNOME が表示します。拡張機能の無い GNOME には出ません。
+- Wayland には、最小化した窓を戻す頼みがありません。`ui.show_window()` が戻せるのは、`ui.hide_window()` で隠した窓だけです。
+
 ## 試験
 
-試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。
+試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。トレイは、`h.tray_shown()`・`h.tray_tooltip()`・`h.tray_menu()`（1 行ずつの文字）で読み、`h.tray_click()` で押し、`h.tray_choose("終わる")` で項目を選びます。窓が隠れているかは `h.window_shown()` で確かめます。

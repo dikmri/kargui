@@ -11,7 +11,7 @@ use taskcore::{args, log};
 const DEFAULT_LOG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../logs/gallery.log");
 
 /// ページ（名前と、使う関数）
-const PAGES: [(&str, &str); 23] = [
+const PAGES: [(&str, &str); 24] = [
     ("ボタン", "button · icon_button · toggle_button · link"),
     ("チェックと切り替え", "checkbox · toggle · dark_mode_switch"),
     ("ひとつを選ぶ", "radio_group · segmented · dropdown"),
@@ -35,6 +35,7 @@ const PAGES: [(&str, &str); 23] = [
     ("自由に描く面", "canvas"),
     ("引っ張って落とす", "drag_source · dropped · animate"),
     ("ドッキング", "dock · Dock"),
+    ("トレイ", "tray · hide_window · show_window"),
 ];
 
 struct Gallery {
@@ -74,6 +75,63 @@ struct Gallery {
     picture: Image,
     dock: Dock<&'static str>,
     saved_dock: Option<String>,
+    // トレイ（24 ページ目）: アイコンを出すか、閉じるボタンで隠れるか、押した回数、次のビューで行う事
+    tray_on: bool,
+    close_to_tray: bool,
+    tray_clicks: u32,
+    hide_now: bool,
+    show_now: bool,
+}
+
+impl Gallery {
+    /// トレイのアイコン（説明に押した回数を入れる）とメニュー
+    fn tray(&mut self, ui: &mut Ui) {
+        let (mut show, mut quit, mut page) = (false, false, None);
+        let before = ui.dark();
+        let mut dark = before;
+        let picture = self.picture.clone();
+        let clicks = self.tray_clicks;
+        ui.tray(|t| {
+            t.icon(&picture);
+            t.tooltip(format!("部品の見本（押した回数 {clicks}）"));
+            if t.clicked() {
+                show = true;
+            }
+            t.menu(|m| {
+                show |= m.item("窓を出す").clicked();
+                m.check(&mut dark, "暗い色");
+                m.separator();
+                m.submenu("ページ", |m| {
+                    for (i, (name, _)) in PAGES.iter().enumerate().take(4) {
+                        if m.item(*name).clicked() {
+                            page = Some(i);
+                        }
+                    }
+                });
+                m.item("押せない項目").enabled(false);
+                m.separator();
+                quit = m.item("見本を終える").clicked();
+            });
+        });
+        if show {
+            self.tray_clicks += 1;
+            log::event("gallery.tray_click", "", &self.tray_clicks.to_string());
+            self.show_now = true;
+        }
+        if dark != before {
+            self.dark = Some(dark);
+            log::event("gallery.dark", "tray", &dark.to_string());
+        }
+        if let Some(p) = page {
+            log::event("gallery.tray_page", PAGES[p].0, "");
+            self.page = Some(p);
+            self.show_now = true;
+        }
+        if quit {
+            log::event("gallery.tray_quit", "", "");
+            ui.quit();
+        }
+    }
 }
 
 /// ドッキングの最初の並べ方: 左にファイル、右上に編集とメモ、右下に出力
@@ -139,6 +197,11 @@ impl Gallery {
             picture: picture(),
             dock: default_dock(),
             saved_dock: None,
+            tray_on: false,
+            close_to_tray: true,
+            tray_clicks: 0,
+            hide_now: false,
+            show_now: false,
         }
     }
 
@@ -480,6 +543,21 @@ impl Gallery {
                 ui.label("右クリックの Float で、パネルをほかのまとまりの上に浮かせる。浮いた枠は、タブの左の点を引くと動き、右下の点を引くと大きさが変わる。右クリックの Dock で元の場所へ戻る").weak().wrap();
                 ui.label("右クリックの Move to a new window で、パネルを別の窓に出す（Windows と X11）。窓を閉じると元の場所へ戻る").weak().wrap();
             }
+            23 => {
+                if ui.checkbox(&mut self.tray_on, "通知領域にアイコンを出す").changed() {
+                    log::event("gallery.tray", "", &self.tray_on.to_string());
+                }
+                let on = self.tray_on;
+                ui.enabled(on, |ui| {
+                    ui.checkbox(&mut self.close_to_tray, "閉じるボタンでトレイに隠れる");
+                    if ui.button("窓を隠す").clicked() {
+                        self.hide_now = true;
+                    }
+                });
+                ui.label(format!("トレイのアイコンを押した回数: {}", self.tray_clicks));
+                ui.label("アイコンを押すと窓が戻る。右クリックのメニューで、窓を出す・明暗・ページを選ぶ・見本を終えるができる").weak().wrap();
+                ui.label("Linux は StatusNotifierItem を表示する帯（KDE・Waybar・Quickshell・拡張機能を入れた GNOME）に出る").weak().wrap();
+            }
             _ => {}
         }
     }
@@ -499,6 +577,17 @@ impl App for Gallery {
     fn view(&mut self, ui: &mut Ui) {
         if let Some(d) = self.dark {
             ui.set_dark(d);
+        }
+        if self.tray_on {
+            self.tray(ui);
+        }
+        if std::mem::take(&mut self.hide_now) {
+            log::event("gallery.hide", "", "");
+            ui.hide_window();
+        }
+        if std::mem::take(&mut self.show_now) {
+            log::event("gallery.show", "", "");
+            ui.show_window();
         }
         // kargui が描く題の帯（Options::custom_title_bar）に、見本の名前と明暗の切り替えを置く。帯を描かない OS では
         // 窓のいちばん上の行になる
@@ -528,6 +617,14 @@ impl App for Gallery {
         .label("部品の一覧の幅")
         .grow();
         self.split = split;
+    }
+
+    // トレイを出していて「閉じるボタンでトレイに隠れる」なら、終わらずに隠れる
+    fn close_requested(&mut self) -> bool {
+        let hide = self.tray_on && self.close_to_tray;
+        log::event("gallery.close", "", if hide { "hide to the tray" } else { "close" });
+        self.hide_now |= hide;
+        !hide
     }
 
     fn presented(&mut self, frame: &Frame) {
@@ -588,6 +685,31 @@ mod tests {
         h.app_mut().page = Some(11);
         h.frame();
         assert!(h.find("東京").is_some() && h.find("13,960,000").is_some());
+    }
+
+    #[test]
+    fn the_tray_page_puts_an_icon_that_hides_and_shows_the_window() {
+        let mut h = Harness::with_size(Gallery::new(Instant::now()), 900.0, 620.0, 1.0);
+        h.app_mut().page = Some(23);
+        h.frame();
+        assert!(!h.tray_shown());
+        h.click("通知領域にアイコンを出す");
+        assert!(h.tray_shown());
+        assert_eq!(h.tray_tooltip(), Some("部品の見本（押した回数 0）"));
+        assert_eq!(h.tray_menu(), ["窓を出す", "[ ] 暗い色", "-", "ページ >", "  ボタン", "  チェックと切り替え", "  ひとつを選ぶ", "  数", "押せない項目 (disabled)", "-", "見本を終える"]);
+        // 閉じるボタンで隠れ、トレイを押すと戻る
+        h.request_close();
+        assert!(!h.is_closed() && !h.window_shown());
+        h.tray_click();
+        assert!(h.window_shown());
+        assert_eq!(h.tray_tooltip(), Some("部品の見本（押した回数 1）"));
+        // メニューで暗い色とページを選ぶ
+        h.tray_choose("暗い色");
+        assert_eq!(h.app().dark, Some(true));
+        h.tray_choose("数");
+        assert_eq!(h.app().page, Some(3));
+        h.tray_choose("見本を終える");
+        assert!(h.is_closed());
     }
 
     #[test]

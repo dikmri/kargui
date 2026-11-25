@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Tray: `Ui::tray` puts an icon in the notification area while the main window's view calls
+  it, with a tooltip, a click (`Tray::clicked`) and a menu the system draws (`Tray::menu`:
+  items, check items, separators, submenus). Windows uses `Shell_NotifyIconW`; Linux (Wayland and
+  X11) uses StatusNotifierItem and dbusmenu over D-Bus. `Ui::hide_window` and `Ui::show_window`
+  hide the window and bring it back, for apps that close to the tray. The test harness reads the
+  tray (`tray_shown`, `tray_tooltip`, `tray_menu`), clicks it (`tray_click`), chooses items
+  (`tray_choose`) and tells whether the window is shown (`window_shown`). Guide chapter 17,
+  `examples/gallery` (the tray page).
 - Title bar: with `Options::custom_title_bar`, kargui draws the title bar on Windows too, and
   `Ui::title_bar` puts widgets in it (on GNOME kargui always draws the bar). The minimize,
   maximize and close buttons sit at the bar's right end, the maximize button shows the snap

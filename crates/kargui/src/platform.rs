@@ -103,6 +103,13 @@ enum Post {
     /// 窓のメニューを画面の (x, y) に出す（kargui が描く題の帯の右クリック。メニューは閉じるまで窓の知らせを
     /// 受け続けるので、借りの外で出す）
     WindowMenu(HWND, i32, i32),
+    /// トレイのアイコンを出す・変える・消す（エクスプローラーと知らせをやり取りするので借りの外）。終わったら
+    /// 古いアイコンを片付ける
+    Tray(HWND, crate::tray_win::Op, Option<HICON>),
+    /// トレイのメニューを画面の (x, y) に出し、選んだ項目を窓に入力として渡す
+    TrayMenu(HWND, i32, i32, Vec<crate::ui::tray::TrayNode>),
+    /// 窓を出す（true。最小化も戻して前に出す）か隠す（false）。Ui::show_window・hide_window
+    Present(HWND, bool),
 }
 
 /// 読み上げの操作を、窓の持ち主のスレッドへ渡す係（AccessKit は別のスレッドから呼ぶことがある）
@@ -685,6 +692,10 @@ struct State {
     /// ほかのアプリからファイルを受け取る係（OS に届け出た物。窓を壊す時に取り消す）と、届け出を頼んだか
     file_drop: Option<windows::Win32::System::Ole::IDropTarget>,
     file_drop_asked: bool,
+    /// 主の窓だけ: OS に出したトレイの中身とアイコン（次のフレームと比べ、変わった物だけを送る）
+    tray: Option<(crate::ui::tray::TrayDesc, HICON)>,
+    /// 窓を壊した（WM_DESTROY の後）。フレームを回さない（回すと、消したトレイのアイコンをまた出そうとする）
+    destroyed: bool,
     // 遅いフレームの内訳
     last_tick: Option<Instant>,
     t_build: f64,
@@ -799,6 +810,29 @@ fn do_post(p: Post) {
                 let _ = ShowWindow(hwnd, cmd);
             },
             Post::WindowMenu(hwnd, x, y) => show_window_menu(hwnd, x, y),
+            Post::Tray(hwnd, op, old) => {
+                crate::tray_win::apply(hwnd, &op);
+                if let Some(i) = old {
+                    let _ = unsafe { DestroyIcon(i) };
+                }
+            }
+            Post::TrayMenu(hwnd, x, y, nodes) => {
+                if let Some(id) = crate::tray_win::show_menu(hwnd, x, y, &nodes) {
+                    log::event("tray.choose", &format!("id={id}"), "ok");
+                    with_window(hwnd, |st| st.push(Event::Tray(crate::ui::tray::TrayInput::Choose(id))));
+                }
+            }
+            Post::Present(hwnd, show) => unsafe {
+                let before = (IsWindowVisible(hwnd).as_bool(), IsIconic(hwnd).as_bool());
+                if show {
+                    let _ = ShowWindow(hwnd, if before.1 { SW_RESTORE } else { SW_SHOW });
+                    let front = SetForegroundWindow(hwnd).as_bool();
+                    log::event("window.show", &format!("visible={} iconic={}", before.0, before.1), &format!("front={front}"));
+                } else {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    log::event("window.hide", &format!("visible={} iconic={}", before.0, before.1), "ok");
+                }
+            },
             Post::Quit => {
                 if let Some(h) = with_state(|st| st.hwnd) {
                     let res = unsafe { DestroyWindow(h) };
@@ -927,6 +961,10 @@ impl State {
 
     /// 1 フレーム: 入力を渡してビューを回し、描いて画面に出す
     fn frame(&mut self, why: &str) {
+        if self.destroyed {
+            self.need_frame = false;
+            return;
+        }
         let t = Instant::now();
         let events = std::mem::take(&mut self.events);
         let focus_before = self.rt.cx.focus;
@@ -950,6 +988,13 @@ impl State {
         // Ui::quit: 主の窓を壊してアプリを終える
         if std::mem::take(&mut self.rt.cx.quit) {
             self.post.push(Post::Quit);
+        }
+        // トレイ（主の窓のビューだけが作る）と、窓を出す・隠す頼み
+        if self.key.is_none() {
+            self.sync_tray();
+        }
+        if let Some(show) = self.rt.cx.show_request.take() {
+            self.post.push(Post::Present(self.hwnd, show));
         }
         // kargui が描く題の帯のボタン。窓の操作は借りの外で行う（動かす・窓のメニューは HTCAPTION で OS が行う）
         if let Some(r) = self.rt.cx.csd_request.take() {
@@ -1122,6 +1167,50 @@ impl State {
         self.need_frame = true;
     }
 
+    /// このフレームのトレイの中身を、OS に出した物と比べ、変わった物だけを送る（送るのは借りの外）
+    fn sync_tray(&mut self) {
+        use crate::tray_win::Op;
+        let want = self.rt.cx.tray.clone();
+        match (want, self.tray.take()) {
+            (None, None) => {}
+            (None, Some((_, icon))) => {
+                log::event("tray.remove", "", "ok");
+                self.post.push(Post::Tray(self.hwnd, Op::Delete, Some(icon)));
+            }
+            (Some(d), None) => {
+                let icon = self.tray_icon(&d);
+                log::event("tray.add", &format!("tip={:?} items={}", d.tooltip, crate::ui::tray::lines(&d.menu).len()), &format!("icon={}", icon.is_some()));
+                if let Some(icon) = icon {
+                    self.post.push(Post::Tray(self.hwnd, Op::Add { icon, tip: d.tooltip.clone() }, None));
+                    self.tray = Some((d, icon));
+                }
+            }
+            (Some(d), Some((sent, icon))) => {
+                let new_icon = if d.same_icon(&sent) { None } else { self.tray_icon(&d) };
+                let tip = (d.tooltip != sent.tooltip).then(|| d.tooltip.clone());
+                if new_icon.is_some() || tip.is_some() {
+                    log::event("tray.update", &format!("icon={} tip={:?}", new_icon.is_some(), tip), "ok");
+                    self.post.push(Post::Tray(self.hwnd, Op::Modify { icon: new_icon, tip }, new_icon.map(|_| icon)));
+                }
+                if d.menu != sent.menu {
+                    log::event("tray.menu_changed", &format!("items={}", crate::ui::tray::lines(&d.menu).len()), "ok");
+                }
+                self.tray = Some((d, new_icon.unwrap_or(icon)));
+            }
+        }
+    }
+
+    /// トレイのアイコン: アプリが渡した画像、無ければ窓のアイコンの画像、それも無ければ kargui の無地のアイコンを、
+    /// 通知領域の大きさにして作る
+    fn tray_icon(&self, d: &crate::ui::tray::TrayDesc) -> Option<HICON> {
+        let size = crate::tray_win::icon_size(self.hwnd);
+        let image = match d.icon.as_ref().or(self.icon_image.as_ref()) {
+            Some(i) => i.resized(size, size),
+            None => crate::ui::tray::default_icon(size),
+        };
+        make_icon(&image)
+    }
+
     /// kargui が描く題の帯の様子（前面か・最大化か）を Runtime に渡す（Options::custom_title_bar の窓だけ。変わった時
     /// だけ描き直す）
     fn sync_csd(&mut self) {
@@ -1283,7 +1372,46 @@ impl State {
                 }
                 Some(LRESULT(0))
             }
+            // トレイのアイコンの知らせ（NOTIFYICON_VERSION_4: lParam の下位が出来事、wParam が押した位置）
+            crate::tray_win::WM_APP_TRAY => {
+                let event = (lp.0 as u32) & 0xffff;
+                let (x, y) = (lo(wp.0 as isize), hi(wp.0 as isize));
+                match event {
+                    // 左のボタンで押した・キーボードで選んで Enter か Space
+                    crate::tray_win::NIN_SELECT | crate::tray_win::NIN_KEYSELECT => {
+                        log::event("tray.click", &format!("x={x} y={y} key={}", event == crate::tray_win::NIN_KEYSELECT), "ok");
+                        self.push(Event::Tray(crate::ui::tray::TrayInput::Click));
+                    }
+                    // 右クリック・キーボードのメニューのキー
+                    WM_CONTEXTMENU => match &self.tray {
+                        Some((d, _)) if !d.menu.is_empty() => {
+                            log::event("tray.menu", &format!("x={x} y={y}"), "open");
+                            self.post.push(Post::TrayMenu(self.hwnd, x, y, d.menu.clone()));
+                        }
+                        _ => log::event("tray.menu", &format!("x={x} y={y}"), "no menu"),
+                    },
+                    _ => {}
+                }
+                // エクスプローラーはこの知らせを送る（SendMessage）ので、GetMessage の中で処理され、輪は次の知らせが
+                // 積まれるまで戻らない（フレームが回らない）。何もしない知らせを積んで、輪を起こす
+                let _ = unsafe { PostMessageW(Some(self.hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
+                Some(LRESULT(0))
+            }
+            // エクスプローラーが起動し直した: 出していたトレイのアイコンを入れ直す
+            m if m == crate::tray_win::taskbar_created() && self.tray.is_some() => {
+                if let Some((d, icon)) = &self.tray {
+                    log::event("tray.readd", "", "taskbar created");
+                    self.post.push(Post::Tray(self.hwnd, crate::tray_win::Op::Add { icon: *icon, tip: d.tooltip.clone() }, None));
+                }
+                None
+            }
             WM_DESTROY => {
+                self.destroyed = true;
+                // トレイのアイコンを消す（消さないと、ポインターが乗るまで通知領域に残る）
+                if let Some((_, icon)) = self.tray.take() {
+                    log::event("tray.remove", "", "window destroyed");
+                    self.post.push(Post::Tray(self.hwnd, crate::tray_win::Op::Delete, Some(icon)));
+                }
                 // 窓が残っているうちに、GPU の物と読み上げを片付け、ファイルを落とせる窓の届け出を取り消す
                 if self.file_drop.take().is_some() {
                     let res = unsafe { windows::Win32::System::Ole::RevokeDragDrop(self.hwnd) };
@@ -1980,6 +2108,8 @@ fn create_window(
         drag_cursor: None,
         file_drop: None,
         file_drop_asked: false,
+        tray: None,
+        destroyed: false,
         last_tick: None,
         t_build: 0.0,
         t_draw: 0.0,
