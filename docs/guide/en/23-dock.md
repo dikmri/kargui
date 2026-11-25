@@ -1,4 +1,4 @@
-<!-- source: ja/23-dock.md fnv=1a7064548519bf33 -->
+<!-- source: ja/23-dock.md fnv=fa309d0218ccb45f -->
 <!-- covers: Ui::dock DockArea::show DockArea::closable DockArea::grow Dock::new Dock::insert Dock::remove Dock::select Dock::panels Dock::selected Dock::contains Dock::is_floating Dock::save Dock::load sig=d6992f54a95c7ec7 -->
 # Docking
 
@@ -48,8 +48,9 @@ A group is named by a panel in it, not by a number, so a place stays right while
   - `DockTo::Split { of, side, share }`: next to the group of `of`, splitting its space (`share` is the new panel's part)
   - `DockTo::Edge { side, share }`: along a side of the whole dock
   - `DockTo::Float { x, y, w, h }`: floating over the other groups (position from the dock's top-left corner and size, in logical pixels)
+  - `DockTo::Window { x, y, w, h }`: in a window of its own (the screen position of the window's outer top-left corner, and the size of its inside)
 - `dock.remove(&panel)` takes a panel out. A group left empty disappears, and its neighbour takes its space.
-- `dock.select(&panel)` selects a tab; `dock.panels()` and `dock.selected()` return the panels and the selected panel of each group. Floating groups come after the docked ones, the one at the back first. `dock.is_floating(&panel)` tells whether a panel is in a floating group.
+- `dock.select(&panel)` selects a tab; `dock.panels()` and `dock.selected()` return the panels and the selected panel of each group. Floating groups come after the docked ones, the one at the back first. `dock.is_floating(&panel)` tells whether a panel is in a floating group (a frame inside the dock, or a window of its own).
 
 ## What the user can do
 
@@ -62,7 +63,7 @@ A group is named by a panel in it, not by a number, so a place stays right while
   - Over the group the dragged tab is alone in: nowhere (nothing is shaded, and dropping it changes nothing)
 - Escape cancels.
 - Drag a divider to share the space differently. Shares are kept as fractions, so they stay when the window is resized.
-- Right-click a tab (or press Shift+F10 or the context menu key) for a menu: Move to a new group (Left, Right, Above, Below), Move into group, Float, and Close. A panel alone in its group moves to the outer edge of the dock.
+- Right-click a tab (or press Shift+F10 or the context menu key) for a menu: Move to a new group (Left, Right, Above, Below), Move into group, Float, Move to a new window, and Close. A panel alone in its group moves to the outer edge of the dock.
 
 People who find dragging hard, and screen-reader users, can do the same with the menu and the keyboard.
 
@@ -90,6 +91,48 @@ Float in the tab's menu puts the panel in a frame over the other groups. Use it 
 - Frames stay inside the dock. When the window gets smaller they are shown pushed inside, and they go back when it grows again.
 
 `dock.save` keeps the frames' positions and sizes. Where Dock puts a panel back is not saved, so after loading, Dock puts the first panel of a frame along the right side, and the frame's other panels then go into its group.
+
+## Separate windows
+
+Move to a new window in the tab's menu puts the panel in a window of its own. Use it, for example, to keep a panel on a second screen. It works on Windows and X11. On Wayland, apps can neither choose nor read where their windows are, so the menu does not offer it.
+
+- The window opens where the group was, at the group's size. Its title is the title of the selected panel.
+- The menu of a tab in the window has Dock, Move into group and Close. Panels from other groups can join the window's group with Move into group.
+- Closing the window puts each of its panels back where it was before it joined the window (the panels are not closed).
+- The group in a window is not split, and tabs cannot be dragged from one window to another yet.
+
+The app builds the window in `App::window`: for a window where `dock.has_window(key)` is true, call `ui.dock` as in the main window. There, `ui.dock` builds only that window's group, filling the window.
+
+```rust
+use kargui::{App, Dock, Ui};
+
+struct Ide {
+    dock: Dock<&'static str>,
+}
+
+impl Ide {
+    fn panels(&mut self, ui: &mut Ui) {
+        ui.dock(&mut self.dock).grow().show(|p| p.to_string(), |ui, p| {
+            ui.label(*p);
+        });
+    }
+}
+
+impl App for Ide {
+    fn view(&mut self, ui: &mut Ui) {
+        self.panels(ui);
+    }
+
+    // Groups moved to windows of their own use the same dock
+    fn window(&mut self, key: &str, ui: &mut Ui) {
+        if self.dock.has_window(key) {
+            self.panels(ui);
+        }
+    }
+}
+```
+
+`dock.save` keeps each window's position (its outer top-left corner, as in `Options::position`) and the size of its inside. When the user moves a window, the saved position follows. A layout loaded on Wayland shows those groups as frames floating inside the dock.
 
 ## Closing
 
@@ -122,4 +165,4 @@ assert_eq!(back, dock);
 
 ## Not yet
 
-Groups cannot be moved into separate windows yet (floating frames stay inside the window), and floating frames cannot be moved or resized with the keyboard yet. Hiding groups at the edges (auto-hide), named layouts and dragging a whole group are candidates for later versions.
+Tabs cannot be dragged from one window to another yet, nor can a frame be dragged out of the window to become a window of its own, and floating frames cannot be moved or resized with the keyboard yet. Hiding groups at the edges (auto-hide), named layouts and dragging a whole group are candidates for later versions.

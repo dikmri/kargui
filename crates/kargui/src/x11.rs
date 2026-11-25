@@ -427,7 +427,9 @@ impl State {
 
     /// 窓を作って出す。最初の MapNotify が来てから描く
     #[allow(clippy::too_many_arguments)]
-    fn new_window(&mut self, key: Option<String>, title: &str, size: (f32, f32), min_size: Option<(f32, f32)>, position: Option<(f32, f32)>, icon: Option<&crate::Image>, rt: Runtime) -> Result<WinId, crate::Error> {
+    fn new_window(&mut self, key: Option<String>, title: &str, size: (f32, f32), min_size: Option<(f32, f32)>, position: Option<(f32, f32)>, icon: Option<&crate::Image>, mut rt: Runtime) -> Result<WinId, crate::Error> {
+        // 窓のキー（ドッキングが、別の窓に出したまとまりを見分ける）。画面の上の場所は、最初の ConfigureNotify で入る
+        rt.cx.window_key = key.clone();
         let conn = self.conn.clone();
         let id = conn.generate_id().map_err(|e| error("generate_id", e))?;
         let (w, h) = (self.physical(size.0), self.physical(size.1));
@@ -1083,6 +1085,24 @@ impl State {
                         w.need_frame = true;
                         w.why = "size";
                         log::event("window.size", &format!("physical={}x{} scale={scale:.3}{}", size.0, size.1, w.tag()), "configure");
+                    }
+                }
+                // 画面の上の場所（中の左上を画面の座標で読み、論理の画素にする。外枠の左上も同じ所とする）。ほかの窓は
+                // 場所が変わったら描き直す（ドッキングが窓の場所を並べ方に写す）
+                if self.win(e.window).is_some() {
+                    let place = self.conn.translate_coordinates(e.window, self.root, 0, 0).ok().and_then(|c| c.reply().ok()).map(|t| {
+                        let (x, y) = (t.dst_x as f32 / scale, t.dst_y as f32 / scale);
+                        crate::ui::context::WindowPlace { outer: (x, y), client: (x, y), unit: 1.0 / scale }
+                    });
+                    if let Some(w) = self.win(e.window)
+                        && place.is_some()
+                        && place != w.rt.cx.place
+                    {
+                        w.rt.cx.place = place;
+                        if w.key.is_some() {
+                            w.need_frame = true;
+                            w.why = "place";
+                        }
                     }
                 }
             }

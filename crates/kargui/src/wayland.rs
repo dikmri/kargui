@@ -744,6 +744,8 @@ impl State {
     fn runtime(&self, title: &str, dark: bool, font: &crate::Font) -> Result<Runtime, crate::Error> {
         let text = Text::new()?;
         let mut rt = Runtime::new(text, dark, Box::new(WaylandClipboard(self.clip.clone())), title.to_string());
+        // アプリは窓の場所を決めることも読むこともできない（合成が決める）。ドッキングは別の窓に出さない
+        rt.cx.places_windows = false;
         let writer = self.wake.clone();
         rt.cx.waker = crate::wake::Waker::new(move || {
             let _ = rustix::io::write(&*writer, &1u64.to_ne_bytes());
@@ -759,7 +761,8 @@ impl State {
         let main = &self.windows[0].rt;
         let (dark, font) = (main.cx.dark, main.cx.text.fonts.get(main.cx.font).clone());
         match self.runtime(&r.title, dark, &font) {
-            Ok(rt) => {
+            Ok(mut rt) => {
+                rt.cx.window_key = Some(r.key.clone());
                 let id = self.new_window(Some(r.key.clone()), &r.title, r.size, r.min_size, rt);
                 log::event("window.open_other", &format!("key={} size={:.0}x{:.0}", r.key, r.size.0, r.size.1), &format!("id={id}"));
             }

@@ -137,6 +137,17 @@ pub(crate) enum CsdRequest {
     Menu { x: f32, y: f32 },
 }
 
+/// 窓の画面の上の場所。どれも Options::position と同じ形（Windows は画面の画素、X11 は論理の画素）
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WindowPlace {
+    /// 外枠の左上
+    pub outer: (f32, f32),
+    /// 中の左上
+    pub client: (f32, f32),
+    /// 物理ピクセル 1 つが、この形でいくつか（Windows は 1、X11 は 1 / 倍率）
+    pub unit: f32,
+}
+
 /// 開くように頼まれた窓（Ui::window）
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WindowRequest {
@@ -415,6 +426,12 @@ pub(crate) struct Context {
     pub windows: Vec<WindowRequest>,
     /// 利用者が閉じた窓のキー（次のビューの Ui::window が open を false にする）
     pub closed_windows: HashSet<String>,
+    /// この Context の窓のキー（Ui::window で開いた窓。主の窓は None）
+    pub window_key: Option<String>,
+    /// アプリが窓の場所を決められるか（Ui::window の位置が効き、窓の場所を読める。Wayland は false）
+    pub places_windows: bool,
+    /// 窓の画面の上の場所（窓の処理が、開いた時と動いた時に入れる。分からなければ None）
+    pub place: Option<WindowPlace>,
     /// 出すように頼まれたファイルのダイアログ（キーと中身。窓の処理がフレームの後で出す）
     pub file_dialog_request: Option<(String, crate::file_dialog::FileDialog)>,
     /// ファイルのダイアログで選んだファイル（キー → ファイル。Ui::chosen_files が 1 回だけ取り出す）
@@ -558,6 +575,9 @@ impl Context {
             color_images: Vec::new(),
             windows: Vec::new(),
             closed_windows: HashSet::new(),
+            window_key: None,
+            places_windows: true,
+            place: None,
             file_dialog_request: None,
             file_results: HashMap::new(),
             quit: false,

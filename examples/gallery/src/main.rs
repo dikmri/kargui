@@ -148,6 +148,32 @@ impl Gallery {
         ui.enabled(false, f);
     }
 
+    /// ドッキング（23 ページ目と、別の窓に出したまとまりの窓で同じ物を使う）
+    fn dock_panels(&mut self, ui: &mut Ui) {
+        let notes = &mut self.notes;
+        let closed = ui.dock(&mut self.dock).grow().closable().show(|p| p.to_string(), |ui, p| match *p {
+            "ファイル" => {
+                ui.label("main.rs");
+                ui.label("dock.rs");
+            }
+            "編集" => {
+                ui.label("fn main() {").monospace();
+                ui.label("    kargui::run(..)").monospace();
+                ui.label("}").monospace();
+            }
+            "メモ" => {
+                ui.text_area(notes).hint("メモ").grow();
+            }
+            _ => {
+                ui.label("終わりました（0.8 秒）").weak();
+            }
+        });
+        if let Some(p) = closed {
+            self.dock.remove(&p);
+            log::event("gallery.dock_close", p, "removed");
+        }
+    }
+
     fn page(&mut self, ui: &mut Ui, page: usize) {
         match page {
             0 => {
@@ -428,32 +454,7 @@ impl Gallery {
                 .width(Size::Fixed(w));
             }
             22 => {
-                let mut closed = None;
-                let notes = &mut self.notes;
-                ui.column(|ui| {
-                    closed = ui.dock(&mut self.dock).grow().closable().show(|p| p.to_string(), |ui, p| match *p {
-                        "ファイル" => {
-                            ui.label("main.rs");
-                            ui.label("dock.rs");
-                        }
-                        "編集" => {
-                            ui.label("fn main() {").monospace();
-                            ui.label("    kargui::run(..)").monospace();
-                            ui.label("}").monospace();
-                        }
-                        "メモ" => {
-                            ui.text_area(notes).hint("メモ").grow();
-                        }
-                        _ => {
-                            ui.label("終わりました（0.8 秒）").weak();
-                        }
-                    });
-                })
-                .height(Size::Fixed(320.0));
-                if let Some(p) = closed {
-                    self.dock.remove(&p);
-                    log::event("gallery.dock_close", p, "removed");
-                }
+                ui.column(|ui| self.dock_panels(ui)).height(Size::Fixed(320.0));
                 ui.row(|ui| {
                     if ui.button("最初の並べ方に戻す").clicked() {
                         self.dock = default_dock();
@@ -477,6 +478,7 @@ impl Gallery {
                 });
                 ui.label("タブを引っ張ると、落ちる所が薄く塗られる（まとまりの真ん中はタブ、端は分ける、全体の端の帯は外側）。タブの右クリック（Shift+F10）でも動かせる。F6 でまとまりを回る").weak().wrap();
                 ui.label("右クリックの Float で、パネルをほかのまとまりの上に浮かせる。浮いた枠は、タブの左の点を引くと動き、右下の点を引くと大きさが変わる。右クリックの Dock で元の場所へ戻る").weak().wrap();
+                ui.label("右クリックの Move to a new window で、パネルを別の窓に出す（Windows と X11）。窓を閉じると元の場所へ戻る").weak().wrap();
             }
             _ => {}
         }
@@ -484,6 +486,16 @@ impl Gallery {
 }
 
 impl App for Gallery {
+    // ドッキングの別の窓（23 ページ目のパネルを、右クリックの Move to a new window で出した物）
+    fn window(&mut self, key: &str, ui: &mut Ui) {
+        if let Some(d) = self.dark {
+            ui.set_dark(d);
+        }
+        if self.dock.has_window(key) {
+            self.dock_panels(ui);
+        }
+    }
+
     fn view(&mut self, ui: &mut Ui) {
         if let Some(d) = self.dark {
             ui.set_dark(d);

@@ -19,8 +19,13 @@
   resize it, pressing it brings it to the top, tabs dropped on it join it, and Dock in its menu
   puts each panel back where it was before it joined the frame. Frames stay inside the dock, hide what is under them from
   the pointer and the wheel, are saved by `Dock::save`, and are reached with F6 in the order they floated;
-  `Dock::is_floating` tells whether a panel floats. Moving groups into separate windows, and
-  moving or resizing frames with the keyboard, are not there yet. Guide chapter 23,
+  `Dock::is_floating` tells whether a panel floats. Move to a new window in the menu (or
+  `DockTo::Window { x, y, w, h }`) puts a panel in a window of its own, where the group was, on
+  Windows and X11 (on Wayland, where apps cannot place windows, the menu does not offer it and
+  such groups float inside the dock). The app builds those windows with `Ui::dock` in
+  `App::window` when `Dock::has_window` says so; closing one puts its panels back, and
+  `Dock::save` keeps where the user moved it. Dragging tabs between windows, and moving or
+  resizing frames with the keyboard, are not there yet. Guide chapter 23,
   `examples/gallery` page "ドッキング".
 
 ## 0.3.0 (2026-11-24)

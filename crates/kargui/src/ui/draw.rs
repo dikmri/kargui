@@ -774,7 +774,7 @@ impl Painter<'_> {
         {
             // ドッキングは全体を囲まず、落とす先の的と落ちる所を描く
             if matches!(tree.info[i].kind, Kind::Dock) {
-                self.dock_overlay(&dock_geom(tree, i), at, source);
+                self.dock_overlay(&dock_geom(tree, i, self.cx.window_key.is_some()), at, source);
             } else {
                 self.drop_highlight(c);
             }
@@ -846,7 +846,7 @@ impl Painter<'_> {
             Kind::Overlay { .. } => {}
             Kind::Dock => {
                 // 全体とまとまりの場所を覚える（次のフレームで、タブを落とした先を決める）
-                self.prev.docks.insert(id, dock_geom(tree, i));
+                self.prev.docks.insert(id, dock_geom(tree, i, self.cx.window_key.is_some()));
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
                 }
@@ -2052,8 +2052,9 @@ impl Painter<'_> {
 }
 
 /// ドッキングの入れ物 i の、全体とまとまりの場所（今のフレームの配置から。まとまりは並べ方の木の左・上が先で、その後に
-/// 浮いたまとまりを下にある物から）
-pub(crate) fn dock_geom(tree: &Tree, i: usize) -> DockGeom {
+/// 浮いたまとまりを下にある物から）。in_window（別の窓の中）なら、窓いっぱいのまとまりも浮いたまとまりとして扱う
+/// （分けない。タブとして入れるだけ）
+pub(crate) fn dock_geom(tree: &Tree, i: usize, in_window: bool) -> DockGeom {
     fn walk(tree: &Tree, i: usize, floating: bool, out: &mut Vec<GroupGeom>) {
         for &c in &tree.layout[i].children {
             match tree.info[c].kind {
@@ -2080,7 +2081,7 @@ pub(crate) fn dock_geom(tree: &Tree, i: usize) -> DockGeom {
         }
     }
     let mut g = DockGeom { root: tree.layout[i].rect, groups: Vec::new() };
-    walk(tree, i, false, &mut g.groups);
+    walk(tree, i, in_window, &mut g.groups);
     g
 }
 

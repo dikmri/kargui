@@ -89,6 +89,23 @@ pub enum DockTo<K> {
         /// The height.
         h: f32,
     },
+    /// In a window of its own: its top-left corner (the outside of the window) is at `x` and
+    /// `y` on the screen, in the units of [`Options::position`](crate::Options::position), and
+    /// the inside of the window is `w` by `h` logical pixels (at least 120 by 80). The app
+    /// builds the window with [`Ui::dock`](crate::Ui::dock) in
+    /// [`App::window`](crate::App::window) when [`Dock::has_window`] says the window is the
+    /// dock's. Where kargui cannot place windows (Wayland), the group floats inside the dock
+    /// instead.
+    Window {
+        /// From the screen's left edge.
+        x: f32,
+        /// From the screen's top edge.
+        y: f32,
+        /// The width of the inside.
+        w: f32,
+        /// The height of the inside.
+        h: f32,
+    },
 }
 
 /// 木の節。葉はタブのまとまり、ほかは 2 つに分ける分割
@@ -110,12 +127,14 @@ pub(crate) struct Floating<K> {
     pub homes: Vec<(K, Home<K>)>,
     /// 浮かせた順の番号（F6 で回る順。上にしても変わらない。保存はせず、読み込んだ時は重なりの順）
     pub seq: u64,
+    /// OS の別の窓に出しているか。出していれば rect は窓の外枠の左上（画面。Options::position と同じ形）と中の大きさ
+    pub window: bool,
 }
 
 /// 戻る先と浮かせた順は覚えているだけなので比べない（保存して読み直した物と同じになるように）
 impl<K: PartialEq> PartialEq for Floating<K> {
     fn eq(&self, other: &Self) -> bool {
-        self.tabs == other.tabs && self.rect == other.rect
+        self.tabs == other.tabs && self.rect == other.rect && self.window == other.window
     }
 }
 
@@ -147,11 +166,20 @@ pub(crate) const FLOAT_MIN: (f32, f32) = (120.0, 80.0);
 /// dock.insert(Panel::Output, DockTo::Split { of: Panel::Editor, side: DockSide::Bottom, share: 0.3 });
 /// assert_eq!(dock.panels(), vec![&Panel::Files, &Panel::Editor, &Panel::Output]);
 /// ```
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Dock<K> {
     pub(crate) root: Option<Node<K>>,
-    /// 下にある物が先（最後がいちばん上）
+    /// 下にある物が先（最後がいちばん上）。別の窓に出したまとまりも同じ並びに持つ（window）
     pub(crate) floating: Vec<Floating<K>>,
+    /// 主の窓で見せた部品の id（別の窓のキーに入れて、ほかの dock の窓と分ける。まだ見せていなければ 0。比べない）
+    pub(crate) area: u64,
+}
+
+/// 主の窓の部品の id は覚えているだけなので比べない
+impl<K: PartialEq> PartialEq for Dock<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root && self.floating == other.floating
+    }
 }
 
 /// 割合を収める範囲（どちらの区画も消えないように）
@@ -176,7 +204,7 @@ impl<K: Clone + PartialEq> Dock<K> {
                 list.push(k);
             }
         }
-        Dock { root: (!list.is_empty()).then_some(Node::Tabs { panels: list, selected: 0 }), floating: Vec::new() }
+        Dock { root: (!list.is_empty()).then_some(Node::Tabs { panels: list, selected: 0 }), floating: Vec::new(), area: 0 }
     }
 
     /// タブのまとまりを、並べ方の木（左・上が先）、浮いたまとまり（下にある物が先）の順に並べる。Ui::dock がまとまりを
@@ -244,7 +272,7 @@ impl<K: Clone + PartialEq> Dock<K> {
         self.panels().contains(&panel)
     }
 
-    /// Whether `panel` is in a floating group.
+    /// Whether `panel` is in a floating group (over the other groups, or in a window of its own).
     ///
     /// ```
     /// use kargui::{Dock, DockTo};
@@ -315,7 +343,7 @@ impl<K: Clone + PartialEq> Dock<K> {
         let f = self.floating.remove(i);
         if let (Some(tabs), _) = f.tabs.without(panel) {
             let homes = f.homes.into_iter().filter(|(k, _)| k != panel).collect();
-            self.floating.insert(i, Floating { tabs, rect: f.rect, homes, seq: f.seq });
+            self.floating.insert(i, Floating { tabs, rect: f.rect, homes, seq: f.seq, window: f.window });
         }
         true
     }
@@ -345,7 +373,8 @@ impl<K: Clone + PartialEq> Dock<K> {
     pub fn insert(&mut self, panel: K, to: DockTo<K>) -> bool {
         if self.root.is_none() && self.floating.is_empty() {
             match to {
-                DockTo::Float { x, y, w, h } => self.floating.push(Floating { tabs: Node::leaf(panel), rect: float_rect(x, y, w, h), homes: Vec::new(), seq: 0 }),
+                DockTo::Float { x, y, w, h } => self.floating.push(Floating { tabs: Node::leaf(panel), rect: float_rect(x, y, w, h), homes: Vec::new(), seq: 0, window: false }),
+                DockTo::Window { x, y, w, h } => self.floating.push(Floating { tabs: Node::leaf(panel), rect: float_rect(x, y, w, h), homes: Vec::new(), seq: 0, window: true }),
                 _ => self.root = Some(Node::leaf(panel)),
             }
             return true;
@@ -406,14 +435,83 @@ impl<K: Clone + PartialEq> Dock<K> {
                 });
                 true
             }
-            DockTo::Float { x, y, w, h } => {
-                let homes = self.home_for(&panel).map(|h| (panel.clone(), h)).into_iter().collect();
-                let seq = self.next_seq();
-                self.remove(&panel);
-                self.floating.push(Floating { tabs: Node::leaf(panel), rect: float_rect(x, y, w, h), homes, seq });
-                true
-            }
+            DockTo::Float { x, y, w, h } => self.put_floating(panel, float_rect(x, y, w, h), false),
+            DockTo::Window { x, y, w, h } => self.put_floating(panel, float_rect(x, y, w, h), true),
         }
+    }
+
+    /// panel だけの浮いたまとまりを作って、いちばん上に置く（window なら別の窓）。入る前にいた所を覚える
+    fn put_floating(&mut self, panel: K, rect: [f32; 4], window: bool) -> bool {
+        let homes = self.home_for(&panel).map(|h| (panel.clone(), h)).into_iter().collect();
+        let seq = self.next_seq();
+        self.remove(&panel);
+        self.floating.push(Floating { tabs: Node::leaf(panel), rect, homes, seq, window });
+        true
+    }
+
+    /// 窓に出したまとまり i の窓のキー（ほかの dock の窓と分けるため、主の窓の部品の id を入れる）
+    pub(crate) fn window_key(&self, i: usize) -> String {
+        format!("kargui-dock-{:x}-{}", self.area, self.floating[i].seq)
+    }
+
+    /// キーが key の、窓に出したまとまりの番号
+    pub(crate) fn window_index(&self, key: &str) -> Option<usize> {
+        (0..self.floating.len()).find(|&i| self.floating[i].window && self.window_key(i) == key)
+    }
+
+    /// Whether `key` names one of this dock's windows, so the app builds that window with
+    /// [`Ui::dock`](crate::Ui::dock) in [`App::window`](crate::App::window).
+    ///
+    /// ```
+    /// use kargui::{App, Dock, Ui};
+    ///
+    /// struct Ide {
+    ///     dock: Dock<&'static str>,
+    /// }
+    ///
+    /// impl Ide {
+    ///     fn panels(&mut self, ui: &mut Ui) {
+    ///         ui.dock(&mut self.dock).grow().show(|p| p.to_string(), |ui, p| {
+    ///             ui.label(*p);
+    ///         });
+    ///     }
+    /// }
+    ///
+    /// impl App for Ide {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         self.panels(ui);
+    ///     }
+    ///
+    ///     fn window(&mut self, key: &str, ui: &mut Ui) {
+    ///         // A group the user moved to a new window
+    ///         if self.dock.has_window(key) {
+    ///             self.panels(ui);
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// assert!(!Dock::new(["Files"]).has_window("settings"));
+    /// ```
+    pub fn has_window(&self, key: &str) -> bool {
+        self.window_index(key).is_some()
+    }
+
+    /// 別の窓に出したまとまりを、全体の中の浮いたまとまりに戻す（窓を置けない所）。at は 1 つ目を置く場所と大きさで、
+    /// 2 つ目からは少しずつずらす。戻した物があれば true
+    pub(crate) fn windows_to_frames(&mut self, at: [f32; 4]) -> bool {
+        let mut n = 0;
+        for f in self.floating.iter_mut().filter(|f| f.window) {
+            f.window = false;
+            let d = 24.0 * n as f32;
+            f.rect = float_rect(at[0] + d, at[1] + d, at[2], at[3]);
+            n += 1;
+        }
+        n > 0
+    }
+
+    /// 浮いたまとまりのうち、全体の中に描く物（別の窓に出していない物）の番号。重なりの順
+    pub(crate) fn frames(&self) -> Vec<usize> {
+        (0..self.floating.len()).filter(|&i| !self.floating[i].window).collect()
     }
 
     /// 次に浮かせるまとまりの、浮かせた順の番号
@@ -421,9 +519,10 @@ impl<K: Clone + PartialEq> Dock<K> {
         self.floating.iter().map(|f| f.seq + 1).max().unwrap_or(0)
     }
 
-    /// 浮いたまとまりの番号を、浮かせた順に並べる（F6 で回る順。上にしても変わらないので、回る途中で飛ばさない）
+    /// 全体の中に描く浮いたまとまりの番号を、浮かせた順に並べる（F6 で回る順。上にしても変わらないので、回る途中で
+    /// 飛ばさない。別の窓に出した物は、その窓の中で回る）
     pub(crate) fn float_order(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.floating.len()).collect();
+        let mut order: Vec<usize> = self.frames();
         order.sort_by_key(|&i| self.floating[i].seq);
         order
     }
@@ -534,7 +633,8 @@ impl<K: Clone + PartialEq> Dock<K> {
         }
         for f in &self.floating {
             let [x, y, w, h] = f.rect;
-            out.push_str(&format!("float {x} {y} {w} {h}\n"));
+            let kind = if f.window { "window" } else { "float" };
+            out.push_str(&format!("{kind} {x} {y} {w} {h}\n"));
             f.tabs.write(&mut out, &name);
         }
         out
@@ -559,18 +659,22 @@ impl<K: Clone + PartialEq> Dock<K> {
         }
         let mut rest = lines.filter(|l| !l.trim().is_empty()).peekable();
         let mut seen = Vec::new();
-        let mut dock = Dock { root: None, floating: Vec::new() };
-        if rest.peek().is_some_and(|l| !l.starts_with("float ")) {
+        let mut dock = Dock { root: None, floating: Vec::new(), area: 0 };
+        if rest.peek().is_some_and(|l| !l.starts_with("float ") && !l.starts_with("window ")) {
             dock.root = Node::read(&mut rest, &panel, &mut seen)?;
         }
-        // 木の後は浮いたまとまりだけ（「float x y w h」の行と、タブのまとまり 1 つ）
+        // 木の後は浮いたまとまりだけ（「float x y w h」か、別の窓の「window x y w h」の行と、タブのまとまり 1 つ）
         while let Some(line) = rest.next() {
-            let nums = line.strip_prefix("float ")?.split_whitespace().map(|v| v.parse::<f32>().ok().filter(|v| v.is_finite())).collect::<Option<Vec<f32>>>()?;
+            let (window, nums) = match line.strip_prefix("window ") {
+                Some(n) => (true, n),
+                None => (false, line.strip_prefix("float ")?),
+            };
+            let nums = nums.split_whitespace().map(|v| v.parse::<f32>().ok().filter(|v| v.is_finite())).collect::<Option<Vec<f32>>>()?;
             let [x, y, w, h] = nums[..] else { return None };
             match Node::read(&mut rest, &panel, &mut seen)? {
                 Some(tabs @ Node::Tabs { .. }) => {
                     let seq = dock.floating.len() as u64;
-                    dock.floating.push(Floating { tabs, rect: float_rect(x, y, w, h), homes: Vec::new(), seq });
+                    dock.floating.push(Floating { tabs, rect: float_rect(x, y, w, h), homes: Vec::new(), seq, window });
                 }
                 Some(Node::Split { .. }) => return None,
                 None => {}
@@ -602,7 +706,7 @@ impl<K: Clone + PartialEq> Node<K> {
     }
 
     /// すべてのパネル（左・上が先）
-    fn all_panels(&self) -> Vec<K> {
+    pub(crate) fn all_panels(&self) -> Vec<K> {
         let mut out = Vec::new();
         self.walk(&mut |n| {
             if let Node::Tabs { panels, .. } = n {
@@ -1066,7 +1170,7 @@ mod tests {
     }
 
     /// 木の形を短い文字にする（試験で比べやすいように）。[A* B] はタブ（* が選んでいる物）、h(…|…) は左右、v(…|…) は上下、
-    /// 後ろの ~[…] は浮いたまとまり（下にある物が先）
+    /// 後ろの ~[…] は浮いたまとまり（下にある物が先）、^[…] は別の窓に出したまとまり
     fn shape(d: &Dock<&str>) -> String {
         fn go(n: &Node<&str>) -> String {
             match n {
@@ -1079,7 +1183,7 @@ mod tests {
         }
         let mut s = d.root.as_ref().map_or("-".to_string(), go);
         for f in &d.floating {
-            s += &format!(" ~{}", go(&f.tabs));
+            s += &format!(" {}{}", if f.window { "^" } else { "~" }, go(&f.tabs));
         }
         s
     }
@@ -1105,6 +1209,71 @@ mod tests {
         assert!(d.dock_back(&"B"));
         assert_eq!(shape(&d), "[A B* C]", "元の 2 つ目の位置");
         assert!(!d.dock_back(&"B"), "浮いていなければ何もしない");
+    }
+
+    /// 別の窓（画面の左の外、もう 1 つの画面にも置ける）
+    fn window() -> DockTo<&'static str> {
+        DockTo::Window { x: -300.0, y: 40.0, w: 360.0, h: 240.0 }
+    }
+
+    #[test]
+    fn windows_hold_groups_like_floating_ones() {
+        let mut d = Dock::new(["A", "B", "C"]);
+        d.area = 0xab;
+        assert!(d.insert("B", window()));
+        assert_eq!(shape(&d), "[A* C] ^[B*]");
+        assert!(d.is_floating(&"B"), "窓も浮いたまとまりの 1 つ");
+        assert_eq!(d.floating[0].rect, [-300.0, 40.0, 360.0, 240.0]);
+        // 窓のキーは主の窓の部品の id と浮かせた順の番号
+        assert!(d.has_window("kargui-dock-ab-0"));
+        assert!(!d.has_window("kargui-dock-ab-1") && !d.has_window("settings"));
+        // タブは入れられるが、分けられない
+        assert!(d.insert("C", DockTo::Tab { with: "B", index: None }));
+        assert_eq!(shape(&d), "[A*] ^[B C*]");
+        assert!(!d.insert("A", split("B", DockSide::Left)), "窓のまとまりは分けない");
+        // パネルごとに、窓へ入る前にいた所へ戻る。最後のパネルが出たら窓のまとまりは無くなる
+        assert!(d.dock_back(&"C"));
+        assert_eq!(shape(&d), "[A C*] ^[B*]");
+        assert!(d.dock_back(&"B"));
+        assert_eq!(shape(&d), "[A B* C]");
+        assert!(!d.has_window("kargui-dock-ab-0"));
+        // 空の dock に窓で入れると、窓のまとまりだけになる
+        let mut e: Dock<&str> = Dock::new([]);
+        assert!(e.insert("A", window()));
+        assert_eq!(shape(&e), "- ^[A*]");
+    }
+
+    #[test]
+    fn only_groups_inside_the_dock_are_drawn_there_and_reached_by_f6() {
+        let mut d = Dock::new(["A", "B", "C", "D"]);
+        d.insert("B", float());
+        d.insert("C", window());
+        d.insert("D", float());
+        assert_eq!(shape(&d), "[A*] ~[B*] ^[C*] ~[D*]");
+        assert_eq!(d.frames(), vec![0, 2], "全体の中に描くのは浮いた枠だけ（重なりの順）");
+        d.raise(0);
+        assert_eq!(shape(&d), "[A*] ^[C*] ~[D*] ~[B*]");
+        assert_eq!(d.float_order(), vec![2, 1], "F6 は浮かせた順（B、D）。窓は回らない");
+        // 窓を置けない所（Wayland）では、窓のまとまりを全体の中の枠に戻す
+        assert!(d.windows_to_frames([100.0, 50.0, 300.0, 200.0]));
+        assert_eq!(shape(&d), "[A*] ~[C*] ~[D*] ~[B*]");
+        assert_eq!(d.floating[0].rect, [100.0, 50.0, 300.0, 200.0]);
+        assert!(!d.windows_to_frames([0.0, 0.0, 300.0, 200.0]), "もう窓は無い");
+    }
+
+    #[test]
+    fn windows_are_saved_with_their_place_on_the_screen() {
+        let mut d = Dock::new(["A", "B"]);
+        d.insert("B", window());
+        let text = d.save(|p| p.to_string());
+        assert!(text.ends_with("window -300 40 360 240\ntabs 0 1\npanel B\n"), "{text}");
+        let known = |n: &str| ["A", "B"].into_iter().find(|p| *p == n);
+        let back = Dock::load(&text, known).unwrap();
+        assert_eq!(back, d);
+        assert!(back.floating[0].window);
+        // 窓だけの並べ方も読める
+        let only = Dock::load("kargui-dock 1\nwindow 10 20 300 200\ntabs 0 1\npanel A\n", known).unwrap();
+        assert_eq!(shape(&only), "- ^[A*]");
     }
 
     #[test]
@@ -1406,7 +1575,7 @@ mod tests {
         assert_eq!(Dock::load("kargui-dock 1\ntabs 0 2\npanel A\n", any), None, "パネルが足りない");
         assert_eq!(Dock::load("kargui-dock 1\nsplit x 0.5\ntabs 0 1\npanel A\ntabs 0 1\npanel B\n", any), None, "向きが壊れている");
         assert_eq!(Dock::load("kargui-dock 1\ntabs 0 1\npanel A\ntabs 0 1\npanel B\n", any), None, "余りの行");
-        assert_eq!(Dock::load("kargui-dock 1\n", any), Some(Dock { root: None, floating: Vec::new() }), "空の並べ方");
+        assert_eq!(Dock::load("kargui-dock 1\n", any), Some(Dock { root: None, floating: Vec::new(), area: 0 }), "空の並べ方");
         // 名前の中の空白はそのまま
         let d = Dock::new(["two words".to_string()]);
         assert_eq!(Dock::load(&d.save(|p| p.clone()), any), Some(d));

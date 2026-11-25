@@ -811,6 +811,19 @@ fn open_window(r: crate::ui::context::WindowRequest) {
 }
 
 /// 文字を打つ位置を IME に知らせる（候補の窓をそこに出すため）
+/// 窓の画面の上の場所（外枠の左上と中の左上）。Options::position と同じく、画面の画素のまま
+fn window_place(hwnd: HWND) -> Option<crate::ui::context::WindowPlace> {
+    let mut r = RECT::default();
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+        GetWindowRect(hwnd, &mut r).ok()?;
+        if !ClientToScreen(hwnd, &mut pt).as_bool() {
+            return None;
+        }
+    }
+    Some(crate::ui::context::WindowPlace { outer: (r.left as f32, r.top as f32), client: (pt.x as f32, pt.y as f32), unit: 1.0 })
+}
+
 fn set_ime_position(hwnd: HWND, caret: IRect) {
     unsafe {
         let himc = ImmGetContext(hwnd);
@@ -1230,6 +1243,15 @@ impl State {
             WM_MOVE | WM_EXITSIZEMOVE | WM_DISPLAYCHANGE => {
                 self.forget_output();
                 self.last_caret = None;
+                // 画面の上の場所を読み直す（最小化している間は画面の外に置かれるので、前の場所のまま）
+                if !unsafe { IsIconic(self.hwnd) }.as_bool() {
+                    self.rt.cx.place = window_place(self.hwnd).or(self.rt.cx.place);
+                }
+                // ほかの窓は、動かし終えた時に描き直す（ドッキングが窓の場所を並べ方に写す）
+                if msg == WM_EXITSIZEMOVE && self.key.is_some() {
+                    log::event("window.place", &format!("key={:?}", self.key), &format!("{:?}", self.rt.cx.place));
+                    self.need_frame = true;
+                }
                 None
             }
             WM_SETFOCUS | WM_KILLFOCUS => {
@@ -1711,6 +1733,9 @@ fn create_window(
         let _ = PostMessageW(Some(HWND(target as *mut _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
     });
     rt.resize(cw as f32, ch as f32, dpi as f32 / 96.0);
+    // 窓のキーと画面の上の場所（ドッキングが、別の窓の場所を覚え、新しい窓を開く場所を決めるのに使う）
+    rt.cx.window_key = key.clone();
+    rt.cx.place = window_place(hwnd);
     rt.cx.reduce_motion = system_reduce_motion();
     // 書体（アプリが書体のファイルを渡さず、UI の書体のままなら何も読まない）
     rt.cx.text.load_fonts(&font_files);

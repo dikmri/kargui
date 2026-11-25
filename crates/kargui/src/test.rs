@@ -199,6 +199,8 @@ impl<A: App> Harness<A> {
         rt.cx.reduce_motion = true;
         rt.cx.text.load_fonts(&font_files);
         rt.cx.font = rt.cx.text.fonts.id(font);
+        // 窓の場所: 主の窓は画面の (100, 50) にあり、中の左上は (100, 80)（論理の画素）
+        rt.cx.place = Some(crate::ui::context::WindowPlace { outer: (100.0, 50.0), client: (100.0, 80.0), unit: 1.0 / scale });
         let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None, font_files };
         h.frame();
         h
@@ -1014,6 +1016,11 @@ impl<A: App> Harness<A> {
             rt.cx.text.load_fonts(&self.font_files);
             let font = self.rt.cx.text.fonts.get(self.rt.cx.font).clone();
             rt.cx.font = rt.cx.text.fonts.id(&font);
+            // ほかの窓は頼まれた場所に置き（無ければ画面の左上）、中の左上はその 30 下
+            rt.cx.window_key = Some(r.key.clone());
+            rt.cx.places_windows = self.rt.cx.places_windows;
+            let (x, y) = r.position.unwrap_or((0.0, 0.0));
+            rt.cx.place = Some(crate::ui::context::WindowPlace { outer: (x, y), client: (x, y + 30.0), unit: 1.0 / scale });
             self.windows.push((r.key.clone(), rt));
         }
         let app = &mut self.app;
@@ -3679,8 +3686,8 @@ mod tests {
         closed: Vec<&'static str>,
     }
 
-    impl App for Ide {
-        fn view(&mut self, ui: &mut Ui) {
+    impl Ide {
+        fn panels(&mut self, ui: &mut Ui) {
             let mut area = ui.dock(&mut self.dock).grow();
             if self.closable {
                 area = area.closable();
@@ -3690,6 +3697,19 @@ mod tests {
             }) {
                 self.closed.push(p);
                 self.dock.remove(&p);
+            }
+        }
+    }
+
+    impl App for Ide {
+        fn view(&mut self, ui: &mut Ui) {
+            self.panels(ui);
+        }
+
+        // 別の窓に出したまとまりも、同じ dock で描く
+        fn window(&mut self, key: &str, ui: &mut Ui) {
+            if self.dock.has_window(key) {
+                self.panels(ui);
             }
         }
     }
@@ -3859,6 +3879,88 @@ mod tests {
         drag_to(&mut h, low.0, low.1);
         release(&mut h, low.0, low.1);
         assert_eq!(h.app().dock.selected(), vec![&"Files", &"Editor", &"Notes"], "Notes が分かれる");
+    }
+
+    /// 開いているドッキングの窓のキー（1 つだけの時）
+    fn dock_window(h: &Harness<Ide>) -> String {
+        let keys: Vec<String> = h.windows().into_iter().filter(|k| k.starts_with("kargui-dock-")).collect();
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        keys[0].clone()
+    }
+
+    #[test]
+    fn dock_panels_move_to_a_window_of_their_own_and_dock_back() {
+        let mut h = ide(false);
+        // Notes は右のまとまり（Editor と同じ）。新しい窓は、主の窓の中の左上（100, 80）にまとまりの場所を足した所に、
+        // まとまりの大きさで開く
+        let g = h.rt.cx.prev.docks.values().next().unwrap().groups[1].rect;
+        h.right_click("Notes").click("Move to a new window");
+        let key = dock_window(&h);
+        assert!(h.app().dock.has_window(&key));
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Editor", &"Notes"]);
+        assert_eq!(h.app().dock.floating[0].rect, [100.0 + g.x, 80.0 + g.y, g.w, g.h]);
+        assert!(h.find("Notes content").is_none(), "主の窓には描かない");
+        // 窓の中は、そのまとまりだけ。メニューは Dock・Move into group（Float と新しい窓は無い）
+        h.window(&key);
+        assert!(h.find("Notes content").is_some() && h.find("Editor content").is_none());
+        h.right_click("Notes");
+        assert!(h.find("Dock").is_some() && h.find("Move into group").is_some());
+        assert!(h.find("Float").is_none() && h.find("Move to a new window").is_none());
+        h.click("Dock");
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Editor", &"Notes"]);
+        assert!(!h.app().dock.is_floating(&"Notes"), "元の場所（Editor の隣のタブ）へ");
+        assert!(h.windows().is_empty(), "空になった窓は閉じる");
+    }
+
+    #[test]
+    fn closing_a_dock_window_puts_its_panels_back() {
+        let mut h = ide(false);
+        h.right_click("Notes").click("Move to a new window");
+        let key = dock_window(&h);
+        // Files を窓のまとまりへ（メニューの「別のまとまりへ」に、窓のまとまりも並ぶ）
+        h.right_click("Files").click("Move into group").click("Notes");
+        assert_eq!(h.app().dock.root.as_ref().map(|r| r.all_panels()), Some(vec!["Editor"]));
+        // 利用者が窓を閉じても、パネルは消さずに元の場所へ戻す
+        h.close_window(&key);
+        h.main_window().frame();
+        assert!(h.windows().is_empty());
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Editor", &"Notes"]);
+        assert!(h.app().dock.floating.is_empty());
+        assert!(h.find("Files content").is_some(), "Files は左のまとまりに戻る");
+    }
+
+    #[test]
+    fn dock_windows_remember_where_the_user_put_them() {
+        let mut h = ide(false);
+        h.right_click("Notes").click("Move to a new window");
+        let key = dock_window(&h);
+        let [_, _, w, hh] = h.app().dock.floating[0].rect;
+        // 利用者が窓を (500, 300) へ動かした
+        let rt = &mut h.windows.iter_mut().find(|(k, _)| *k == key).unwrap().1;
+        rt.cx.place = Some(crate::ui::context::WindowPlace { outer: (500.0, 300.0), client: (500.0, 330.0), unit: 1.0 });
+        h.window(&key).frame();
+        assert_eq!(h.app().dock.floating[0].rect, [500.0, 300.0, w, hh]);
+        let text = h.app().dock.save(|p| p.to_string());
+        assert!(text.contains(&format!("window 500 300 {w} {hh}\n")), "{text}");
+        // 窓の中のまとまりは分けない（落とす先の計算では浮いたまとまり）
+        let geom = h.windows.iter().find(|(k, _)| *k == key).unwrap().1.cx.prev.docks.values().next().unwrap().clone();
+        assert!(geom.groups.len() == 1 && geom.groups[0].floating, "{geom:?}");
+    }
+
+    #[test]
+    fn where_windows_cannot_be_placed_dock_windows_float_inside() {
+        // Wayland ではアプリが窓の場所を決められないので、別の窓に出さない
+        let mut h = ide(false);
+        h.rt.cx.places_windows = false;
+        h.right_click("Notes");
+        assert!(h.find("Float").is_some() && h.find("Move to a new window").is_none());
+        h.press(Key::Escape);
+        // 読み込んだ並べ方などにある窓のまとまりは、全体の中の浮いた枠にする
+        h.app_mut().dock.insert("Notes", crate::DockTo::Window { x: 10.0, y: 10.0, w: 300.0, h: 200.0 });
+        h.frame();
+        assert!(h.windows().is_empty());
+        assert!(h.app().dock.is_floating(&"Notes") && !h.app().dock.floating[0].window);
+        assert!(h.find("Notes content").is_some(), "主の窓の中に浮いた枠で出る");
     }
 
     #[test]
