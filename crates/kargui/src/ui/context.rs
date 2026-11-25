@@ -353,6 +353,11 @@ pub(crate) struct Context {
     pub height: f32,
     pub dark: bool,
     pub theme: Theme,
+    /// ハイコントラストで描いている（OS の設定か Options::high_contrast）
+    pub high_contrast: bool,
+    /// OS のハイコントラストの設定と、OS がくれた色（Windows だけ）
+    pub os_high_contrast: bool,
+    pub system_colors: Option<crate::theme::SystemColors>,
     pub text: Text,
     pub prev: Prev,
     pub edits: HashMap<Id, EditState>,
@@ -548,7 +553,10 @@ impl Context {
             width: 0.0,
             height: 0.0,
             dark,
-            theme: if dark { Theme::dark() } else { Theme::light() },
+            theme: crate::theme::theme_for(dark, crate::theme::option() == Some(true), None),
+            high_contrast: crate::theme::option() == Some(true),
+            os_high_contrast: false,
+            system_colors: None,
             text,
             prev: Prev::default(),
             edits: HashMap::new(),
@@ -652,8 +660,28 @@ impl Context {
     pub fn set_dark(&mut self, dark: bool) {
         if self.dark != dark {
             self.dark = dark;
-            self.theme = if dark { Theme::dark() } else { Theme::light() };
+            self.apply_theme();
         }
+    }
+
+    /// OS のハイコントラストの設定が変わった（窓の処理が起動の時と、設定が変わった時に入れる）。変わったら true
+    pub fn set_system_high_contrast(&mut self, on: bool, colors: Option<crate::theme::SystemColors>) -> bool {
+        if (on, colors) == (self.os_high_contrast, self.system_colors) {
+            return false;
+        }
+        self.os_high_contrast = on;
+        self.system_colors = colors;
+        self.apply_theme();
+        true
+    }
+
+    /// 明暗・ハイコントラストから配色を決め直す。アプリの Options::high_contrast が OS の設定より先
+    fn apply_theme(&mut self) {
+        let hc = crate::theme::option().unwrap_or(self.os_high_contrast);
+        // OS の色は、OS がハイコントラストの時だけ使う（アプリが強制した時は kargui の配色）
+        let system = if self.os_high_contrast { self.system_colors.as_ref() } else { None };
+        self.high_contrast = hc;
+        self.theme = crate::theme::theme_for(self.dark, hc, system);
     }
 
     /// ポインターが乗っている部品を変える（変わった時だけ、乗った時刻を覚え直す）

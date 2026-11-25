@@ -1,4 +1,4 @@
-<!-- source: ja/17-app-mechanisms.md fnv=6a596ff636749b84 -->
+<!-- source: ja/17-app-mechanisms.md fnv=d87e0e892b839174 -->
 <!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # App mechanisms
 
@@ -202,6 +202,31 @@ impl App for Timer {
 - On Windows, the first notification registers the app's name (`Options::title`) for the user in the registry (`HKEY_CURRENT_USER\Software\Classes\AppUserModelId\<program file name>`); the toast shows this name. Clicks reach the app while it runs; clicking an old notification in the notification center after the app ended does nothing.
 - On Linux, notifications show on desktops with org.freedesktop.Notifications, such as GNOME, KDE, mako and dunst. Whether buttons show depends on the notification service.
 
+## High contrast
+
+When the system uses high contrast, kargui draws the widgets with a high contrast palette. The setting is Settings > Accessibility > Contrast themes on Windows, and the desktop portal's contrast setting on Linux (such as GNOME's High Contrast). On Windows kargui uses the colors of the system's theme as they are (such as cyan highlights on black, or purple highlights on white). On Linux it uses kargui's palette for light or dark mode (`Theme::high_contrast_dark`, `Theme::high_contrast_light`).
+
+```rust
+use kargui::Options;
+
+let mut options = Options::new("Notes");
+// Always draw in high contrast (None follows the system; Some(false) never uses it)
+options.high_contrast = Some(true);
+# let _ = options;
+```
+
+- `Options::high_contrast` is `None` by default and follows the system. `Some(true)` always uses high contrast, and `Some(false)` never does.
+- On Windows, switching the contrast theme while the app runs redraws the open windows at once. On Linux, kargui reads the setting when the app starts.
+- In high contrast, kargui draws no shadows and no translucent fills, and shows edges with lines. Selected rows get a line in the highlight color, selected text is drawn again in the color for text on the highlight, and disabled widgets and hints are drawn in the gray text color (green in the dark palette).
+- When you draw your own pictures on a `canvas`, check `ui.high_contrast()` and use only the colors of `ui.theme()`. Don't use colors of your own or light shades.
+
+```rust
+# kargui::test::example(|ui| {
+let line = if ui.high_contrast() { ui.theme().text } else { ui.theme().border };
+# let _ = line;
+# });
+```
+
 ## Tests
 
-In the test harness, read the requested dialog with `h.file_dialog_key()` and `h.file_dialog()`, and answer it with `h.choose_files(&[..])` or `h.cancel_file_dialog()`. `h.request_close()` acts as if the close button was clicked, and `h.is_closed()` tells whether the app closed. Read the tray with `h.tray_shown()`, `h.tray_tooltip()` and `h.tray_menu()` (one line per item), click it with `h.tray_click()`, and choose an item with `h.tray_choose("Quit")`. `h.window_shown()` tells whether the window is hidden. Read the notifications with `h.notifications()` (one line each), and click one with `h.click_notification("time", Some("snooze"))` for a button or `None` for its body.
+In the test harness, read the requested dialog with `h.file_dialog_key()` and `h.file_dialog()`, and answer it with `h.choose_files(&[..])` or `h.cancel_file_dialog()`. `h.request_close()` acts as if the close button was clicked, and `h.is_closed()` tells whether the app closed. Read the tray with `h.tray_shown()`, `h.tray_tooltip()` and `h.tray_menu()` (one line per item), click it with `h.tray_click()`, and choose an item with `h.tray_choose("Quit")`. `h.window_shown()` tells whether the window is hidden. Read the notifications with `h.notifications()` (one line each), and click one with `h.click_notification("time", Some("snooze"))` for a button or `None` for its body. `h.set_high_contrast(true)` acts as if the system turned high contrast on.

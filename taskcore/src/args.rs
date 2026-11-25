@@ -10,6 +10,7 @@
 //! --renderer NAME    描き方を選ぶ（kargui の試作: d3d11 か cpu）
 //! --full-rate        前面にない窓でもフレームを抑えない（比べるときに使う）
 //! --light / --dark   OS の設定に関わらず明るい方・暗い方で描く（写真を撮るときに使う。使える版だけ）
+//! --high-contrast    OS の設定に関わらずハイコントラストで描く（確かめと写真に使う。使える版だけ）
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
@@ -24,6 +25,8 @@ pub struct Args {
     pub full_rate: bool,
     /// Some(true) は暗い方、Some(false) は明るい方。None なら OS の設定に従う
     pub dark: Option<bool>,
+    /// ハイコントラストで描く（無ければ OS の設定に従う）
+    pub high_contrast: bool,
 }
 
 /// プログラム名を除いた引数の並びを読む。
@@ -53,6 +56,7 @@ pub fn parse<I: IntoIterator<Item = String>>(it: I) -> Args {
             "--full-rate" => a.full_rate = true,
             "--light" => a.dark = Some(false),
             "--dark" => a.dark = Some(true),
+            "--high-contrast" => a.high_contrast = true,
             _ => {}
         }
     }
@@ -117,6 +121,14 @@ mod tests {
         assert_eq!(p(&["--light"]).dark, Some(false));
         assert_eq!(p(&["--dark"]).dark, Some(true));
         assert_eq!(p(&["--dark", "--light"]).dark, Some(false), "後の物が勝つ");
+    }
+
+    #[test]
+    fn reads_high_contrast() {
+        assert!(!p(&[]).high_contrast, "無ければ OS の設定");
+        let a = p(&["--dark", "--high-contrast"]);
+        assert!(a.high_contrast);
+        assert_eq!(a.dark, Some(true), "明暗と一緒に使える");
     }
 
     #[test]

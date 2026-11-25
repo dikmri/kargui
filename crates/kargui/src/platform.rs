@@ -204,6 +204,46 @@ fn system_reduce_motion() -> bool {
     r.is_ok() && !on.as_bool()
 }
 
+/// SystemParametersInfoW の SPI_GETHIGHCONTRAST が埋める物（HIGHCONTRASTW。windows クレートでは
+/// Win32_UI_Accessibility の機能が要るので、同じ並びを自分で書く）
+#[repr(C)]
+struct HighContrast {
+    size: u32,
+    flags: u32,
+    default_scheme: *mut u16,
+}
+
+/// HighContrast::flags の「ハイコントラストが入っている」（HCF_HIGHCONTRASTON）
+const HCF_HIGHCONTRASTON: u32 = 1;
+
+/// OS がハイコントラストか（設定 > アクセシビリティ > コントラスト テーマ）。入っていれば、そのテーマの色（GetSysColor）
+/// も返す。読めなければ入っていない扱い
+fn system_high_contrast() -> (bool, Option<crate::theme::SystemColors>) {
+    let mut hc = HighContrast { size: std::mem::size_of::<HighContrast>() as u32, flags: 0, default_scheme: std::ptr::null_mut() };
+    let r = unsafe {
+        SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.size, Some((&mut hc as *mut HighContrast).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
+    };
+    if r.is_err() || hc.flags & HCF_HIGHCONTRASTON == 0 {
+        return (false, None);
+    }
+    // COLORREF は 0x00BBGGRR
+    let c = |i: SYS_COLOR_INDEX| {
+        let v = unsafe { GetSysColor(i) };
+        [(v & 0xff) as f32 / 255.0, ((v >> 8) & 0xff) as f32 / 255.0, ((v >> 16) & 0xff) as f32 / 255.0, 1.0]
+    };
+    let colors = crate::theme::SystemColors {
+        window: c(COLOR_WINDOW),
+        window_text: c(COLOR_WINDOWTEXT),
+        highlight: c(COLOR_HIGHLIGHT),
+        highlight_text: c(COLOR_HIGHLIGHTTEXT),
+        button_face: c(COLOR_BTNFACE),
+        button_text: c(COLOR_BTNTEXT),
+        gray_text: c(COLOR_GRAYTEXT),
+        hotlight: c(COLOR_HOTLIGHT),
+    };
+    (true, Some(colors))
+}
+
 /// OS が暗いテーマか（設定 > 個人用設定 > 色 > アプリ モード）
 fn system_dark() -> bool {
     let mut value = 1u32;
@@ -1167,6 +1207,15 @@ impl State {
         self.t_wait = t.elapsed().as_secs_f64() * 1000.0;
     }
 
+    /// OS のハイコントラストの設定と色を読み直し、変わっていたら描き直す
+    fn read_contrast(&mut self, why: &str) {
+        let (on, colors) = system_high_contrast();
+        if self.rt.cx.set_system_high_contrast(on, colors) {
+            log::event("theme.contrast", &format!("key={:?} {why}", self.key), &format!("high={on} forced={:?} background={:?}", crate::theme::option(), colors.map(|c| c.window)));
+            self.need_frame = true;
+        }
+    }
+
     fn forget_output(&mut self) {
         match self.surface.as_mut() {
             Some(Surface::Gpu(g)) => g.forget_output(),
@@ -1497,7 +1546,7 @@ impl State {
                 self.need_frame = true;
                 Some(LRESULT(0))
             }
-            // OS の設定が変わった（アニメーション効果の入り切りもここに来る）
+            // OS の設定が変わった（アニメーション効果とハイコントラストの入り切りもここに来る）
             WM_SETTINGCHANGE => {
                 let reduce = system_reduce_motion();
                 if reduce != self.rt.cx.reduce_motion {
@@ -1505,6 +1554,12 @@ impl State {
                     log::event("motion.setting", &format!("key={:?} spi={:#x}", self.key, wp.0), &format!("reduce={reduce}"));
                     self.need_frame = true;
                 }
+                self.read_contrast(&format!("spi={:#x}", wp.0));
+                None
+            }
+            // コントラスト テーマを切り替えた・テーマの色を変えた
+            WM_SYSCOLORCHANGE => {
+                self.read_contrast("syscolor");
                 None
             }
             WM_MOVE | WM_EXITSIZEMOVE | WM_DISPLAYCHANGE => {
@@ -2084,6 +2139,9 @@ fn create_window(
     rt.cx.window_key = key.clone();
     rt.cx.place = window_place(hwnd);
     rt.cx.reduce_motion = system_reduce_motion();
+    let (on, colors) = system_high_contrast();
+    rt.cx.set_system_high_contrast(on, colors);
+    log::event("theme.contrast", &format!("key={key:?}"), &format!("high={on} forced={:?}", crate::theme::option()));
     // 書体（アプリが書体のファイルを渡さず、UI の書体のままなら何も読まない）
     rt.cx.text.load_fonts(&font_files);
     rt.cx.font = rt.cx.text.fonts.id(&font);

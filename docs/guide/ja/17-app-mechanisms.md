@@ -201,6 +201,31 @@ impl App for Timer {
 - Windows では、最初の通知の時に、アプリの名前（`Options::title`）を利用者ごとのレジストリ（`HKEY_CURRENT_USER\Software\Classes\AppUserModelId\実行ファイルの名前`）に書いて登録します。トーストの上には、この名前が出ます。押した答えは、アプリが動いている間だけ届きます。アプリが終わった後に、通知センターに残った通知を押しても何も起きません。
 - Linux では、GNOME・KDE・mako・dunst など、org.freedesktop.Notifications を持つデスクトップに出ます。ボタンを出すかどうかは、通知の係によります。
 
+## ハイコントラスト
+
+OS がハイコントラストの時、kargui は部品をハイコントラストの配色で描きます。OS の設定は、Windows では「設定 > アクセシビリティ > コントラスト テーマ」、Linux ではデスクトップのポータルのコントラストの設定（GNOME の「ハイコントラスト」など）です。Windows では、OS のテーマの色（黒地に水色の強調、白地に紫の強調など）をそのまま使います。Linux では、明暗に合わせて kargui の配色（`Theme::high_contrast_dark`・`Theme::high_contrast_light`）を使います。
+
+```rust
+use kargui::Options;
+
+let mut options = Options::new("メモ");
+// いつもハイコントラストで描く（None は OS に従う。Some(false) は使わない）
+options.high_contrast = Some(true);
+# let _ = options;
+```
+
+- `Options::high_contrast` の既定は `None` で、OS の設定に従います。`Some(true)` はいつもハイコントラスト、`Some(false)` は使いません。
+- Windows では、アプリを動かしたままコントラスト テーマを切り替えても、開いている窓をすぐに描き直します。Linux では、起動の時に読みます。
+- ハイコントラストの間は、影と半透明の塗りを描かず、境を縁で見せます。選んだ行には強調の色の縁を付け、選んだ文字は強調の上の文字の色で描き直します。押せない部品とヒントは、GrayText（暗い配色では緑）で描きます。
+- `canvas` で絵を描く時は、`ui.high_contrast()` を見て、`ui.theme()` の色だけで描いてください。自分で決めた色や、薄い色を使わないでください。
+
+```rust
+# kargui::test::example(|ui| {
+let line = if ui.high_contrast() { ui.theme().text } else { ui.theme().border };
+# let _ = line;
+# });
+```
+
 ## 試験
 
-試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。トレイは、`h.tray_shown()`・`h.tray_tooltip()`・`h.tray_menu()`（1 行ずつの文字）で読み、`h.tray_click()` で押し、`h.tray_choose("終わる")` で項目を選びます。窓が隠れているかは `h.window_shown()` で確かめます。通知は、`h.notifications()`（1 行ずつの文字）で読み、`h.click_notification("time", Some("snooze"))` でボタンを、`None` で本文を押します。
+試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。トレイは、`h.tray_shown()`・`h.tray_tooltip()`・`h.tray_menu()`（1 行ずつの文字）で読み、`h.tray_click()` で押し、`h.tray_choose("終わる")` で項目を選びます。窓が隠れているかは `h.window_shown()` で確かめます。通知は、`h.notifications()`（1 行ずつの文字）で読み、`h.click_notification("time", Some("snooze"))` でボタンを、`None` で本文を押します。`h.set_high_contrast(true)` は、OS のハイコントラストを入れたことにします。

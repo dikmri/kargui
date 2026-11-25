@@ -526,7 +526,12 @@ impl State {
         let main = &self.windows[0].rt;
         let (dark, font) = (main.cx.dark, main.cx.text.fonts.get(main.cx.font).clone());
         let icon = r.icon.clone().or_else(|| self.main_icon.clone());
-        let made = self.runtime(&r.title, dark, &font).and_then(|rt| self.new_window(Some(r.key.clone()), &r.title, r.size, r.min_size, r.position, icon.as_ref(), rt));
+        let hc = (main.cx.os_high_contrast, main.cx.system_colors);
+        let made = self.runtime(&r.title, dark, &font).map(|mut rt| {
+            rt.cx.set_system_high_contrast(hc.0, hc.1);
+            rt
+        });
+        let made = made.and_then(|rt| self.new_window(Some(r.key.clone()), &r.title, r.size, r.min_size, r.position, icon.as_ref(), rt));
         match made {
             Ok(id) => log::event("window.open_other", &format!("key={} size={:.0}x{:.0} position={:?}", r.key, r.size.0, r.size.1, r.position), &format!("id=0x{id:x}")),
             Err(e) => log::event("window.open_other", &format!("key={}", r.key), &format!("error={e}")),
@@ -694,6 +699,15 @@ impl State {
             for w in &mut self.windows {
                 w.rt.cx.set_dark(d);
                 w.need_frame = true;
+            }
+        }
+        if let Some(c) = s.contrast {
+            log::event("theme.contrast", &format!("high={c}"), &format!("{when} forced={:?}", crate::theme::option()));
+            for w in &mut self.windows {
+                // ポータルは色をくれないので、明暗に合わせた kargui の配色
+                if w.rt.cx.set_system_high_contrast(c, None) {
+                    w.need_frame = true;
+                }
             }
         }
     }
@@ -1600,7 +1614,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     if depth != 24 && depth != 32 || bpp != 32 {
         return Err(error("visual", format!("depth {depth} with {bpp} bits per pixel is not supported (24 or 32 bits with 32 bits per pixel)")));
     }
-    let settings_rx = crate::linux::spawn_settings(options.dark.is_none(), false, wake_fd.clone());
+    let settings_rx = crate::linux::spawn_settings(options.dark.is_none(), options.high_contrast.is_none(), false, wake_fd.clone());
     let clip = Rc::new(RefCell::new(Clip { conn: conn.clone(), atoms, owner, ours: None, time: x11rb::CURRENT_TIME, stash: VecDeque::new() }));
     let (dialog_tx, dialog_rx) = channel();
     let mut st = State {

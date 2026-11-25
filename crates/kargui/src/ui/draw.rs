@@ -753,6 +753,11 @@ impl Painter<'_> {
             }
         }
         let regions = self.prev.context_regions.len();
+        // ハイコントラストの押せない部品は、縁・文字・印をどれも GrayText で描く。描く間だけ配色を差し替える
+        let keep = (self.cx.high_contrast && tree.info[i].disabled).then(|| {
+            let off = self.cx.theme.disabled_high_contrast();
+            std::mem::replace(&mut self.cx.theme, off)
+        });
         if tree.layout[i].reveal.is_some() || tree.layout[i].clip {
             // 一部だけ見せる物と切り取る物（表の升）: 範囲の外を切り取る。外に出た子は押せず、Tab でも移らない
             self.d.push_clip(IRect::covering(r), None);
@@ -763,6 +768,9 @@ impl Painter<'_> {
             self.d.pop_clip();
         } else {
             self.node_body(tree, i);
+        }
+        if let Some(t) = keep {
+            self.cx.theme = t;
         }
         // 右クリックの範囲は、中身を描き終えた時の当たりの数を持つ（中に浮いたまとまりがあっても、外側の範囲は隠れない）
         if tree.info[i].context_menu
@@ -822,7 +830,10 @@ impl Painter<'_> {
         let text = d.text.clone();
         let t = self.cx.theme.clone();
         let (radius, sh) = (self.px(4.0), self.px(3.0));
-        self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.12], radius + sh);
+        // ハイコントラストでは影を描かない（薄い黒は配色の外の色。境は縁で見せる）
+        if !self.cx.high_contrast {
+            self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.12], radius + sh);
+        }
         self.d.fill(r, t.accent, radius);
         let line = self.line();
         let bg = t.background;
@@ -857,7 +868,9 @@ impl Painter<'_> {
                 // 入れ、先に描いた一覧・スクロールの棒・右クリックの範囲を、この範囲では隠す
                 let t = self.cx.theme.clone();
                 let (radius, sh) = (self.px(6.0), self.px(3.0));
-                self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.10], radius + sh);
+                if !self.cx.high_contrast {
+                    self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.10], radius + sh);
+                }
                 self.d.boxed(r, t.background, t.border, line, radius);
                 if let Some(c) = intersect(r, self.clip) {
                     self.prev.occluders.push((c, self.prev.hits.len()));
@@ -921,7 +934,9 @@ impl Painter<'_> {
             Kind::Item { selected, tab_stop } => {
                 let t = self.cx.theme.clone();
                 let enabled = !tree.info[i].disabled;
-                if *selected {
+                if *selected && self.cx.high_contrast {
+                    self.d.boxed(r, t.selected, t.accent, self.px(2.0), 0.0);
+                } else if *selected {
                     self.d.fill(r, t.selected, 0.0);
                 } else if enabled && self.cx.hover == Some(id) {
                     self.d.fill(r, t.button_hover, 0.0);
@@ -962,7 +977,9 @@ impl Painter<'_> {
                 } else {
                     t.button
                 };
-                if *primary {
+                // ハイコントラストの押せない主のボタンは塗らない（塗ると押せるボタンより目立つ）
+                let filled = *primary && !(off && self.cx.high_contrast);
+                if filled {
                     // 押せない主のボタンは、アクセントの色の代わりに枠の色で塗る
                     let mut bg = if off { t.border } else { t.accent };
                     if !off && (self.cx.pressed == Some(id) || self.cx.hover == Some(id)) {
@@ -979,7 +996,7 @@ impl Painter<'_> {
                 }
                 let st = style(self.cx, if *small { TextKind::Small } else { TextKind::Body }, *primary);
                 let laid = self.cx.text.layout(text, st, None);
-                let color = if *primary {
+                let color = if filled {
                     t.on_accent
                 } else if off {
                     t.done_text
@@ -1417,7 +1434,9 @@ impl Painter<'_> {
                 let (hover, pressed) = (self.cx.hover == Some(id), self.cx.pressed == Some(id));
                 let close = *button == B::Close;
                 if hover || pressed {
+                    let hc = self.cx.high_contrast;
                     let bg = match (close, pressed) {
+                        (true, _) if hc => t.accent,
                         (true, false) => [0.769, 0.169, 0.110, 1.0],
                         (true, true) => [0.78, 0.26, 0.20, 1.0],
                         (false, false) => t.button_hover,
@@ -1425,7 +1444,11 @@ impl Painter<'_> {
                     };
                     self.d.fill(r, bg, 0.0);
                 }
-                let color = if close && (hover || pressed) { [1.0, 1.0, 1.0, 1.0] } else { t.text };
+                let color = match (close && (hover || pressed), self.cx.high_contrast) {
+                    (true, true) => t.on_accent,
+                    (true, false) => [1.0, 1.0, 1.0, 1.0],
+                    (false, _) => t.text,
+                };
                 let icon = match (button, maximized) {
                     (B::Minimize, _) => Icon::Minus,
                     (B::Maximize, true) => Icon::Restore,
@@ -1748,7 +1771,9 @@ impl Painter<'_> {
         // 影（少し下にずらした薄い黒）と、背景の箱
         if o.kind != OverlayKind::Tooltip {
             let sh = self.px(3.0);
-            self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.10], radius + sh);
+            if !self.cx.high_contrast {
+                self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.10], radius + sh);
+            }
             block(self, r);
         }
         let bg = if o.kind == OverlayKind::Tooltip { t.button } else { t.background };
@@ -1794,14 +1819,19 @@ impl Painter<'_> {
 
     /// つまみを描く。ポインターが棒の上にある時とつかんでいる間は濃くする（つかめることが見て分かるように）
     fn draw_thumb(&mut self, id: crate::ui::Id, thumb: Rect) {
+        let (dragged, hovered) = (self.cx.drag.is_some_and(|d| d.list == id), self.cx.bar_hover == Some(id));
         let mut c = self.cx.theme.weak_text;
-        c[3] = if self.cx.drag.is_some_and(|d| d.list == id) {
+        c[3] = if dragged {
             0.85
-        } else if self.cx.bar_hover == Some(id) {
+        } else if hovered {
             0.65
         } else {
             0.45
         };
+        // ハイコントラストでは透かさない（透かすと配色にない灰色になる）。乗った時と引っ張る時は強調の色
+        if self.cx.high_contrast {
+            c = if dragged || hovered { self.cx.theme.accent } else { self.cx.theme.text };
+        }
         self.d.fill(Rect::new(thumb.x, thumb.y.round(), thumb.w, thumb.h.round()), c, thumb.w / 2.0);
     }
 
@@ -1896,17 +1926,26 @@ impl Painter<'_> {
         self.cx.edit_scroll.insert(id, scroll);
         let x0 = inner.x - scroll;
         self.d.push_clip(IRect::covering(inner), None);
+        let mut picked = None;
         if cursor != anchor && preedit.is_empty() {
             let (a, b) = (cursor.min(anchor), cursor.max(anchor));
             let xa = laid.x_of(edit::utf16_of(&shown, a));
             let xb = laid.x_of(edit::utf16_of(&shown, b));
-            self.d.fill(Rect::new(x0 + xa, ty, xb - xa, line_h), t.selection, 0.0);
+            let sel = Rect::new(x0 + xa, ty, xb - xa, line_h);
+            self.d.fill(sel, t.selection, 0.0);
+            picked = Some(sel);
         }
         if shown.is_empty() {
             let h = self.cx.text.layout(hint, st, None);
-            put(self.d, &h, x0, ty, if off { t.done_text } else { t.weak_text });
+            put(self.d, &h, x0, ty, if off || self.cx.high_contrast { t.done_text } else { t.weak_text });
         } else {
             put(self.d, &laid, x0, ty, if off { t.done_text } else { t.text });
+            // ハイコントラストの選んだ範囲は Highlight の上なので、文字を HighlightText で描き直す
+            if let Some(sel) = picked.filter(|_| self.cx.high_contrast) {
+                self.d.push_clip(IRect::covering(sel), None);
+                put(self.d, &laid, x0, ty, t.on_accent);
+                self.d.pop_clip();
+            }
         }
         if !preedit.is_empty() {
             let xa = laid.x_of(start16);
@@ -1993,17 +2032,28 @@ impl Painter<'_> {
         let (ox, oy) = (inner.x, (inner.y - offset).round());
         self.d.push_clip(IRect::covering(view), None);
         // 選んだ範囲
+        let mut picked = Vec::new();
         if cursor != anchor && preedit.is_empty() {
             let (a, b) = (edit::utf16_of(&shown, cursor.min(anchor)), edit::utf16_of(&shown, cursor.max(anchor)));
             for rr in range_rects(&laid, a, b, self.px(4.0)) {
-                self.d.fill(Rect::new(ox + rr.x, oy + rr.y, rr.w, rr.h), t.selection, 0.0);
+                let sel = Rect::new(ox + rr.x, oy + rr.y, rr.w, rr.h);
+                self.d.fill(sel, t.selection, 0.0);
+                picked.push(sel);
             }
         }
         if shown.is_empty() {
             let h = self.cx.text.layout(hint, st, Some(inner.w));
-            put(self.d, &h, ox, oy, if off { t.done_text } else { t.weak_text });
+            put(self.d, &h, ox, oy, if off || self.cx.high_contrast { t.done_text } else { t.weak_text });
         } else {
             put(self.d, &laid, ox, oy, if off { t.done_text } else { t.text });
+            // ハイコントラストの選んだ範囲は Highlight の上なので、行ごとに文字を HighlightText で描き直す
+            if self.cx.high_contrast {
+                for sel in picked {
+                    self.d.push_clip(IRect::covering(sel), None);
+                    put(self.d, &laid, ox, oy, t.on_accent);
+                    self.d.pop_clip();
+                }
+            }
         }
         if !preedit.is_empty() {
             // 文節ごとに下線を引き、今変換している文節は太くする。行をまたぐ文節は行ごとに引く

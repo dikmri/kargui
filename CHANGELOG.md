@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- High contrast: kargui follows the system's high contrast setting (Windows: the contrast themes,
+  with their colors as they are, and it redraws when the theme changes; Linux: the desktop
+  portal's contrast setting, with `Theme::high_contrast_dark` or `Theme::high_contrast_light` by
+  light or dark mode). `Options::high_contrast` forces it on or off. In high contrast kargui draws
+  no shadows or translucent fills, outlines selected rows, redraws selected text in the color for
+  text on the highlight, and draws disabled widgets and hints in the gray text color.
+  `Ui::high_contrast` tells a view to draw its own pictures with the theme's colors only, and
+  `Harness::set_high_contrast` turns it on in tests. Guide chapter 17, `examples/gallery`
+  (`--high-contrast`).
 - Notifications: `Ui::notify` shows a notification (`Notification`: a title, a body, up to three
   buttons, `silent`); the same key replaces the one shown before, and
   `Ui::notification_clicked` returns what the user clicked (`NotificationAction::Body` or

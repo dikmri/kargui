@@ -3676,6 +3676,21 @@ impl<'a> Ui<'a> {
         &self.cx.theme
     }
 
+    /// Whether the widgets are drawn in high contrast (the system's setting, or
+    /// [`Options::high_contrast`](crate::Options::high_contrast)). Use it to draw your own
+    /// pictures ([`canvas`](Self::canvas)) with the [`theme`](Self::theme)'s colors only: no
+    /// shades, no colors of your own, and lines instead of shadows.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let line = if ui.high_contrast() { ui.theme().text } else { ui.theme().border };
+    /// # let _ = line;
+    /// # });
+    /// ```
+    pub fn high_contrast(&self) -> bool {
+        self.cx.high_contrast
+    }
+
     /// Space inside the edges of the current container (logical pixels): `x` left and right,
     /// `y` top and bottom. At the top level this is the window's margin (16 and 12 by default).
     ///

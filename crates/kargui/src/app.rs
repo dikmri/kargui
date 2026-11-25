@@ -214,6 +214,13 @@ pub struct Options {
     /// window, maximizes it on a double click and opens the window menu on a right click, as the
     /// system's bar does. `false` by default.
     pub custom_title_bar: bool,
+    /// High contrast: `None` (the default) follows the system's setting (Windows: Settings >
+    /// Accessibility > Contrast themes; Linux: the desktop portal's contrast setting),
+    /// `Some(true)` always uses a high contrast palette, `Some(false)` never does. With the
+    /// system's high contrast on Windows, kargui uses the system's colors; otherwise
+    /// [`Theme::high_contrast_dark`](crate::Theme::high_contrast_dark) or
+    /// [`Theme::high_contrast_light`](crate::Theme::high_contrast_light) by dark mode.
+    pub high_contrast: Option<bool>,
     /// Whether the window takes the keyboard focus when it opens.
     pub activate: bool,
     /// How the window is drawn.
@@ -289,6 +296,7 @@ impl Options {
             renderer: Renderer::default(),
             full_rate: false,
             dark: None,
+            high_contrast: None,
             icon: None,
             min_size: None,
             font: crate::Font::Ui,
@@ -315,6 +323,7 @@ impl Options {
 /// }
 /// ```
 pub fn run(options: Options, app: impl App) -> Result<(), crate::Error> {
+    crate::theme::set_option(options.high_contrast);
     #[cfg(windows)]
     {
         crate::platform::run(options, Box::new(app))

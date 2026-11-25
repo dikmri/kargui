@@ -689,6 +689,10 @@ fn main() {
     options.activate = !a.no_focus;
     // 題の帯は kargui が描く（Windows。GNOME はいつも kargui が描く）
     options.custom_title_bar = true;
+    // --high-contrast は OS の設定に関わらずハイコントラストで描く（作者の PC の設定を変えずに確かめる）
+    if a.high_contrast {
+        options.high_contrast = Some(true);
+    }
     if matches!(a.renderer.as_deref(), Some("d3d11" | "gpu")) {
         options.renderer = kargui::Renderer::Gpu;
     }

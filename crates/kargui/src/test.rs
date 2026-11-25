@@ -434,6 +434,36 @@ impl<A: App> Harness<A> {
         self.send(Vec::new())
     }
 
+    /// Turns the system's high contrast setting on or off, as Windows' contrast themes or the
+    /// desktop's contrast setting would (with kargui's high contrast palette for the current
+    /// light or dark mode), and draws a frame of every window.
+    ///
+    /// ```
+    /// # use kargui::{App, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Hello {
+    ///     high_contrast: bool,
+    /// }
+    ///
+    /// impl App for Hello {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         self.high_contrast = ui.high_contrast();
+    ///         ui.label("Hello");
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Hello::default());
+    /// h.set_high_contrast(true);
+    /// assert!(h.app().high_contrast);
+    /// ```
+    pub fn set_high_contrast(&mut self, on: bool) -> &mut Self {
+        for rt in std::iter::once(&mut self.rt).chain(self.windows.iter_mut().map(|(_, rt)| rt)) {
+            rt.cx.set_system_high_contrast(on, None);
+        }
+        self.send(Vec::new())
+    }
+
     /// Whether the main window's view made a tray icon ([`Ui::tray`]) in the last frame.
     ///
     /// ```
@@ -4879,6 +4909,103 @@ mod tests {
         h.click("Remind");
         h.click_notification("remind", None);
         assert_eq!(h.app().answers, ["Button(\"snooze\")", "Body"]);
+    }
+
+    /// 入力欄と、選べる一覧があるアプリ（ハイコントラストの描き方を確かめる）
+    #[derive(Default)]
+    struct Contrast {
+        text: String,
+        row: Option<usize>,
+        seen: bool,
+    }
+
+    impl App for Contrast {
+        fn view(&mut self, ui: &mut Ui) {
+            self.seen = ui.high_contrast();
+            ui.text_input(&mut self.text).label("Name").hint("Type a name");
+            ui.button("Send").primary().enabled(false);
+            ui.list(3, 30.0).grow().selection(&mut self.row).show(|ui, i| {
+                ui.label(["Apple", "Banana", "Cherry"][i]);
+            });
+        }
+    }
+
+    #[test]
+    fn high_contrast_follows_the_system_and_uses_its_palette() {
+        let mut h = Harness::new(Contrast::default());
+        assert!(!h.app().seen);
+        h.set_high_contrast(true);
+        assert!(h.app().seen);
+        let img = h.render();
+        assert_eq!(img.rgb(2, 2), 0xffffff, "the light high contrast background");
+        h.set_high_contrast(false);
+        assert!(!h.app().seen);
+    }
+
+    #[test]
+    fn high_contrast_redraws_selected_text_in_the_highlight_text_color() {
+        // 明るいハイコントラスト: 選んだ文字の背景は Highlight（紫）、その上の文字は HighlightText（白）。文字を
+        // ふつうの文字の色（黒）のまま描くと、紫の上の黒で読みにくい
+        let mut h = Harness::new(Contrast { text: "Selected words".into(), ..Default::default() });
+        h.set_high_contrast(true);
+        h.click("Name").press_with(Key::A, Mods::CTRL);
+        let img = h.render();
+        let field = h.find("Name").unwrap();
+        // 焦点のある入力欄の縁も強調の色（紫）なので、縁から 3 画素より内側の紫だけで選んだ範囲を求める
+        let (x0, y0, x1, y1) = (field.x as u32 + 3, field.y as u32 + 3, (field.x + field.w) as u32 - 3, (field.y + field.h) as u32 - 3);
+        let purple: Vec<(u32, u32)> = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| img.rgb(x, y) == 0x37006e).collect();
+        assert!(!purple.is_empty(), "the selection is drawn");
+        let (sx0, sx1) = (purple.iter().map(|p| p.0).min().unwrap(), purple.iter().map(|p| p.0).max().unwrap());
+        let (sy0, sy1) = (purple.iter().map(|p| p.1).min().unwrap(), purple.iter().map(|p| p.1).max().unwrap());
+        // 白に近い画素を数える（書体によって線の太さが違い、真っ白の画素の数は Linux では Windows の半分ほど。黒の
+        // 文字のままなら 0）
+        let light = |c: u32| (c >> 16) & 0xff >= 0xc0 && (c >> 8) & 0xff >= 0xc0 && c & 0xff >= 0xc0;
+        let white = (sy0..=sy1).flat_map(|y| (sx0..=sx1.saturating_sub(2)).map(move |x| (x, y))).filter(|&(x, y)| light(img.rgb(x, y))).count();
+        assert!(white > 20, "selected text in the highlight text color ({white} light pixels in {sx0}..{sx1} x {sy0}..{sy1}, field {field:?})");
+    }
+
+    /// 範囲の中で、その色の画素を数える
+    fn count(img: &crate::test::Image, r: crate::Rect, inset: f32, color: u32) -> usize {
+        let (x0, y0, x1, y1) = ((r.x + inset) as u32, (r.y + inset) as u32, (r.x + r.w - inset) as u32, (r.y + r.h - inset) as u32);
+        (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| img.rgb(x, y) == color).count()
+    }
+
+    #[test]
+    fn high_contrast_draws_a_disabled_button_in_gray_text() {
+        // 確かめの写真で、押せない主のボタンが縁の色（明るい方では黒）で塗られ、押せるボタンより目立った。
+        // ハイコントラストの押せない部品は、背景のまま、縁と文字を GrayText（明るい方では 0x600000）で描く
+        let mut h = Harness::new(Contrast::default());
+        h.set_high_contrast(true);
+        let img = h.render();
+        let b = h.find("Send").unwrap();
+        let (black, gray) = (count(&img, b, 3.0, 0x000000), count(&img, b, 0.0, 0x600000));
+        assert!(black < 10, "not filled with the border color ({black} black pixels in {b:?})");
+        assert!(gray > 20, "the border and the text in gray text ({gray} pixels)");
+    }
+
+    #[test]
+    fn high_contrast_draws_a_hint_in_gray_text() {
+        // ヒントを文字と同じ色（WindowText）で描くと、入力済みに見える。WinUI と同じく GrayText で描く
+        let mut h = Harness::new(Contrast::default());
+        h.set_high_contrast(true);
+        let img = h.render();
+        let field = h.find("Name").unwrap();
+        let gray = count(&img, field, 3.0, 0x600000);
+        assert!(gray > 5, "the hint in gray text ({gray} pixels in {field:?})");
+    }
+
+    #[test]
+    fn high_contrast_outlines_the_selected_row() {
+        let mut h = Harness::new(Contrast::default());
+        h.set_high_contrast(true);
+        h.click("Banana");
+        assert_eq!(h.app().row, Some(1));
+        let img = h.render();
+        // find は行の四角を返す。行の左端の内側に Highlight の縁がある
+        let row = h.find("Banana").unwrap();
+        let (x0, y) = (row.x as u32, (row.y + row.h / 2.0) as u32);
+        let line: Vec<String> = (x0..x0 + 4).map(|x| format!("{:06x}", img.rgb(x, y))).collect();
+        assert!((x0..x0 + 4).any(|x| img.rgb(x, y) == 0x37006e), "a highlight line at the left of the selected row: {line:?} row {row:?}");
     }
 
     #[test]

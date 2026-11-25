@@ -773,9 +773,11 @@ impl State {
     fn open_window(&mut self, r: crate::ui::context::WindowRequest) {
         let main = &self.windows[0].rt;
         let (dark, font) = (main.cx.dark, main.cx.text.fonts.get(main.cx.font).clone());
+        let hc = (main.cx.os_high_contrast, main.cx.system_colors);
         match self.runtime(&r.title, dark, &font) {
             Ok(mut rt) => {
                 rt.cx.window_key = Some(r.key.clone());
+                rt.cx.set_system_high_contrast(hc.0, hc.1);
                 let id = self.new_window(Some(r.key.clone()), &r.title, r.size, r.min_size, rt);
                 log::event("window.open_other", &format!("key={} size={:.0}x{:.0}", r.key, r.size.0, r.size.1), &format!("id={id}"));
             }
@@ -963,6 +965,15 @@ impl State {
             for w in &mut self.windows {
                 w.rt.cx.set_dark(d);
                 w.need_frame = true;
+            }
+        }
+        if let Some(c) = s.contrast {
+            log::event("theme.contrast", &format!("high={c}"), &format!("{when} forced={:?}", crate::theme::option()));
+            for w in &mut self.windows {
+                // ポータルは色をくれないので、明暗に合わせた kargui の配色
+                if w.rt.cx.set_system_high_contrast(c, None) {
+                    w.need_frame = true;
+                }
             }
         }
         if let Some(layout) = s.button_layout {
@@ -1301,7 +1312,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
 
     // OS の設定（明暗と、kargui が題の帯を描く時のボタンの並び）は、窓の準備と並べてポータルに聞く（最初の絵の前に少しだけ待つ）
     let (want_dark, want_buttons) = (options.dark.is_none(), deco_mgr.is_none());
-    let settings_rx = crate::linux::spawn_settings(want_dark, want_buttons, wake_fd.clone());
+    let settings_rx = crate::linux::spawn_settings(want_dark, options.high_contrast.is_none(), want_buttons, wake_fd.clone());
     // クリップボード（座席ごとに 1 つの data device）
     let device = match (&data_mgr, &seat) {
         (Some(m), Some(s)) => Some(m.get_data_device(s, &qh, ())),

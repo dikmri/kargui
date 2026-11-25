@@ -41,6 +41,12 @@ pub(crate) fn read_dark() -> zbus::Result<bool> {
     Ok(u32::try_from(read_setting("org.freedesktop.appearance", "color-scheme")?)? == 1)
 }
 
+/// OS のコントラストの設定（org.freedesktop.appearance の contrast。1 高い・0 好みなし）を読む。高いなら true。
+/// GNOME の「ハイコントラスト」と KDE の配色が入れる。ポータルが古い時（1.19 より前）などは Err
+pub(crate) fn read_contrast() -> zbus::Result<bool> {
+    Ok(u32::try_from(read_setting("org.freedesktop.appearance", "contrast")?)? == 1)
+}
+
 /// 題の帯のボタンの並び（GNOME の button-layout。「appmenu:minimize,maximize,close」の形）を読む。
 /// kargui が題の帯を描く時（合成が描かない時）に使う
 pub(crate) fn read_button_layout() -> zbus::Result<String> {

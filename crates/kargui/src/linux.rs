@@ -24,6 +24,7 @@ pub(crate) const DOUBLE_CLICK_DIST: f32 = 4.0;
 /// ポータルから読んだ OS の設定（読まなかった物・読めなかった物は None）
 pub(crate) struct PortalSettings {
     pub dark: Option<bool>,
+    pub contrast: Option<bool>,
     pub button_layout: Option<String>,
 }
 
@@ -379,14 +380,15 @@ pub(crate) fn choose_backend(var: impl Fn(&str) -> Option<String>, exists: impl 
     if var("DISPLAY").is_some_and(|d| !d.is_empty()) { Backend::X11 } else { Backend::Wayland }
 }
 
-/// OS の設定（明暗と、kargui が題の帯を描く時のボタンの並び）を、別のスレッドでポータルに聞き始める。答えが
-/// 届いたら eventfd に書いて窓の処理を起こす
-pub(crate) fn spawn_settings(want_dark: bool, want_buttons: bool, wake: Arc<OwnedFd>) -> Option<Receiver<PortalSettings>> {
-    (want_dark || want_buttons).then(|| {
+/// OS の設定（明暗・コントラストと、kargui が題の帯を描く時のボタンの並び）を、別のスレッドでポータルに聞き始める。
+/// 答えが届いたら eventfd に書いて窓の処理を起こす
+pub(crate) fn spawn_settings(want_dark: bool, want_contrast: bool, want_buttons: bool, wake: Arc<OwnedFd>) -> Option<Receiver<PortalSettings>> {
+    (want_dark || want_contrast || want_buttons).then(|| {
         let (tx, rx) = channel();
         let _ = std::thread::Builder::new().name("kargui-portal-settings".into()).spawn(move || {
             let t = Instant::now();
             let dark = want_dark.then(crate::portal::read_dark);
+            let contrast = want_contrast.then(crate::portal::read_contrast);
             let button_layout = want_buttons.then(crate::portal::read_button_layout);
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             match &dark {
@@ -394,12 +396,21 @@ pub(crate) fn spawn_settings(want_dark: bool, want_buttons: bool, wake: Arc<Owne
                 Some(Err(e)) => log::event("portal.color_scheme", "", &format!("error={e} ms={ms:.1}")),
                 None => {}
             }
+            match &contrast {
+                Some(Ok(c)) => log::event("portal.contrast", "", &format!("high={c} ms={ms:.1}")),
+                Some(Err(e)) => log::event("portal.contrast", "", &format!("error={e} ms={ms:.1}")),
+                None => {}
+            }
             match &button_layout {
                 Some(Ok(l)) => log::event("portal.button_layout", "", &format!("layout={l:?} ms={ms:.1}")),
                 Some(Err(e)) => log::event("portal.button_layout", "", &format!("error={e} ms={ms:.1}")),
                 None => {}
             }
-            let _ = tx.send(PortalSettings { dark: dark.and_then(Result::ok), button_layout: button_layout.and_then(Result::ok) });
+            let _ = tx.send(PortalSettings {
+                dark: dark.and_then(Result::ok),
+                contrast: contrast.and_then(Result::ok),
+                button_layout: button_layout.and_then(Result::ok),
+            });
             let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
         });
         rx
