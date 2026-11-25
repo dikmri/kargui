@@ -2,6 +2,19 @@
 
 Rust で書く、軽いネイティブ GUI フレームワーク（Windows 10/11 と Linux。版は 0.3）。名前は「軽い」「Rust」「GUI」から。[English README](README.md)（この文の訳）。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/gallery-dark.png">
+    <img src="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/gallery-light.png" alt="kargui で書いた部品の見本のドッキングのページ。左に部品の一覧、右にファイル・編集・メモ・出力のパネルがタブのまとまりで並ぶ" width="720">
+  </picture>
+</p>
+
+<p align="center"><sub>部品の見本（<code>examples/gallery</code>、Windows 11）。題の帯・ドッキングのパネル・部品は、どれも kargui が描いている。OS の明暗に合わせて変わる。</sub></p>
+
+| 家計簿（`examples/expenses`） | カードの板（`examples/board`） | 設定（`examples/settings`） |
+|:---:|:---:|:---:|
+| <img src="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/expenses.png" alt="家計簿。日付・分類・金額・メモの入力欄、合計、並べ替えられる表" width="260"> | <img src="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/board.png" alt="カードの板。やること・作業中・済みの 3 列に、移せるカードが並ぶ" width="260"> | <img src="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/settings.png" alt="暗い色の設定の窓。文字の入力欄、選択、スライダー、色の選択、スイッチ" width="260"> |
+
 Tauri・egui・GPUI で同じアプリ（タスク帳）を作って比べた実験（[AI コーディングノートの実験レポート番外編](https://dikmri.github.io/ai-coding-notes/reports/rust-gui/)）から生まれた。3 つにはそれぞれ優れた所がある。egui は書きやすく、GPUI はメモリが少なく、Tauri は GPU が無い PC でも滑らかに描く。kargui はそれらを 1 つにまとめることを目指し、前回と同じ道具・同じ条件で測りながら作っている。作った過程は[実験レポート番外編 2](https://dikmri.github.io/ai-coding-notes/reports/kargui/)にまとめた。3 つのフレームワークと、その作者・貢献者から多くを学んだ。
 
 ## 特徴

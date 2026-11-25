@@ -4,6 +4,20 @@ A light native GUI framework for Rust (Windows 10/11 and Linux; version 0.3). Th
 the Japanese word *karui* (light), Rust and GUI. [日本語の README](README.ja.md) (the original; this is
 a translation).
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/gallery-dark.png">
+    <img src="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/gallery-light.png" alt="The widget gallery written with kargui, on its docking page: a list of widget pages on the left, and Files, Editor, Notes and Output panels in tabbed groups on the right" width="720">
+  </picture>
+</p>
+
+<p align="center"><sub>The widget gallery (<code>examples/gallery</code>) on Windows 11: its title bar, the docking panels
+and every widget are drawn by kargui. It follows the system's light or dark mode.</sub></p>
+
+| Expenses (`examples/expenses`) | Card board (`examples/board`) | Settings (`examples/settings`) |
+|:---:|:---:|:---:|
+| <img src="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/expenses.png" alt="An expenses app: a form with date, category, amount and note, a total, and a sortable table of expenses" width="260"> | <img src="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/board.png" alt="A card board with three columns (to do, doing, done) of cards that can be moved" width="260"> | <img src="https://raw.githubusercontent.com/dikmri/kargui/main/docs/readme/settings.png" alt="A settings window in dark mode: text inputs, segmented choices, sliders, a color picker and a switch" width="260"> |
+
 kargui grew out of an experiment that built the same app (a task book) with Tauri, egui and GPUI and
 measured them ([report, in Japanese](https://dikmri.github.io/ai-coding-notes/reports/rust-gui/)). Each
 of the three does something well: egui is easy to write, GPUI uses little memory, and Tauri draws
