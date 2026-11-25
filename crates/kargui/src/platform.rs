@@ -1335,6 +1335,8 @@ impl State {
                 let cursor = match shape {
                     PointerShape::NsResize => IDC_SIZENS,
                     PointerShape::EwResize => IDC_SIZEWE,
+                    PointerShape::Move => IDC_SIZEALL,
+                    PointerShape::NwseResize => IDC_SIZENWSE,
                     PointerShape::Text => IDC_IBEAM,
                     PointerShape::Pointer => IDC_HAND,
                     PointerShape::Default => IDC_ARROW,

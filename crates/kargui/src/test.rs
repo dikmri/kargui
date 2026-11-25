@@ -1930,6 +1930,85 @@ mod tests {
     }
 
     #[test]
+    fn drawing_only_changes_follows_a_floating_group() {
+        // 浮いたまとまりは下の部品に重なる。見本のページと同じくスクロールする入れ物の中で、枠を動かす・大きさを変える・
+        // ページをスクロールする間の絵が、全部描き直した絵と同じかを比べる
+        struct Page {
+            dock: crate::Dock<&'static str>,
+        }
+        impl App for Page {
+            fn view(&mut self, ui: &mut Ui) {
+                let dock = &mut self.dock;
+                ui.scroll(|ui| {
+                    ui.heading("Dock");
+                    ui.column(|ui| {
+                        ui.dock(dock).grow().show(|p| p.to_string(), |ui, p| {
+                            ui.label(format!("{p} body"));
+                            if *p == "Files" {
+                                ui.list(40, 24.0).height(Size::Fixed(200.0)).show(|ui, i| {
+                                    ui.label(format!("file {i}"));
+                                });
+                            }
+                        });
+                    })
+                    .height(Size::Fixed(360.0));
+                    for i in 0..30 {
+                        ui.label(format!("line {i}"));
+                    }
+                })
+                .grow();
+            }
+        }
+        let mut dock = crate::Dock::new(["Editor"]);
+        dock.insert("Files", crate::DockTo::Edge { side: crate::DockSide::Left, share: 0.3 });
+        dock.insert("Notes", crate::DockTo::Float { x: 120.0, y: 60.0, w: 320.0, h: 220.0 });
+        let mut h = Harness::new(Page { dock });
+        let (w, hh) = (h.rt.cx.width as i32, h.rt.cx.height as i32);
+        let mut px = vec![0u32; (w * hh) as usize];
+        let mut summary = crate::damage::Summary::default();
+        let mut step = |h: &mut Harness<Page>, what: &str| {
+            let bg = h.rt.cx.theme.background;
+            let out = crate::cpu_frame::draw(&mut px, w, hh, &h.rt.draw, &h.rt.cx.text.atlas, bg, &summary, false);
+            summary = out.summary;
+            let full = h.render();
+            let diff = px.iter().zip(&full.pixels).filter(|(a, b)| a != b).count();
+            assert_eq!(diff, 0, "{what}: {diff} 画素が違う（{}）", out.mode);
+        };
+        step(&mut h, "最初");
+        // 浮いたまとまりが一部に重なった一覧を、重なっていない所でスクロールする（ずらす絵に枠が入る）
+        let row = h.find("file 0").unwrap();
+        let f = float_geom(&h, "Notes body");
+        assert!(f.rect.x < h.rt.cx.prev.lists[0].rect.right(), "枠が一覧に重なっている");
+        for (k, dy) in [72.0, 48.0].into_iter().enumerate() {
+            h.send(vec![Event::Wheel { x: row.x + 10.0, y: row.y + 40.0, dy }]);
+            step(&mut h, &format!("下の一覧のスクロール {k}"));
+        }
+        assert!(h.rt.cx.scrolls.values().any(|&v| v > 0.0), "一覧が動いた");
+        let grip = (f.rect.x + 10.0, f.strip.y + f.strip.h / 2.0);
+        h.send(vec![Event::PointerDown { x: grip.0, y: grip.1, shift: false, count: 1 }]);
+        step(&mut h, "印を押した");
+        for (k, (dx, dy)) in [(6.0, 2.0), (40.0, 30.0), (-90.0, 70.0), (200.0, -20.0)].into_iter().enumerate() {
+            h.send(vec![Event::PointerMove { x: grip.0 + dx, y: grip.1 + dy }]);
+            step(&mut h, &format!("動かす {k}"));
+        }
+        h.send(vec![Event::PointerUp { x: grip.0 + 200.0, y: grip.1 - 20.0 }]);
+        step(&mut h, "離した");
+        let f = float_geom(&h, "Notes body");
+        let corner = (f.rect.right() - 6.0, f.rect.bottom() - 6.0);
+        h.send(vec![Event::PointerDown { x: corner.0, y: corner.1, shift: false, count: 1 }]);
+        for (k, (dx, dy)) in [(30.0, 20.0), (-120.0, -60.0)].into_iter().enumerate() {
+            h.send(vec![Event::PointerMove { x: corner.0 + dx, y: corner.1 + dy }]);
+            step(&mut h, &format!("大きさ {k}"));
+        }
+        h.send(vec![Event::PointerUp { x: corner.0 - 120.0, y: corner.1 - 60.0 }]);
+        // 浮いたまとまりの下の一覧の外で、ページをスクロールする
+        for (k, dy) in [96.0, 64.0, -40.0].into_iter().enumerate() {
+            h.send(vec![Event::Wheel { x: 860.0, y: 400.0, dy }]);
+            step(&mut h, &format!("ページのスクロール {k}"));
+        }
+    }
+
+    #[test]
     fn drawing_only_changes_matches_drawing_everything_for_a_list_inside_a_scroll_area() {
         // 作者の手の確かめ（0.3.0 の 2 回目）で、部品の見本のスクロールバーが二重に見えた。見本のページは
         // スクロールする入れ物の中にあり、その中の一覧をホイールで動かすと、古いつまみの絵が残る
@@ -3756,6 +3835,33 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_alone_in_its_group_shows_no_drop_place_over_its_own_group() {
+        // 作者の手の確かめで、1 つだけのタブを自分のまとまりの上へ引っ張ると薄い塗りが出て、落としても変わらなかった
+        let mut h = ide(false);
+        let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let before = h.app().dock.clone();
+        let (sx, sy) = mid(h.find("Files").unwrap());
+        press(&mut h, sx, sy);
+        drag_to(&mut h, sx + 12.0, sy + 12.0);
+        let (cx, cy) = mid(h.find("Files content").unwrap());
+        drag_to(&mut h, cx, cy + 40.0);
+        let log = h.rt.cx.dock_zone_log.clone();
+        assert!(log.as_deref().is_some_and(|l| l.starts_with("group=Some(0) ") && l.ends_with("zone=None")), "塗らない: {log:?}");
+        release(&mut h, cx, cy + 40.0);
+        assert_eq!(h.app().dock, before);
+        // 2 つあるまとまりのタブは、自分のまとまりの上でも分けられる（Notes を Editor のまとまりの下へ）
+        h.click("Notes");
+        let (nx, ny) = mid(h.find("Notes").unwrap());
+        let g = h.rt.cx.prev.docks.values().next().unwrap().groups[1].clone();
+        press(&mut h, nx, ny);
+        drag_to(&mut h, nx + 12.0, ny + 12.0);
+        let low = (g.rect.x + g.rect.w / 2.0, g.rect.bottom() - 10.0);
+        drag_to(&mut h, low.0, low.1);
+        release(&mut h, low.0, low.1);
+        assert_eq!(h.app().dock.selected(), vec![&"Files", &"Editor", &"Notes"], "Notes が分かれる");
+    }
+
+    #[test]
     fn dock_dividers_share_the_space_by_drag_and_keyboard() {
         let mut h = ide(false);
         let share = |h: &Harness<Ide>| -> f32 {
@@ -3773,6 +3879,235 @@ mod tests {
         assert!((share(&h) - 0.1).abs() < 1e-3);
         h.press(Key::End);
         assert!((share(&h) - 0.9).abs() < 1e-3);
+    }
+
+    /// 前のフレームの、浮いたまとまりの場所（content の文字が中にある物）
+    fn float_geom<A: App>(h: &Harness<A>, content: &str) -> crate::ui::dock::GroupGeom {
+        let r = h.find(content).unwrap();
+        let geom = h.rt.cx.prev.docks.values().next().expect("dock の場所を覚えている");
+        geom.groups.iter().rev().find(|g| g.floating && g.rect.contains(r.x, r.y)).expect("浮いたまとまりの中").clone()
+    }
+
+    #[test]
+    fn dock_panels_float_from_the_tab_menu_and_go_back() {
+        let mut h = ide(false);
+        h.right_click("Notes").click("Float");
+        assert!(h.app().dock.is_floating(&"Notes"));
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Editor", &"Notes"]);
+        assert_eq!(focused_name(&h).as_deref(), Some("Notes"), "浮かせたタブに焦点");
+        // 浮いたまとまりは全体の中に、下のまとまりの上に重ねて出す
+        let root = h.rt.cx.prev.docks.values().next().unwrap().root;
+        let f = float_geom(&h, "Notes content").rect;
+        assert!(f.x >= root.x && f.y >= root.y && f.right() <= root.right() && f.bottom() <= root.bottom(), "{f:?} {root:?}");
+        assert!(h.find("Editor content").is_some(), "下のまとまりも見せる");
+        // 浮いたまとまりのメニューは「Dock」と「Move into group」（分ける・浮かせるは無い）
+        h.right_click("Notes");
+        assert!(h.find("Dock").is_some() && h.find("Move into group").is_some());
+        assert!(h.find("Float").is_none() && h.find("Move to a new group").is_none());
+        h.click("Dock");
+        assert!(!h.app().dock.is_floating(&"Notes"));
+        assert_eq!(h.app().dock.panels(), vec![&"Files", &"Editor", &"Notes"], "元の 2 つ目のタブへ");
+        assert_eq!(h.app().dock.selected(), vec![&"Files", &"Notes"]);
+        // まとまりに 1 つだけのパネルも浮かせられ、戻すと元の左の端へ
+        h.right_click("Files").click("Float");
+        assert_eq!(h.app().dock.selected(), vec![&"Notes", &"Files"]);
+        h.right_click("Files").click("Dock");
+        assert_eq!(h.app().dock.save(|p| p.to_string()), ide(false).app().dock.save(|p| p.to_string()).replace("tabs 0 2", "tabs 1 2"));
+    }
+
+    #[test]
+    fn floating_groups_move_and_change_size_by_their_dots() {
+        use crate::ui::context::PointerShape;
+        let mut h = ide(false);
+        h.right_click("Notes").click("Float");
+        let f = float_geom(&h, "Notes content");
+        let before = h.app().dock.floating[0].rect;
+        // 動かす印は見出しの帯の左の端。印を引いても、タブの引っ張りは始まらない
+        let grip = (f.rect.x + 10.0, f.strip.y + f.strip.h / 2.0);
+        assert_eq!(h.rt.cx.pointer_shape(grip.0, grip.1), PointerShape::Move);
+        press(&mut h, grip.0, grip.1);
+        drag_to(&mut h, grip.0 + 30.0, grip.1 + 10.0);
+        drag_to(&mut h, grip.0 + 60.0, grip.1 + 40.0);
+        assert!(h.rt.cx.dnd.is_none());
+        release(&mut h, grip.0 + 60.0, grip.1 + 40.0);
+        let r = h.app().dock.floating[0].rect;
+        assert_eq!([r[0] - before[0], r[1] - before[1], r[2], r[3]], [60.0, 40.0, before[2], before[3]]);
+        let g = float_geom(&h, "Notes content");
+        assert_eq!((g.rect.x - f.rect.x, g.rect.y - f.rect.y), (60.0, 40.0), "枠がポインターについて来る");
+        // 大きさを変える印は右下の隅
+        let corner = (g.rect.right() - 6.0, g.rect.bottom() - 6.0);
+        assert_eq!(h.rt.cx.pointer_shape(corner.0, corner.1), PointerShape::NwseResize);
+        press(&mut h, corner.0, corner.1);
+        drag_to(&mut h, corner.0 + 50.0, corner.1 + 30.0);
+        release(&mut h, corner.0 + 50.0, corner.1 + 30.0);
+        let r2 = h.app().dock.floating[0].rect;
+        assert_eq!([r2[0], r2[1], r2[2] - r[2], r2[3] - r[3]], [r[0], r[1], 50.0, 30.0]);
+        // 全体の外へは出ない
+        let g = float_geom(&h, "Notes content");
+        let grip = (g.rect.x + 10.0, g.strip.y + g.strip.h / 2.0);
+        press(&mut h, grip.0, grip.1);
+        drag_to(&mut h, grip.0 - 2000.0, grip.1 - 2000.0);
+        release(&mut h, grip.0 - 2000.0, grip.1 - 2000.0);
+        assert_eq!(h.app().dock.floating[0].rect[..2], [0.0, 0.0]);
+        assert_eq!(float_geom(&h, "Notes content").rect.x, h.rt.cx.prev.docks.values().next().unwrap().root.x);
+    }
+
+    /// 左に一覧（List）、右に Editor のボタン。浮いたまとまりを重ねる
+    struct Covered {
+        dock: crate::Dock<&'static str>,
+        clicks: usize,
+    }
+
+    impl App for Covered {
+        fn view(&mut self, ui: &mut Ui) {
+            let clicks = &mut self.clicks;
+            ui.dock(&mut self.dock).grow().show(|p| p.to_string(), |ui, p| {
+                if *p == "List" {
+                    ui.list(100, 28.0).height(crate::Size::Fixed(560.0)).show(|ui, i| {
+                        ui.label(format!("{i} row"));
+                    });
+                } else if ui.button(format!("{p} button")).clicked() {
+                    *clicks += 1;
+                }
+            });
+        }
+    }
+
+    fn covered() -> Harness<Covered> {
+        let mut dock = crate::Dock::new(["Editor"]);
+        dock.insert("List", crate::DockTo::Edge { side: crate::DockSide::Left, share: 0.3 });
+        // x 0〜420・y 40〜340 に重ねる（List の中身と Editor のボタンの上）
+        dock.insert("Notes", crate::DockTo::Float { x: 0.0, y: 40.0, w: 420.0, h: 300.0 });
+        Harness::new(Covered { dock, clicks: 0 })
+    }
+
+    #[test]
+    fn floating_groups_cover_what_is_below_them() {
+        let mut h = covered();
+        let button = h.find("Editor button").unwrap();
+        // ボタンは横いっぱいに伸びるので、左の端の近く
+        let (bx, by) = (button.x + 20.0, button.y + button.h / 2.0);
+        assert!(float_geom(&h, "Notes button").rect.contains(bx, by), "ボタンは浮いたまとまりの下");
+        // 押しても下のボタンには届かない
+        press(&mut h, bx, by);
+        release(&mut h, bx, by);
+        assert_eq!(h.app().clicks, 0);
+        // ホイールは、浮いたまとまりの下の一覧を動かさない（外なら動かす）
+        let list = h.rt.cx.prev.lists[0].clone();
+        h.send(vec![Event::Wheel { x: list.rect.x + 40.0, y: 200.0, dy: 96.0 }]);
+        assert_eq!(h.rt.cx.scrolls.get(&list.id).copied().unwrap_or(0.0), 0.0, "浮いたまとまりの上");
+        h.send(vec![Event::Wheel { x: list.rect.x + 40.0, y: 500.0, dy: 96.0 }]);
+        assert!(h.rt.cx.scrolls.get(&list.id).copied().unwrap_or(0.0) > 0.0, "浮いたまとまりの外");
+        // スクロールの棒も、浮いたまとまりの下では押せない
+        let bar = h.rt.cx.prev.lists[0].bar.expect("一覧はあふれている");
+        assert!(h.rt.cx.scrollbar_at(bar.x + bar.w / 2.0, 200.0).is_none());
+        assert!(h.rt.cx.scrollbar_at(bar.x + bar.w / 2.0, 500.0).is_some());
+        // 浮いたまとまりの中のボタンは押せる
+        h.click("Notes button");
+        assert_eq!(h.app().clicks, 1);
+    }
+
+    #[test]
+    fn the_wheel_over_a_floating_group_scrolls_the_page_it_is_in() {
+        // 見本のページと同じく、ドッキングはスクロールする入れ物の中にある。外側の入れ物は中身より先に記録するので、
+        // 描き始めの当たりの数で比べると、浮いたまとまりの下に隠れた物として扱われ、ページが動かなかった
+        struct Page {
+            dock: crate::Dock<&'static str>,
+        }
+        impl App for Page {
+            fn view(&mut self, ui: &mut Ui) {
+                let dock = &mut self.dock;
+                ui.scroll(|ui| {
+                    ui.column(|ui| {
+                        ui.dock(dock).grow().show(|p| p.to_string(), |ui, p| {
+                            ui.label(format!("{p} body"));
+                        });
+                    })
+                    .height(crate::Size::Fixed(400.0));
+                    for i in 0..40 {
+                        ui.label(format!("line {i}"));
+                    }
+                })
+                .grow();
+            }
+        }
+        let mut dock = crate::Dock::new(["Editor"]);
+        dock.insert("Notes", crate::DockTo::Float { x: 100.0, y: 60.0, w: 300.0, h: 200.0 });
+        let mut h = Harness::new(Page { dock });
+        let f = float_geom(&h, "Notes body").rect;
+        let page = h.rt.cx.prev.lists[0].id;
+        h.send(vec![Event::Wheel { x: f.x + f.w / 2.0, y: f.y + f.h / 2.0, dy: 96.0 }]);
+        assert!(h.rt.cx.scrolls.get(&page).copied().unwrap_or(0.0) > 0.0, "浮いたまとまりの上でも、ページは動く");
+    }
+
+    #[test]
+    fn floating_groups_come_to_the_top_when_pressed_or_reached_by_f6() {
+        let mut h = covered();
+        h.app_mut().dock.insert("Output", crate::DockTo::Float { x: 200.0, y: 200.0, w: 400.0, h: 300.0 });
+        h.frame();
+        assert_eq!(h.app().dock.panels(), vec![&"List", &"Editor", &"Notes", &"Output"], "後から浮かせた Output が上");
+        // 下の Notes の、重なっていない所を押すと上になる
+        press(&mut h, 100.0, 150.0);
+        release(&mut h, 100.0, 150.0);
+        assert_eq!(h.app().dock.panels(), vec![&"List", &"Editor", &"Output", &"Notes"]);
+        // 重なった所は上の Notes が受ける。Output のボタンは、重なっていない所だけ押せる（押すと Output が上になる）
+        let out = h.find("Output button").unwrap();
+        let notes = float_geom(&h, "Notes button").rect;
+        let y = out.y + out.h / 2.0;
+        let (under, beside) = ((out.x + 10.0, y), (notes.right() + 40.0, y));
+        assert!(notes.contains(under.0, under.1) && !notes.contains(beside.0, beside.1) && out.contains(beside.0, beside.1));
+        press(&mut h, under.0, under.1);
+        release(&mut h, under.0, under.1);
+        assert_eq!(h.app().clicks, 0);
+        press(&mut h, beside.0, beside.1);
+        release(&mut h, beside.0, beside.1);
+        assert_eq!(h.app().clicks, 1);
+        assert_eq!(h.app().dock.panels(), vec![&"List", &"Editor", &"Notes", &"Output"]);
+        // F6 で浮いたまとまりへ移ると、上になる
+        h.click("Editor");
+        h.press(Key::F6);
+        assert_eq!(focused_name(&h).as_deref(), Some("Notes"));
+        assert_eq!(h.app().dock.panels(), vec![&"List", &"Editor", &"Output", &"Notes"]);
+        // 作者の手の確かめ（0.4 の 2 段目）で、浮いたまとまりが 2 つあると F6 が 1 つ飛ばした。上にすると重なりの順が
+        // 変わっても、F6 は浮かせた順（Notes、Output）で回る
+        h.press(Key::F6);
+        assert_eq!(focused_name(&h).as_deref(), Some("Output"), "上にした Notes の次は、先に浮かせた順で Output");
+        assert_eq!(h.app().dock.panels(), vec![&"List", &"Editor", &"Notes", &"Output"]);
+        h.press(Key::F6);
+        assert_eq!(focused_name(&h).as_deref(), Some("List"), "浮いたまとまりを回り終えたら木の最初へ");
+        // Shift+F6 は逆の順
+        let shift = Mods { shift: true, ..Mods::default() };
+        h.press_with(Key::F6, shift);
+        assert_eq!(focused_name(&h).as_deref(), Some("Output"));
+        h.press_with(Key::F6, shift);
+        assert_eq!(focused_name(&h).as_deref(), Some("Notes"));
+        h.press_with(Key::F6, shift);
+        assert_eq!(focused_name(&h).as_deref(), Some("Editor"));
+    }
+
+    #[test]
+    fn dock_tabs_drag_into_and_out_of_floating_groups() {
+        let mut h = covered();
+        let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let drag_tab = |h: &mut Harness<Covered>, name: &str, to: (f32, f32)| {
+            let (sx, sy) = mid(h.find(name).unwrap());
+            press(h, sx, sy);
+            drag_to(h, sx + 12.0, sy + 12.0);
+            drag_to(h, to.0, to.1);
+            release(h, to.0, to.1);
+        };
+        // Editor のタブを浮いたまとまりの中身の端へ: 分けずにタブとして入る
+        let f = float_geom(&h, "Notes button").rect;
+        drag_tab(&mut h, "Editor", (f.right() - 8.0, f.bottom() - 30.0));
+        assert_eq!(h.app().dock.panels(), vec![&"List", &"Notes", &"Editor"]);
+        assert!(h.app().dock.is_floating(&"Editor"));
+        // 浮いたまとまりから、木のまとまりの右へ引っ張り出す
+        let l = h.find("List").unwrap();
+        let root = h.rt.cx.prev.docks.values().next().unwrap().root;
+        drag_tab(&mut h, "Notes", (root.right() - 60.0, l.bottom() + 400.0));
+        assert!(!h.app().dock.is_floating(&"Notes"));
+        assert_eq!(h.app().dock.panels(), vec![&"List", &"Notes", &"Editor"]);
+        assert_eq!(h.app().dock.selected(), vec![&"List", &"Notes", &"Editor"]);
     }
 
     #[test]

@@ -150,7 +150,7 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
         }
         Kind::SpinButton { .. } => (p(28.0), p(24.0)),
         // 大きさは作る時に決める
-        Kind::Splitter { .. } | Kind::Canvas { .. } | Kind::ColumnGrip => (0.0, 0.0),
+        Kind::Splitter { .. } | Kind::Canvas { .. } | Kind::ColumnGrip | Kind::DockGrip { .. } => (0.0, 0.0),
         Kind::DateField { .. } => (p(160.0), p(sz::INPUT_H)),
         Kind::TimeField { .. } => (p(120.0), p(sz::INPUT_H)),
         Kind::CalendarDay { .. } => (p(36.0), p(32.0)),
@@ -446,6 +446,7 @@ impl Painter<'_> {
                     | Kind::Splitter { .. }
                     | Kind::Canvas { .. }
                     | Kind::ColumnGrip
+                    | Kind::DockGrip { .. }
                     | Kind::TextArea { .. }
                     | Kind::NumberInput { .. }
                     | Kind::ColorArea { .. }
@@ -750,6 +751,7 @@ impl Painter<'_> {
                 self.prev.drop_targets.push((id, c, t, order));
             }
         }
+        let regions = self.prev.context_regions.len();
         if tree.layout[i].reveal.is_some() || tree.layout[i].clip {
             // 一部だけ見せる物と切り取る物（表の升）: 範囲の外を切り取る。外に出た子は押せず、Tab でも移らない
             self.d.push_clip(IRect::covering(r), None);
@@ -761,12 +763,18 @@ impl Painter<'_> {
         } else {
             self.node_body(tree, i);
         }
-        if let Some(at) = self.cx.dnd.as_ref().filter(|d| d.over == Some(id)).map(|d| d.at)
+        // 右クリックの範囲は、中身を描き終えた時の当たりの数を持つ（中に浮いたまとまりがあっても、外側の範囲は隠れない）
+        if tree.info[i].context_menu
+            && let Some(region) = self.prev.context_regions.get_mut(regions).filter(|r| r.0 == id)
+        {
+            region.2 = self.prev.hits.len();
+        }
+        if let Some((at, source)) = self.cx.dnd.as_ref().filter(|d| d.over == Some(id)).map(|d| (d.at, d.source))
             && let Some(c) = intersect(r, self.clip)
         {
             // ドッキングは全体を囲まず、落とす先の的と落ちる所を描く
             if matches!(tree.info[i].kind, Kind::Dock) {
-                self.dock_overlay(&dock_geom(tree, i), at);
+                self.dock_overlay(&dock_geom(tree, i), at, source);
             } else {
                 self.drop_highlight(c);
             }
@@ -774,11 +782,11 @@ impl Painter<'_> {
     }
 
     /// ドッキングにタブを引っ張っている間: 落ちる所を薄く塗る（落とす先はポインターのいる場所で決まるので、的は描かない）
-    fn dock_overlay(&mut self, geom: &DockGeom, at: (f32, f32)) {
+    fn dock_overlay(&mut self, geom: &DockGeom, at: (f32, f32), source: crate::ui::Id) {
         let scale = self.cx.scale;
         let a = self.cx.theme.accent;
         let line = self.line();
-        let zone = geom.zone_at(at.0, at.1, scale);
+        let zone = geom.zone_for(at.0, at.1, scale, source);
         // ポインターの下のまとまりと落とす先が変わったら記録する（どこを通ったか、記録から分かるように）
         let now = format!("group={:?} zone={zone:?}", geom.group_at(at.0, at.1));
         if self.cx.dock_zone_log.as_deref() != Some(now.as_str()) {
@@ -831,7 +839,7 @@ impl Painter<'_> {
         // 右クリックのメニューを持つ部品は、見えている範囲を覚える（右クリックの場所から部品を探す）
         if tree.info[i].context_menu
             && let Some(c) = intersect(r, self.clip) {
-                self.prev.context_regions.push((id, c));
+                self.prev.context_regions.push((id, c, 0));
             }
         match &tree.info[i].kind {
             // 重ねる物は親に付かないので、ここには来ない（Painter::overlay で描く）
@@ -842,6 +850,46 @@ impl Painter<'_> {
                 for &c in &tree.layout[i].children {
                     self.node(tree, c);
                 }
+            }
+            Kind::DockFloat => {
+                // 影（少し下にずらした薄い黒）と背景の箱。下の部品へ押すのが抜けないように、範囲全体を押せない当たりに
+                // 入れ、先に描いた一覧・スクロールの棒・右クリックの範囲を、この範囲では隠す
+                let t = self.cx.theme.clone();
+                let (radius, sh) = (self.px(6.0), self.px(3.0));
+                self.d.fill(Rect::new(r.x - sh, r.y, r.w + 2.0 * sh, r.h + 2.0 * sh), [0.0, 0.0, 0.0, 0.10], radius + sh);
+                self.d.boxed(r, t.background, t.border, line, radius);
+                if let Some(c) = intersect(r, self.clip) {
+                    self.prev.occluders.push((c, self.prev.hits.len()));
+                    self.prev.hits.push(Hit { id, rect: c, slop: c, focusable: false, text_input: false, arrows: false, vertical: false, enabled: false, drags: false, link: false });
+                }
+                for &c in &tree.layout[i].children {
+                    self.node(tree, c);
+                }
+            }
+            Kind::DockGrip { resize } => {
+                // 動かす印は 2 列 3 段の点、大きさを変える印は右下の隅に斜めに並べた点。押している・乗っている時は主の色
+                self.prev.shapes.insert(id, if *resize { super::context::PointerShape::NwseResize } else { super::context::PointerShape::Move });
+                let t = self.cx.theme.clone();
+                let hot = self.cx.pressed == Some(id) || self.cx.hover == Some(id);
+                let color = if hot { t.accent } else { t.weak_text };
+                let (dot, step) = (self.px(2.0).round().max(1.0), self.px(4.0).round().max(2.0));
+                let spots: Vec<(f32, f32)> = if *resize {
+                    let x0 = r.right() - self.px(3.0).round() - 2.0 * step - dot;
+                    let y0 = r.bottom() - self.px(3.0).round() - 2.0 * step - dot;
+                    (0..3).flat_map(|gy| (0..3).map(move |gx| (gx, gy))).filter(|(gx, gy)| gx + gy >= 2).map(|(gx, gy)| (x0 + gx as f32 * step, y0 + gy as f32 * step)).collect()
+                } else {
+                    let x0 = (r.x + (r.w - step - dot) / 2.0).round();
+                    let y0 = (r.y + (r.h - 2.0 * step - dot) / 2.0).round();
+                    (0..3).flat_map(|gy| (0..2).map(move |gx| (x0 + gx as f32 * step, y0 + gy as f32 * step))).collect()
+                };
+                for (x, y) in spots {
+                    self.d.fill(Rect::new(x, y, dot, dot), color, dot / 2.0);
+                }
+                // 動かす印の下にも、隣の見出しの列と同じ線を引く（線が印の所で切れないように）
+                if !*resize {
+                    self.d.fill(Rect::new(r.x, r.bottom() - line, r.w, line), t.border, 0.0);
+                }
+                self.hit(tree, i, false, false);
             }
             Kind::Root | Kind::Row | Kind::Column | Kind::Stack | Kind::Space | Kind::MenuBar | Kind::Tabs | Kind::DockGroup | Kind::TabPanel | Kind::Grid | Kind::Tree | Kind::Table { .. } | Kind::DayGrid => {
                 for &c in &tree.layout[i].children {
@@ -1733,7 +1781,8 @@ impl Painter<'_> {
         let l = &tree.layout[i];
         // 中の一覧より先に入れる（ホイールと棒は、後に入れた内側の物から探す）
         let (thumb, bar) = self.scrollbar_geometry(r, l.content, l.offset);
-        self.prev.lists.push(ListInfo { id, rect: r, content_h: l.content, thumb, bar });
+        let k = self.prev.lists.len();
+        self.prev.lists.push(ListInfo { id, rect: r, content_h: l.content, thumb, bar, order: 0 });
         self.d.push_clip(IRect::covering(r), Some(Scroll { id: id.0, offset: l.offset as i32 }));
         let outer = (self.clip, self.scroller);
         self.clip = intersect(r, outer.0).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));
@@ -1745,6 +1794,8 @@ impl Painter<'_> {
                 self.hidden(tree, c);
             }
         }
+        // 中身を描き終えた時の当たりの数（中に浮いたまとまりがあっても、外側の入れ物は隠れない）
+        self.prev.lists[k].order = self.prev.hits.len();
         (self.clip, self.scroller) = outer;
         self.d.pop_clip();
         if let Some(t) = thumb {
@@ -1957,7 +2008,7 @@ impl Painter<'_> {
         self.d.pop_clip();
         // ホイールとスクロールの棒（一覧と同じ仕組み。cx.scrolls を動かす）
         let (thumb, bar) = self.scrollbar_geometry(view, content_h, offset);
-        self.prev.lists.push(ListInfo { id, rect: view, content_h, thumb, bar });
+        self.prev.lists.push(ListInfo { id, rect: view, content_h, thumb, bar, order: self.prev.hits.len() });
         if let Some(th) = thumb {
             self.draw_thumb(id, th);
         }
@@ -1974,7 +2025,8 @@ impl Painter<'_> {
         let line = self.line();
         let sep = self.cx.theme.separator;
         let (thumb, bar) = self.scrollbar_geometry(r, content_h, l.offset);
-        self.prev.lists.push(ListInfo { id, rect: r, content_h, thumb, bar });
+        let k = self.prev.lists.len();
+        self.prev.lists.push(ListInfo { id, rect: r, content_h, thumb, bar, order: 0 });
         self.d.push_clip(IRect::covering(r), Some(Scroll { id: id.0, offset: l.offset as i32 }));
         let outer = self.clip;
         self.clip = intersect(r, outer).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));
@@ -1988,6 +2040,8 @@ impl Painter<'_> {
             self.node(tree, c);
             self.row = None;
         }
+        // 行を描き終えた時の当たりの数（浮いたまとまりに隠れているかは、描き終えた後に重ねた物で決める）
+        self.prev.lists[k].order = self.prev.hits.len();
         self.clip = outer;
         self.d.pop_clip();
         // スクロールの位置を示す細い棒（中身が一覧より高いときだけ）
@@ -1997,24 +2051,36 @@ impl Painter<'_> {
     }
 }
 
-/// ドッキングの入れ物 i の、全体とまとまりの場所（今のフレームの配置から。まとまりは左・上が先）
+/// ドッキングの入れ物 i の、全体とまとまりの場所（今のフレームの配置から。まとまりは並べ方の木の左・上が先で、その後に
+/// 浮いたまとまりを下にある物から）
 pub(crate) fn dock_geom(tree: &Tree, i: usize) -> DockGeom {
-    fn walk(tree: &Tree, i: usize, out: &mut Vec<GroupGeom>) {
+    fn walk(tree: &Tree, i: usize, floating: bool, out: &mut Vec<GroupGeom>) {
         for &c in &tree.layout[i].children {
-            if matches!(tree.info[c].kind, Kind::DockGroup) {
-                // まとまりの最初の子が見出しの帯（TabList）、その中の Tab が見出し
-                let strip = tree.layout[c].children.first().copied();
-                let tabs = strip.map_or(Vec::new(), |s| {
-                    tree.layout[s].children.iter().filter(|&&t| matches!(tree.info[t].kind, Kind::Tab { .. })).map(|&t| tree.layout[t].rect).collect()
-                });
-                out.push(GroupGeom { rect: tree.layout[c].rect, strip: strip.map_or(Rect::default(), |s| tree.layout[s].rect), tabs });
-            } else {
-                walk(tree, c, out);
+            match tree.info[c].kind {
+                Kind::DockGroup => {
+                    // まとまりの最初の子が見出しの帯（TabList）、その中の Tab が見出し。浮いたまとまりの帯は、動かす印と
+                    // TabList の行。浮いたまとまりの場所は枠の全体
+                    let head = tree.layout[c].children.first().copied();
+                    let is_list = |k: usize| matches!(tree.info[k].kind, Kind::TabList);
+                    let list = head.and_then(|h| if is_list(h) { Some(h) } else { tree.layout[h].children.iter().copied().find(|&k| is_list(k)) });
+                    let heads: Vec<usize> = list.map_or(Vec::new(), |s| {
+                        tree.layout[s].children.iter().copied().filter(|&t| matches!(tree.info[t].kind, Kind::Tab { .. })).collect()
+                    });
+                    let tabs = heads.iter().map(|&t| tree.layout[t].rect).collect();
+                    let alone = match heads[..] {
+                        [t] => Some(tree.info[t].id),
+                        _ => None,
+                    };
+                    let rect = if floating { tree.layout[i].rect } else { tree.layout[c].rect };
+                    out.push(GroupGeom { rect, strip: head.map_or(Rect::default(), |s| tree.layout[s].rect), tabs, floating, alone });
+                }
+                Kind::DockFloat => walk(tree, c, true, out),
+                _ => walk(tree, c, floating, out),
             }
         }
     }
     let mut g = DockGeom { root: tree.layout[i].rect, groups: Vec::new() };
-    walk(tree, i, &mut g.groups);
+    walk(tree, i, false, &mut g.groups);
     g
 }
 

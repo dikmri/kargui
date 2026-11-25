@@ -902,6 +902,8 @@ impl State {
         let shape = match self.windows[i].rt.cx.pointer_shape(x, y) {
             PointerShape::NsResize => Shape::NsResize,
             PointerShape::EwResize => Shape::EwResize,
+            PointerShape::Move => Shape::Move,
+            PointerShape::NwseResize => Shape::NwseResize,
             PointerShape::Text => Shape::Text,
             PointerShape::Pointer => Shape::Pointer,
             PointerShape::Default => Shape::Default,

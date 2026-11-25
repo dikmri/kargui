@@ -174,8 +174,12 @@ pub(crate) enum Kind {
     Tabs,
     /// ドッキングの入れ物（Ui::dock）。タブを引っ張っている間は、落とす先の的と落ちる所を描く
     Dock,
-    /// ドッキングのタブのまとまり（中は TabList と TabPanel）
+    /// ドッキングのタブのまとまり（中は TabList と TabPanel。浮いたまとまりは、TabList の代わりに動かす印と TabList の行）
     DockGroup,
+    /// ドッキングの浮いたまとまりの枠（影と背景を描き、下の部品へ押すのが抜けないようにする）
+    DockFloat,
+    /// 浮いたまとまりをつかむ印（resize なら大きさを変える右下の印、ほかは動かす印。読み上げの木には出さない）
+    DockGrip { resize: bool },
     /// タブの見出しの列
     TabList,
     /// タブの見出し

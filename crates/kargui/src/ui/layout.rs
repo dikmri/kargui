@@ -104,6 +104,9 @@ pub(crate) struct LayoutNode {
     pub full_h: f32,
     /// 中身を自分の範囲で切り取る（CSS の overflow: hidden）。Fill の向きでは中身より狭くできる（min-width: 0）。表の升
     pub clip: bool,
+    /// Stack の子のとき、入れ物の左上からの位置（物理ピクセル）。大きさは Fixed か測った大きさで、入れ物の中に収める
+    /// （はみ出す位置は内側へ寄せるので、大きな数を渡すと右下の隅に置ける）。Stack の大きさには数えない
+    pub at: Option<(f32, f32)>,
     // 結果
     pub measured: (f32, f32),
     pub rect: Rect,
@@ -129,6 +132,7 @@ impl LayoutNode {
             reveal: None,
             full_h: 0.0,
             clip: false,
+            at: None,
             measured: (0.0, 0.0),
             rect: Rect::default(),
         }
@@ -151,7 +155,12 @@ pub(crate) fn measure(nodes: &mut [LayoutNode], i: usize) -> (f32, f32) {
         Dir::Leaf => n.intrinsic,
         Dir::Row => (sizes.iter().map(|s| s.0).sum::<f32>() + gaps, sizes.iter().map(|s| s.1).fold(0.0, f32::max)),
         Dir::Column => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).sum::<f32>() + gaps),
-        Dir::Stack => (sizes.iter().map(|s| s.0).fold(0.0, f32::max), sizes.iter().map(|s| s.1).fold(0.0, f32::max)),
+        Dir::Stack => {
+            // 位置を決めた子（浮いた物）は、入れ物の大きさに数えない
+            let placed = |k: &usize| nodes[children[*k]].at.is_none();
+            let flow: Vec<(f32, f32)> = (0..sizes.len()).filter(placed).map(|k| sizes[k]).collect();
+            (flow.iter().map(|s| s.0).fold(0.0, f32::max), flow.iter().map(|s| s.1).fold(0.0, f32::max))
+        }
         Dir::List => (0.0, 0.0),
         Dir::Scroll => (sizes.iter().map(|s| s.0).fold(0.0, f32::max) + n.gutter, sizes.iter().map(|s| s.1).sum::<f32>() + gaps),
         Dir::Grid => {
@@ -297,6 +306,13 @@ pub(crate) fn arrange(nodes: &mut [LayoutNode], i: usize, rect: Rect) {
         }
         Dir::Stack => {
             for &c in &n.children {
+                if let Some((x, y)) = nodes[c].at {
+                    let w = fixed_or(nodes[c].width, nodes[c].measured.0).min(inner.w);
+                    let h = fixed_or(nodes[c].height, nodes[c].measured.1).min(inner.h);
+                    let (x, y) = (x.min(inner.w - w).max(0.0), y.min(inner.h - h).max(0.0));
+                    arrange(nodes, c, Rect::new((inner.x + x).round(), (inner.y + y).round(), w.round(), h.round()));
+                    continue;
+                }
                 let (ax, w) = cross(nodes[c].width, nodes[c].measured.0, inner.w, n.align);
                 let (ay, h) = cross(nodes[c].height, nodes[c].measured.1, inner.h, n.align);
                 arrange(nodes, c, Rect::new(inner.x + ax, inner.y + ay, w, h));
@@ -398,6 +414,31 @@ mod tests {
         // 3 行目は 1 つだけ
         assert_eq!((nodes[5].rect.x, nodes[5].rect.y), (0.0, 80.0));
         assert_eq!(nodes[0].measured, (80.0 + 10.0 + 100.0, 30.0 + 10.0 + 30.0 + 10.0 + 20.0));
+    }
+
+    #[test]
+    fn stacks_place_children_at_their_position_inside_and_do_not_count_them() {
+        // 重ねる入れ物の 1 つ目はふつうに広がり、2 つ目以降は決めた位置に置く（浮いたまとまり）
+        let mut nodes = vec![LayoutNode::new(Dir::Stack)];
+        let leaf = |w: f32, h: f32, at: Option<(f32, f32)>| {
+            let mut l = LayoutNode::new(Dir::Leaf);
+            l.intrinsic = (w, h);
+            l.at = at;
+            l
+        };
+        nodes.push(leaf(50.0, 40.0, None));
+        nodes.push(leaf(0.0, 0.0, Some((30.0, 20.0))));
+        nodes[2].width = Size::Fixed(200.0);
+        nodes[2].height = Size::Fixed(100.0);
+        nodes.push(leaf(120.0, 80.0, Some((350.0, 280.0))));
+        nodes.push(leaf(900.0, 80.0, Some((10.0, 10.0))));
+        nodes[0].children = vec![1, 2, 3, 4];
+        layout(&mut nodes, 0, Rect::new(0.0, 0.0, 400.0, 300.0));
+        assert_eq!(nodes[0].measured, (50.0, 40.0), "位置を決めた子は大きさに数えない");
+        assert_eq!(nodes[1].rect, Rect::new(0.0, 0.0, 400.0, 300.0));
+        assert_eq!(nodes[2].rect, Rect::new(30.0, 20.0, 200.0, 100.0));
+        assert_eq!(nodes[3].rect, Rect::new(280.0, 220.0, 120.0, 80.0), "はみ出す位置は内側へ（右下の隅）");
+        assert_eq!(nodes[4].rect, Rect::new(0.0, 10.0, 400.0, 80.0), "入れ物より広い物は入れ物の幅");
     }
 
     #[test]

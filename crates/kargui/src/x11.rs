@@ -637,6 +637,8 @@ impl State {
             "pointer" => &["pointer", "hand2"],
             "ns-resize" => &["ns-resize", "sb_v_double_arrow"],
             "ew-resize" => &["ew-resize", "sb_h_double_arrow"],
+            "move" => &["move", "fleur"],
+            "nwse-resize" => &["nwse-resize", "bottom_right_corner"],
             "not-allowed" => &["not-allowed", "crossed_circle"],
             _ => &["default", "left_ptr"],
         };
@@ -671,6 +673,8 @@ impl State {
         let name = match self.windows[i].rt.cx.pointer_shape(x, y) {
             PointerShape::NsResize => "ns-resize",
             PointerShape::EwResize => "ew-resize",
+            PointerShape::Move => "move",
+            PointerShape::NwseResize => "nwse-resize",
             PointerShape::Text => "text",
             PointerShape::Pointer => "pointer",
             PointerShape::Default => "default",

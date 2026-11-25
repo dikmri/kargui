@@ -8,13 +8,20 @@
   panel in them, so places stay right while panels move. While a tab is dragged, where the pointer
   is decides where it goes, and that place is shaded: the middle of a group adds a tab, a quarter
   from its edge splits it, a tab strip puts it between tabs, and bands along the dock's edges put
-  it along that side (no small targets to aim at). Escape cancels. Dividers keep their share when the window
+  it along that side (no small targets to aim at); a tab alone in its group has no place over
+  that group. Escape cancels. Dividers keep their share when the window
   is resized. Everything also works without a mouse: the tab's menu (Move to a new group, Move
   into group, Close), Ctrl+Shift+PageUp/PageDown to move a tab, F6 to go to the next group, and
   Delete to close. `.closable()` adds close buttons; closing only asks (`show` returns the panel).
   `Dock::save` and `Dock::load` keep the layout as text, dropping panels the app no longer knows.
-  Moving groups into separate windows is not there yet. Guide chapter 23, `examples/gallery`
-  page "ドッキング".
+  Float in the tab's menu (or `DockTo::Float { x, y, w, h }`) puts a panel in a frame over the
+  other groups: the dots at the left of its tabs move it, the dots at its bottom-right corner
+  resize it, pressing it brings it to the top, tabs dropped on it join it, and Dock in its menu
+  puts each panel back where it was before it joined the frame. Frames stay inside the dock, hide what is under them from
+  the pointer and the wheel, are saved by `Dock::save`, and are reached with F6 in the order they floated;
+  `Dock::is_floating` tells whether a panel floats. Moving groups into separate windows, and
+  moving or resizing frames with the keyboard, are not there yet. Guide chapter 23,
+  `examples/gallery` page "ドッキング".
 
 ## 0.3.0 (2026-11-24)
 

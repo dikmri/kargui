@@ -184,6 +184,10 @@ pub(crate) enum PointerShape {
     NsResize,
     /// 左右の仕切りを動かす形
     EwResize,
+    /// 動かす形（浮いたまとまりの、動かす印の上）
+    Move,
+    /// 右下へ広げる形（浮いたまとまりの、大きさを変える印の上）
+    NwseResize,
 }
 
 /// 一覧の、前のフレームでの場所と中身の高さ（物理ピクセル）
@@ -196,6 +200,9 @@ pub(crate) struct ListInfo {
     pub thumb: Option<Rect>,
     /// スクロールの棒を押せる範囲（つまみの列。一覧の高さ全部）
     pub bar: Option<Rect>,
+    /// 中身を描き終えた時の当たりの数（後から上に重ねた浮いたまとまりに隠れているかを見る。中に浮いたまとまりを持つ
+    /// 外側の入れ物は、浮いたまとまりより後の数になるので隠れない）
+    pub order: usize,
 }
 
 /// つかんでいるつまみ
@@ -293,8 +300,8 @@ pub(crate) struct Prev {
     pub disabled: HashSet<Id>,
     /// 重ねて出した物（描いた順。後ろほど上）
     pub overlays: Vec<OverlayInfo>,
-    /// 右クリックのメニューを持つ部品と、その見える範囲（描いた順。後ろほど内側か上）
-    pub context_regions: Vec<(Id, Rect)>,
+    /// 右クリックのメニューを持つ部品と、その見える範囲、中身を描き終えた時の当たりの数（描いた順。後ろほど内側か上）
+    pub context_regions: Vec<(Id, Rect, usize)>,
     /// メニューバーの見出し（並んだ順）
     pub menubar: Vec<Id>,
     /// アプリが描く題の帯の範囲（Csd がある時。空いた所を押すと窓を動かす）
@@ -309,6 +316,11 @@ pub(crate) struct Prev {
     pub docks: HashMap<Id, super::dock::DockGeom>,
     /// 仕切り → 上下に分けるか（ポインターの形を決める）
     pub split_bars: HashMap<Id, bool>,
+    /// 決まったポインターの形を持つ部品（浮いたまとまりの、動かす印と大きさを変える印）
+    pub shapes: HashMap<Id, PointerShape>,
+    /// ふつうの部品の上に重ねた物（ドッキングの浮いたまとまり）の範囲と、描き始めた時の当たりの数。それより前に描いた
+    /// 一覧・スクロールの棒・右クリックの範囲は、この範囲の中では隠れている
+    pub occluders: Vec<(Rect, usize)>,
     /// 自由に描く面の場所（ポインターを面の座標にする）
     pub canvases: HashMap<Id, Rect>,
     /// 引っ張り出せる部品（Handle::drag_source）: 見えている範囲、影に書く文字、描いた時の当たりの数
@@ -377,8 +389,12 @@ pub(crate) struct Context {
     pub column_widths: HashMap<(Id, usize), f32>,
     /// 押している列のつまみと、押した所のつまみの真ん中からのずれ（物理ピクセル）。押している間、ずれを保って幅を決める
     pub column_grab: Option<(Id, f32)>,
+    /// 押している浮いたまとまりの印と、押した時の浮いたまとまりの場所と大きさ（論理ピクセル）、押した所（物理ピクセル）
+    pub float_grab: Option<(Id, [f32; 4], (f32, f32))>,
     /// 最後に押した位置（物理ピクセル）。押す・動かす・離すが 1 つのフレームに届いても、押した所が分かる
     pub press_at: Option<(f32, f32)>,
+    /// このフレームで押した所（物理ピクセル。浮き出しを閉じただけの押しは入れない）。ビューの 1 回目の後で消す
+    pub press_now: Option<(f32, f32)>,
     /// 日付の部品の言葉（Ui::set_date_text）
     pub date_text: crate::date::DateText,
     /// 今日の日付を決めておく（試験台は 2026-11-22。None なら OS に聞く）
@@ -529,7 +545,9 @@ impl Context {
             expanded: HashMap::new(),
             column_widths: HashMap::new(),
             column_grab: None,
+            float_grab: None,
             press_at: None,
+            press_now: None,
             date_text: crate::date::DateText::english(),
             today: None,
             calendar_cursor: HashMap::new(),
@@ -784,7 +802,7 @@ impl Context {
     /// ただし棒を横に全部覆う当たり（選べる一覧の行、複数行の入力欄そのもの）は棒に譲る。
     /// 覆われたままだと、棒を押しても行が選ばれるだけで、つまみを引けなかった
     pub fn scrollbar_at(&self, x: f32, y: f32) -> Option<&ListInfo> {
-        let l = self.prev.lists.iter().rev().find(|l| l.bar.is_some_and(|b| b.contains(x, y)))?;
+        let l = self.prev.lists.iter().rev().find(|l| l.bar.is_some_and(|b| b.contains(x, y)) && !self.hidden(l.order, x, y))?;
         let bar = l.bar?;
         // 棒は部品の右の端の外まで押せるので、覆うかどうかは部品の中にある分で決める
         let bar_right = bar.right().min(l.rect.right());
@@ -802,6 +820,9 @@ impl Context {
             return PointerShape::Default;
         }
         let hit = self.hit(x, y);
+        if let Some(&s) = hit.and_then(|h| self.prev.shapes.get(&h.id)) {
+            return s;
+        }
         match hit.and_then(|h| self.prev.split_bars.get(&h.id).copied()) {
             Some(true) => PointerShape::NsResize,
             Some(false) => PointerShape::EwResize,
@@ -846,6 +867,12 @@ impl Context {
 
     /// 描いた時の当たりの数が order の部品（範囲 r）が、(x, y) で後から描いた物（重ねて出した物など）に隠れているか。
     /// 中の部品（r の中に収まる当たり）は隠したことにしない
+    /// 描き終えた時の当たりの数が order の物が、(x, y) で後から重ねた浮いたまとまりに隠れているか（浮いたまとまりを
+    /// 描き始める前に描き終えた物だけが隠れる）
+    pub(crate) fn hidden(&self, order: usize, x: f32, y: f32) -> bool {
+        self.prev.occluders.iter().any(|&(r, o)| o >= order && r.contains(x, y))
+    }
+
     fn covered(&self, r: &Rect, order: usize, x: f32, y: f32) -> bool {
         let inside = |q: &Rect| q.x >= r.x - 0.5 && q.y >= r.y - 0.5 && q.right() <= r.right() + 0.5 && q.bottom() <= r.bottom() + 0.5;
         self.prev.hits.iter().skip(order).any(|h| h.rect.contains(x, y) && !inside(&h.rect))
@@ -985,6 +1012,8 @@ impl Context {
                             continue;
                         }
                     }
+                    // 押した所（浮いたまとまりの上なら、ドッキングがいちばん上にする）
+                    self.press_now = Some((x, y));
                     // 部品の本来の範囲が先。次にスクロールの棒、最後に部品の当たりの余白
                     if let Some(l) = self.scrollbar_at(x, y).cloned() {
                         self.pressed = None;
@@ -1126,7 +1155,7 @@ impl Context {
                     if self.top_dialog().is_some_and(|d| !d.rect.contains(x, y)) {
                         continue;
                     }
-                    if let Some(l) = self.prev.lists.iter().rev().find(|l| l.rect.contains(x, y)) {
+                    if let Some(l) = self.prev.lists.iter().rev().find(|l| l.rect.contains(x, y) && !self.hidden(l.order, x, y)) {
                         let max = ((l.content_h - l.rect.h) / self.scale).max(0.0);
                         let v = self.scrolls.entry(l.id).or_insert(0.0);
                         *v = (*v + dy).clamp(0.0, max);
@@ -1166,7 +1195,7 @@ impl Context {
                     let target = self.focus.and_then(|f| {
                         let r = self.prev.hits.iter().find(|h| h.id == f)?.rect;
                         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-                        let &(t, _) = self.prev.context_regions.iter().rev().find(|&&(id, rr)| id == f || rr.contains(cx, cy))?;
+                        let &(t, _, _) = self.prev.context_regions.iter().rev().find(|&&(id, rr, _)| id == f || rr.contains(cx, cy))?;
                         Some((t, (r.x, r.bottom())))
                     });
                     log::event("context_menu.key", "", &format!("target={:?}", target.map(|t| t.0)));
@@ -1198,7 +1227,7 @@ impl Context {
                         log::event("title_bar.menu", &format!("x={x} y={y}"), "");
                         continue;
                     }
-                    let target = self.prev.context_regions.iter().rev().find(|(_, r)| r.contains(x, y)).map(|&(t, _)| t);
+                    let target = self.prev.context_regions.iter().rev().find(|&&(_, r, o)| r.contains(x, y) && !self.hidden(o, x, y)).map(|&(t, _, _)| t);
                     log::event("context_menu.pointer", &format!("x={x} y={y}"), &format!("target={target:?}"));
                     if let Some(t) = target {
                         self.context_request = Some((t, (x, y)));
@@ -1335,6 +1364,7 @@ impl Context {
         self.keys.clear();
         self.pointer_text = None;
         self.released = None;
+        self.press_now = None;
         self.context_request = None;
     }
 }

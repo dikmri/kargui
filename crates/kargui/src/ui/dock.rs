@@ -4,6 +4,7 @@
 //! 後半は、タブを引っ張って落とす先の計算（描いた結果の場所から、十字の的・外側の的・タブの帯の間を決める）。
 
 use crate::geom::Rect;
+use crate::ui::Id;
 
 /// Which side of a panel group, or of the whole dock, a panel goes to.
 ///
@@ -58,7 +59,7 @@ pub enum DockTo<K> {
         index: Option<usize>,
     },
     /// Next to the group that holds `of`, splitting its space: `share` (0.1 to 0.9) is the part
-    /// the new panel gets.
+    /// the new panel gets. A floating group is not split.
     Split {
         /// A panel in the group to split.
         of: K,
@@ -74,6 +75,20 @@ pub enum DockTo<K> {
         /// The new panel's part of the space.
         share: f32,
     },
+    /// In a floating group of its own, over the other groups. Its top-left corner is `x` and
+    /// `y` from the dock's top-left corner, and its size is `w` by `h`, in logical pixels
+    /// (at least 120 by 80; it is kept inside the dock when shown). The tabs' menu puts it
+    /// back where it was before.
+    Float {
+        /// From the dock's left edge.
+        x: f32,
+        /// From the dock's top edge.
+        y: f32,
+        /// The width.
+        w: f32,
+        /// The height.
+        h: f32,
+    },
 }
 
 /// 木の節。葉はタブのまとまり、ほかは 2 つに分ける分割
@@ -84,9 +99,42 @@ pub(crate) enum Node<K> {
     Split { stacked: bool, share: f32, a: Box<Node<K>>, b: Box<Node<K>> },
 }
 
-/// The layout of a dock: panels in tab groups, and groups side by side or one above another.
-/// The app keeps it and shows it with [`Ui::dock`](crate::Ui::dock); the user rearranges it by
-/// dragging tabs or with the tabs' menu. `K` is the app's name for a panel, such as an enum.
+/// 浮いたまとまり（タブのまとまり 1 つを、ほかのまとまりの上に重ねる）
+#[derive(Clone, Debug)]
+pub(crate) struct Floating<K> {
+    /// いつも Node::Tabs
+    pub tabs: Node<K>,
+    /// 左上と大きさ（dock の左上からの論理ピクセル。整数に丸める）
+    pub rect: [f32; 4],
+    /// パネルごとの、浮いたまとまりに入る前にいた所（メニューの「Dock」で戻す。保存はしない）
+    pub homes: Vec<(K, Home<K>)>,
+    /// 浮かせた順の番号（F6 で回る順。上にしても変わらない。保存はせず、読み込んだ時は重なりの順）
+    pub seq: u64,
+}
+
+/// 戻る先と浮かせた順は覚えているだけなので比べない（保存して読み直した物と同じになるように）
+impl<K: PartialEq> PartialEq for Floating<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.tabs == other.tabs && self.rect == other.rect
+    }
+}
+
+/// 浮かせたパネルが戻る先。並べ方の木が変わっても使えるように、番号ではなくパネルで覚える
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Home<K> {
+    /// with（元のまとまりのほかのパネル）のうち、木に残っている最初の物のまとまりの、index の前
+    Tab { with: Vec<K>, index: Option<usize> },
+    /// beside（隣にあった部分の木のパネル）のうち木に残っている物をすべて含む、いちばん小さい部分の side 側に share で
+    Beside { beside: Vec<K>, side: DockSide, share: f32 },
+}
+
+/// 浮いたまとまりの、いちばん小さい大きさ（論理ピクセル）
+pub(crate) const FLOAT_MIN: (f32, f32) = (120.0, 80.0);
+
+/// The layout of a dock: panels in tab groups, groups side by side or one above another, and
+/// floating groups over them. The app keeps it and shows it with [`Ui::dock`](crate::Ui::dock);
+/// the user rearranges it by dragging tabs or with the tabs' menu. `K` is the app's name for a
+/// panel, such as an enum.
 ///
 /// ```
 /// use kargui::{Dock, DockSide, DockTo};
@@ -102,6 +150,8 @@ pub(crate) enum Node<K> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dock<K> {
     pub(crate) root: Option<Node<K>>,
+    /// 下にある物が先（最後がいちばん上）
+    pub(crate) floating: Vec<Floating<K>>,
 }
 
 /// 割合を収める範囲（どちらの区画も消えないように）
@@ -126,10 +176,26 @@ impl<K: Clone + PartialEq> Dock<K> {
                 list.push(k);
             }
         }
-        Dock { root: (!list.is_empty()).then_some(Node::Tabs { panels: list, selected: 0 }) }
+        Dock { root: (!list.is_empty()).then_some(Node::Tabs { panels: list, selected: 0 }), floating: Vec::new() }
     }
 
-    /// Every panel, group by group: left before right, top before bottom, and tabs in order.
+    /// タブのまとまりを、並べ方の木（左・上が先）、浮いたまとまり（下にある物が先）の順に並べる。Ui::dock がまとまりを
+    /// 数える順と同じ
+    pub(crate) fn groups(&self) -> Vec<&Node<K>> {
+        let mut out = Vec::new();
+        if let Some(r) = &self.root {
+            r.walk(&mut |n| {
+                if matches!(n, Node::Tabs { .. }) {
+                    out.push(n);
+                }
+            });
+        }
+        out.extend(self.floating.iter().map(|f| &f.tabs));
+        out
+    }
+
+    /// Every panel, group by group: left before right, top before bottom, and tabs in order;
+    /// then the floating groups, the one at the back first.
     ///
     /// ```
     /// use kargui::Dock;
@@ -138,12 +204,10 @@ impl<K: Clone + PartialEq> Dock<K> {
     /// ```
     pub fn panels(&self) -> Vec<&K> {
         let mut out = Vec::new();
-        if let Some(r) = &self.root {
-            r.walk(&mut |n| {
-                if let Node::Tabs { panels, .. } = n {
-                    out.extend(panels.iter());
-                }
-            });
+        for n in self.groups() {
+            if let Node::Tabs { panels, .. } = n {
+                out.extend(panels.iter());
+            }
         }
         out
     }
@@ -159,12 +223,10 @@ impl<K: Clone + PartialEq> Dock<K> {
     /// ```
     pub fn selected(&self) -> Vec<&K> {
         let mut out = Vec::new();
-        if let Some(r) = &self.root {
-            r.walk(&mut |n| {
-                if let Node::Tabs { panels, selected } = n {
-                    out.push(&panels[*selected]);
-                }
-            });
+        for n in self.groups() {
+            if let Node::Tabs { panels, selected } = n {
+                out.extend(panels.get(*selected));
+            }
         }
         out
     }
@@ -182,6 +244,25 @@ impl<K: Clone + PartialEq> Dock<K> {
         self.panels().contains(&panel)
     }
 
+    /// Whether `panel` is in a floating group.
+    ///
+    /// ```
+    /// use kargui::{Dock, DockTo};
+    ///
+    /// let mut dock = Dock::new(["Files", "Search"]);
+    /// dock.insert("Search", DockTo::Float { x: 40.0, y: 40.0, w: 300.0, h: 200.0 });
+    /// assert!(dock.is_floating(&"Search"));
+    /// assert!(!dock.is_floating(&"Files"));
+    /// ```
+    pub fn is_floating(&self, panel: &K) -> bool {
+        self.floating_of(panel).is_some()
+    }
+
+    /// panel を持つ浮いたまとまりの番号
+    pub(crate) fn floating_of(&self, panel: &K) -> Option<usize> {
+        self.floating.iter().position(|f| f.tabs.group_of(panel).is_some())
+    }
+
     /// Selects `panel` in its group (shows its tab). Returns false if it is not in the dock.
     ///
     /// ```
@@ -192,15 +273,21 @@ impl<K: Clone + PartialEq> Dock<K> {
     /// assert_eq!(dock.selected(), vec![&"Search"]);
     /// ```
     pub fn select(&mut self, panel: &K) -> bool {
-        let Some(r) = &mut self.root else { return false };
         let mut found = false;
-        r.walk_mut(&mut |n| {
+        let mut pick = |n: &mut Node<K>| {
             if let Node::Tabs { panels, selected } = n
-                && let Some(i) = panels.iter().position(|p| p == panel) {
-                    *selected = i;
-                    found = true;
-                }
-        });
+                && let Some(i) = panels.iter().position(|p| p == panel)
+            {
+                *selected = i;
+                found = true;
+            }
+        };
+        if let Some(r) = &mut self.root {
+            r.walk_mut(&mut pick);
+        }
+        for f in &mut self.floating {
+            pick(&mut f.tabs);
+        }
         found
     }
 
@@ -217,16 +304,32 @@ impl<K: Clone + PartialEq> Dock<K> {
     /// assert!(!dock.remove(&"Files"));
     /// ```
     pub fn remove(&mut self, panel: &K) -> bool {
-        let Some(root) = self.root.take() else { return false };
-        let (rest, found) = root.without(panel);
-        self.root = rest;
-        found
+        if let Some(root) = self.root.take() {
+            let (rest, found) = root.without(panel);
+            self.root = rest;
+            if found {
+                return true;
+            }
+        }
+        let Some(i) = self.floating_of(panel) else { return false };
+        let f = self.floating.remove(i);
+        if let (Some(tabs), _) = f.tabs.without(panel) {
+            let homes = f.homes.into_iter().filter(|(k, _)| k != panel).collect();
+            self.floating.insert(i, Floating { tabs, rect: f.rect, homes, seq: f.seq });
+        }
+        true
+    }
+
+    /// k を持つまとまりのパネルの並び（浮いたまとまりも探す）
+    fn group_of(&self, k: &K) -> Option<&[K]> {
+        self.root.as_ref().and_then(|r| r.group_of(k)).or_else(|| self.floating.iter().find_map(|f| f.tabs.group_of(k)))
     }
 
     /// Puts `panel` at `to` and selects it. If the panel is already in the dock, it moves
     /// there. A place named by a panel that is not in the dock (or, for a moving panel, a
-    /// place named by the panel itself when it is alone in its group) leaves the dock as it is
-    /// and returns false. An empty dock takes any panel as its only group.
+    /// place named by the panel itself when it is alone in its group), and a split of a
+    /// floating group, leave the dock as it is and return false. An empty dock takes any panel
+    /// as its only group.
     ///
     /// ```
     /// use kargui::{Dock, DockSide, DockTo};
@@ -240,36 +343,54 @@ impl<K: Clone + PartialEq> Dock<K> {
     /// assert_eq!(dock.selected(), vec![&"A", &"C"]);
     /// ```
     pub fn insert(&mut self, panel: K, to: DockTo<K>) -> bool {
-        let Some(root) = &self.root else {
-            self.root = Some(Node::Tabs { panels: vec![panel], selected: 0 });
+        if self.root.is_none() && self.floating.is_empty() {
+            match to {
+                DockTo::Float { x, y, w, h } => self.floating.push(Floating { tabs: Node::leaf(panel), rect: float_rect(x, y, w, h), homes: Vec::new(), seq: 0 }),
+                _ => self.root = Some(Node::leaf(panel)),
+            }
             return true;
-        };
+        }
         // 指す先のまとまりを、動かすパネルを抜く前に決める（指す先が動かすパネル自身なら、同じまとまりのほかのパネル）
         let anchor = |k: &K| -> Option<K> {
-            let group = root.group_of(k)?;
+            let group = self.group_of(k)?;
             if *k != panel {
                 return Some(k.clone());
             }
             group.iter().find(|p| **p != panel).cloned()
         };
-        let moving_from = root.group_of(&panel).map(|g| (g.to_vec(), g.iter().position(|p| *p == panel).unwrap_or(0)));
+        let moving_from = self.group_of(&panel).map(|g| (g.to_vec(), g.iter().position(|p| *p == panel).unwrap_or(0)));
         match to {
             DockTo::Tab { with, index } => {
                 let Some(a) = anchor(&with) else {
                     // 自分だけのまとまりの自分の隣: 動かさない（並べ替えるものが無い）
-                    return root.group_of(&with).is_some() && with == panel;
+                    return self.group_of(&with).is_some() && with == panel;
                 };
                 // 同じまとまりの中で後ろへ動かす時は、抜いた分だけ前に詰める
                 let index = match (&moving_from, index) {
                     (Some((g, from)), Some(i)) if g.contains(&a) && *from < i => Some(i - 1),
                     (_, i) => i,
                 };
+                // 浮いたまとまりへ入る時は、入る前にいた所を覚える（浮いたまとまりの中で動く時は、覚えている所のまま）
+                let home = self.home_for(&panel);
                 self.remove(&panel);
-                let Some(r) = &mut self.root else { return false };
-                r.put_tab(&a, panel, index)
+                if let Some(r) = &mut self.root
+                    && r.group_of(&a).is_some()
+                {
+                    return r.put_tab(&a, panel, index);
+                }
+                let Some(f) = self.floating.iter_mut().find(|f| f.tabs.group_of(&a).is_some()) else { return false };
+                if !f.tabs.put_tab(&a, panel.clone(), index) {
+                    return false;
+                }
+                f.homes.extend(home.map(|h| (panel, h)));
+                true
             }
             DockTo::Split { of, side, share } => {
                 let Some(a) = anchor(&of) else { return false };
+                // 浮いたまとまりは分けない（1 つの枠に 1 つのまとまり）
+                if self.is_floating(&a) {
+                    return false;
+                }
                 self.remove(&panel);
                 let Some(r) = self.root.take() else { return false };
                 let (r, ok) = r.split_at(&a, side, share.clamp(MIN_SHARE, MAX_SHARE), panel);
@@ -278,14 +399,106 @@ impl<K: Clone + PartialEq> Dock<K> {
             }
             DockTo::Edge { side, share } => {
                 self.remove(&panel);
-                let leaf = Node::Tabs { panels: vec![panel], selected: 0 };
+                let leaf = Node::leaf(panel);
                 self.root = Some(match self.root.take() {
                     None => leaf,
                     Some(r) => Node::join(side, share.clamp(MIN_SHARE, MAX_SHARE), leaf, r),
                 });
                 true
             }
+            DockTo::Float { x, y, w, h } => {
+                let homes = self.home_for(&panel).map(|h| (panel.clone(), h)).into_iter().collect();
+                let seq = self.next_seq();
+                self.remove(&panel);
+                self.floating.push(Floating { tabs: Node::leaf(panel), rect: float_rect(x, y, w, h), homes, seq });
+                true
+            }
         }
+    }
+
+    /// 次に浮かせるまとまりの、浮かせた順の番号
+    fn next_seq(&self) -> u64 {
+        self.floating.iter().map(|f| f.seq + 1).max().unwrap_or(0)
+    }
+
+    /// 浮いたまとまりの番号を、浮かせた順に並べる（F6 で回る順。上にしても変わらないので、回る途中で飛ばさない）
+    pub(crate) fn float_order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.floating.len()).collect();
+        order.sort_by_key(|&i| self.floating[i].seq);
+        order
+    }
+
+    /// panel が浮いたまとまりへ入る時に覚える戻る先。木にいれば今の場所（同じまとまりにほかの物がいればそのタブの位置、
+    /// 1 つだけなら隣の部分の木の横）、浮いていれば覚えている戻る先
+    fn home_for(&self, panel: &K) -> Option<Home<K>> {
+        if let Some(r) = &self.root
+            && let Some(g) = r.group_of(panel)
+        {
+            let with: Vec<K> = g.iter().filter(|p| *p != panel).cloned().collect();
+            if with.is_empty() {
+                return r.beside(panel);
+            }
+            return Some(Home::Tab { with, index: g.iter().position(|p| p == panel) });
+        }
+        let f = &self.floating[self.floating_of(panel)?];
+        f.homes.iter().find(|(k, _)| k == panel).map(|(_, h)| h.clone())
+    }
+
+    /// 浮いたまとまりの panel を、浮いたまとまりに入る前にいた所へ戻す（その所が無くなっていたり、覚えていなかったり
+    /// すれば全体の右の端）。浮いていなければ false。同じ浮いたまとまりに残ったパネルのうち、戻る先を覚えていない物は、
+    /// この後は戻したパネルのまとまりへ戻る（別々のまとまりに分かれないように）
+    pub(crate) fn dock_back(&mut self, panel: &K) -> bool {
+        let Some(i) = self.floating_of(panel) else { return false };
+        let alone = matches!(&self.floating[i].tabs, Node::Tabs { panels, .. } if panels.len() == 1);
+        let home = self.home_for(panel);
+        self.remove(panel);
+        if !alone {
+            let f = &mut self.floating[i];
+            let rest: Vec<K> = f.tabs.all_panels().into_iter().filter(|k| !f.homes.iter().any(|(h, _)| h == k)).collect();
+            f.homes.extend(rest.into_iter().map(|k| (k, Home::Tab { with: vec![panel.clone()], index: None })));
+        }
+        let Some(mut root) = self.root.take() else {
+            self.root = Some(Node::leaf(panel.clone()));
+            return true;
+        };
+        let in_tree = |k: &&K| root.group_of(k).is_some();
+        let tab = match &home {
+            Some(Home::Tab { with, index }) => with.iter().find(in_tree).map(|k| (k.clone(), *index)),
+            _ => None,
+        };
+        let beside = match &home {
+            Some(Home::Beside { beside, side, share }) => {
+                let left: Vec<K> = beside.iter().filter(in_tree).cloned().collect();
+                (!left.is_empty()).then_some((left, *side, *share))
+            }
+            _ => None,
+        };
+        self.root = Some(if let Some((k, index)) = tab {
+            root.put_tab(&k, panel.clone(), index);
+            root
+        } else if let Some((left, side, share)) = beside {
+            root.split_around(&left, side, share, panel.clone())
+        } else {
+            Node::join(DockSide::Right, EDGE_SHARE, Node::leaf(panel.clone()), root)
+        });
+        true
+    }
+
+    /// 浮いたまとまり i の場所と大きさ（論理ピクセル）を変える
+    pub(crate) fn set_float_rect(&mut self, i: usize, rect: [f32; 4]) {
+        if let Some(f) = self.floating.get_mut(i) {
+            f.rect = float_rect(rect[0], rect[1], rect[2], rect[3]);
+        }
+    }
+
+    /// 浮いたまとまり i をいちばん上（最後）にする。動いたら true
+    pub(crate) fn raise(&mut self, i: usize) -> bool {
+        if i + 1 >= self.floating.len() {
+            return false;
+        }
+        let f = self.floating.remove(i);
+        self.floating.push(f);
+        true
     }
 
     /// 道（根が 1、子は 2p と 2p+1）の分割の割合を、0.1〜0.9 に収めて変える。分割でなければ false
@@ -319,6 +532,11 @@ impl<K: Clone + PartialEq> Dock<K> {
         if let Some(r) = &self.root {
             r.write(&mut out, &name);
         }
+        for f in &self.floating {
+            let [x, y, w, h] = f.rect;
+            out.push_str(&format!("float {x} {y} {w} {h}\n"));
+            f.tabs.write(&mut out, &name);
+        }
         out
     }
 
@@ -340,16 +558,32 @@ impl<K: Clone + PartialEq> Dock<K> {
             return None;
         }
         let mut rest = lines.filter(|l| !l.trim().is_empty()).peekable();
-        if rest.peek().is_none() {
-            return Some(Dock { root: None });
-        }
         let mut seen = Vec::new();
-        let root = Node::read(&mut rest, &panel, &mut seen)?;
-        if rest.next().is_some() {
-            return None;
+        let mut dock = Dock { root: None, floating: Vec::new() };
+        if rest.peek().is_some_and(|l| !l.starts_with("float ")) {
+            dock.root = Node::read(&mut rest, &panel, &mut seen)?;
         }
-        Some(Dock { root })
+        // 木の後は浮いたまとまりだけ（「float x y w h」の行と、タブのまとまり 1 つ）
+        while let Some(line) = rest.next() {
+            let nums = line.strip_prefix("float ")?.split_whitespace().map(|v| v.parse::<f32>().ok().filter(|v| v.is_finite())).collect::<Option<Vec<f32>>>()?;
+            let [x, y, w, h] = nums[..] else { return None };
+            match Node::read(&mut rest, &panel, &mut seen)? {
+                Some(tabs @ Node::Tabs { .. }) => {
+                    let seq = dock.floating.len() as u64;
+                    dock.floating.push(Floating { tabs, rect: float_rect(x, y, w, h), homes: Vec::new(), seq });
+                }
+                Some(Node::Split { .. }) => return None,
+                None => {}
+            }
+        }
+        Some(dock)
     }
+}
+
+/// 浮いたまとまりの場所と大きさ（整数の論理ピクセルに丸め、いちばん小さい大きさより小さくしない。数でない物は 0）
+fn float_rect(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
+    let n = |v: f32| if v.is_finite() { v.round() } else { 0.0 };
+    [n(x), n(y), n(w).max(FLOAT_MIN.0), n(h).max(FLOAT_MIN.1)]
 }
 
 impl<K: Clone + PartialEq> Node<K> {
@@ -359,6 +593,51 @@ impl<K: Clone + PartialEq> Node<K> {
         if let Node::Split { a, b, .. } = self {
             a.walk(f);
             b.walk(f);
+        }
+    }
+
+    /// k だけのまとまり
+    fn leaf(k: K) -> Node<K> {
+        Node::Tabs { panels: vec![k], selected: 0 }
+    }
+
+    /// すべてのパネル（左・上が先）
+    fn all_panels(&self) -> Vec<K> {
+        let mut out = Vec::new();
+        self.walk(&mut |n| {
+            if let Node::Tabs { panels, .. } = n {
+                out.extend(panels.iter().cloned());
+            }
+        });
+        out
+    }
+
+    /// panel だけのまとまりの場所を、親の分割のもう片方（隣の部分の木）から見て表す
+    fn beside(&self, panel: &K) -> Option<Home<K>> {
+        let Node::Split { stacked, share, a, b } = self else { return None };
+        let only = |n: &Node<K>| matches!(n, Node::Tabs { panels, .. } if panels.len() == 1 && panels[0] == *panel);
+        if only(a) {
+            let side = if *stacked { DockSide::Top } else { DockSide::Left };
+            return Some(Home::Beside { beside: b.all_panels(), side, share: *share });
+        }
+        if only(b) {
+            let side = if *stacked { DockSide::Bottom } else { DockSide::Right };
+            return Some(Home::Beside { beside: a.all_panels(), side, share: 1.0 - *share });
+        }
+        if a.group_of(panel).is_some() { a.beside(panel) } else { b.beside(panel) }
+    }
+
+    /// set のパネル（どれも木の中にある）をすべて含む、いちばん小さい部分の木の side 側に、panel だけのまとまりを置く
+    fn split_around(self, set: &[K], side: DockSide, share: f32, panel: K) -> Node<K> {
+        let holds = |n: &Node<K>| set.iter().all(|k| n.group_of(k).is_some());
+        match self {
+            Node::Split { stacked, share: s, a, b } if holds(&a) => {
+                Node::Split { stacked, share: s, a: Box::new(a.split_around(set, side, share, panel)), b }
+            }
+            Node::Split { stacked, share: s, a, b } if holds(&b) => {
+                Node::Split { stacked, share: s, a, b: Box::new(b.split_around(set, side, share, panel)) }
+            }
+            other => Node::join(side, share, Node::leaf(panel), other),
         }
     }
 
@@ -524,15 +803,19 @@ impl<K: Clone + PartialEq> Node<K> {
 
 // ---- 引っ張って落とす先 ----
 
-/// 描いた後の、まとまり 1 つの場所（物理ピクセル）。strip は見出しの帯、tabs は見出し 1 つずつ
+/// 描いた後の、まとまり 1 つの場所（物理ピクセル）。strip は見出しの帯、tabs は見出し 1 つずつ。floating は浮いたまとまり
+/// （rect は枠の全体）。alone は、見出しが 1 つだけの時のその見出しの id
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct GroupGeom {
     pub rect: Rect,
     pub strip: Rect,
     pub tabs: Vec<Rect>,
+    pub floating: bool,
+    pub alone: Option<Id>,
 }
 
-/// 描いた後の、ドッキング全体の場所。groups は Dock::panels と同じ順（左・上が先）
+/// 描いた後の、ドッキング全体の場所。groups は Dock::groups と同じ順（並べ方の木の左・上が先、その後に浮いたまとまりを
+/// 下にある物から）
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DockGeom {
     pub root: Rect,
@@ -566,19 +849,25 @@ impl GroupGeom {
 }
 
 impl DockGeom {
-    /// (x, y) の下のまとまり
+    /// (x, y) の下のまとまり（浮いたまとまりは、上にある物から先に見る）
     pub(crate) fn group_at(&self, x: f32, y: f32) -> Option<usize> {
-        self.groups.iter().position(|g| g.rect.contains(x, y))
+        let top = (0..self.groups.len()).rev().find(|&g| self.groups[g].floating && self.groups[g].rect.contains(x, y));
+        top.or_else(|| self.groups.iter().position(|g| !g.floating && g.rect.contains(x, y)))
     }
 
-    /// (x, y) が全体の外側の帯の中なら、その側。まとまりが 2 つ以上の時だけ（1 つならまとまりの端と同じ）。
+    /// 並べ方の木のまとまり（浮いていない物）
+    fn docked(&self) -> impl Iterator<Item = &GroupGeom> {
+        self.groups.iter().filter(|g| !g.floating)
+    }
+
+    /// (x, y) が全体の外側の帯の中なら、その側。並べ方の木のまとまりが 2 つ以上の時だけ（1 つならまとまりの端と同じ）。
     /// 上の帯は、上のまとまりの見出しの帯のすぐ下に置く（見出しの帯の上はタブの間に入れる所）
     fn edge_at(&self, x: f32, y: f32, scale: f32) -> Option<DockSide> {
-        if self.groups.len() < 2 || !self.root.contains(x, y) {
+        if self.docked().count() < 2 || !self.root.contains(x, y) {
             return None;
         }
         let (b, r) = (EDGE_BAND * scale, self.root);
-        let strip = self.groups.first().map_or(r.y, |g| g.strip.bottom());
+        let strip = self.docked().next().map_or(r.y, |g| g.strip.bottom());
         if x < r.x + b {
             Some(DockSide::Left)
         } else if x >= r.right() - b {
@@ -593,15 +882,20 @@ impl DockGeom {
     }
 
     /// (x, y) に落とした時の先。見出しの帯（タブの間）、全体の外側の帯、まとまりの中身の順に見る。中身では、端から
-    /// 4 分の 1 までなら近い側に分け、真ん中ならタブにする（小さな的を狙わせない。どこに落ちるかは薄い塗りで見せる）
+    /// 4 分の 1 までなら近い側に分け、真ん中ならタブにする（小さな的を狙わせない。どこに落ちるかは薄い塗りで見せる）。
+    /// 浮いたまとまりの上は、下の物より先に見て、帯の外もタブにする（浮いたまとまりは分けない）。並べ方の木が空なら、
+    /// 浮いたまとまりの外は全体
     pub(crate) fn zone_at(&self, x: f32, y: f32, scale: f32) -> Option<Zone> {
         let g = self.group_at(x, y);
         if let Some(g) = g
-            && self.groups[g].strip.contains(x, y)
+            && (self.groups[g].floating || self.groups[g].strip.contains(x, y))
         {
             // 見出しの真ん中より左なら、その見出しの前
-            let index = self.groups[g].tabs.iter().position(|t| x < t.x + t.w / 2.0);
+            let index = if self.groups[g].strip.contains(x, y) { self.groups[g].tabs.iter().position(|t| x < t.x + t.w / 2.0) } else { None };
             return Some(Zone::Tab { group: g, index });
+        }
+        if self.docked().next().is_none() {
+            return self.root.contains(x, y).then_some(Zone::Edge(DockSide::Left));
         }
         if let Some(side) = self.edge_at(x, y, scale) {
             return Some(Zone::Edge(side));
@@ -617,6 +911,17 @@ impl DockGeom {
         Some(if d < SPLIT_PART { Zone::Split { group: g, side } } else { Zone::Tab { group: g, index: None } })
     }
 
+    /// moving（引っ張っている見出し）を (x, y) に落とした時の先。moving だけのまとまりの上は、タブにしても分けても
+    /// 何も変わらないので落とす先にしない（薄く塗らず、落としても何もしない）。全体の端の帯へは落とせる
+    pub(crate) fn zone_for(&self, x: f32, y: f32, scale: f32, moving: Id) -> Option<Zone> {
+        let zone = self.zone_at(x, y, scale)?;
+        let own = match zone {
+            Zone::Tab { group, .. } | Zone::Split { group, .. } => self.groups[group].alone == Some(moving),
+            Zone::Edge(_) => false,
+        };
+        (!own).then_some(zone)
+    }
+
     /// 落ちる所（薄く塗る四角）
     pub(crate) fn preview(&self, z: Zone) -> Option<Rect> {
         let half = |r: Rect, side: DockSide, part: f32| match side {
@@ -628,6 +933,8 @@ impl DockGeom {
         Some(match z {
             Zone::Tab { group, .. } => self.groups.get(group)?.rect,
             Zone::Split { group, side } => half(self.groups.get(group)?.rect, side, 0.5),
+            // 並べ方の木が空なら、全体に置く
+            Zone::Edge(_) if self.docked().next().is_none() => self.root,
             Zone::Edge(side) => half(self.root, side, EDGE_SHARE),
         })
     }
@@ -643,6 +950,8 @@ mod tests {
             rect: Rect::new(x, 0.0, w, 600.0),
             strip: Rect::new(x, 0.0, w, 30.0),
             tabs: (0..tabs).map(|i| Rect::new(x + i as f32 * 80.0, 0.0, 76.0, 30.0)).collect(),
+            floating: false,
+            alone: None,
         };
         DockGeom { root: Rect::new(0.0, 0.0, 900.0, 600.0), groups: vec![group(0.0, 400.0, 2), group(400.0, 500.0, 1)] }
     }
@@ -687,6 +996,66 @@ mod tests {
         assert_eq!(g.zone_at(950.0, 300.0, 1.0), None);
     }
 
+    /// two_groups の上に、x 300〜600・y 100〜300 の浮いたまとまり（見出しは 320〜396 の 1 つ）を重ねる
+    fn with_float() -> DockGeom {
+        let mut g = two_groups();
+        g.groups.push(GroupGeom {
+            rect: Rect::new(300.0, 100.0, 300.0, 200.0),
+            strip: Rect::new(300.0, 100.0, 300.0, 30.0),
+            tabs: vec![Rect::new(320.0, 100.0, 76.0, 30.0)],
+            floating: true,
+            alone: None,
+        });
+        g
+    }
+
+    #[test]
+    fn a_tab_alone_in_its_group_cannot_be_dropped_on_its_own_group() {
+        // 作者の手の確かめ（ドッキングの 2 段目の 2 回目）で、1 つだけの「出力」を自分のまとまりの上に 2 回落とした。
+        // 薄い塗りが出たのに、タブにしても分けても何も変わらなかった。自分だけのまとまりは落とす先にしない
+        let me = Id(7);
+        let mut g = two_groups();
+        g.groups[1].alone = Some(me);
+        assert_eq!(g.zone_for(650.0, 315.0, 1.0, me), None, "真ん中");
+        assert_eq!(g.zone_for(650.0, 70.0, 1.0, me), None, "上の 4 分の 1");
+        assert_eq!(g.zone_for(420.0, 15.0, 1.0, me), None, "見出しの帯");
+        assert_eq!(g.zone_for(200.0, 300.0, 1.0, me), Some(Zone::Tab { group: 0, index: None }), "ほかのまとまりへは落とせる");
+        assert_eq!(g.zone_for(890.0, 300.0, 1.0, me), Some(Zone::Edge(DockSide::Right)), "全体の端の帯へも落とせる");
+        assert_eq!(g.zone_for(650.0, 315.0, 1.0, Id(8)), Some(Zone::Tab { group: 1, index: None }), "ほかのタブは入れられる");
+        // 浮いたまとまりも同じ
+        let mut f = with_float();
+        f.groups[2].alone = Some(me);
+        assert_eq!(f.zone_for(450.0, 200.0, 1.0, me), None);
+        assert_eq!(f.zone_for(450.0, 200.0, 1.0, Id(8)), Some(Zone::Tab { group: 2, index: None }));
+    }
+
+    #[test]
+    fn floating_groups_cover_what_is_below_and_only_take_tabs() {
+        let g = with_float();
+        assert_eq!(g.group_at(350.0, 200.0), Some(2), "上に重なった浮いたまとまり");
+        assert_eq!(g.zone_at(350.0, 200.0, 1.0), Some(Zone::Tab { group: 2, index: None }), "中身はどこでもタブ");
+        assert_eq!(g.zone_at(590.0, 290.0, 1.0), Some(Zone::Tab { group: 2, index: None }), "端でも分けない");
+        assert_eq!(g.zone_at(330.0, 115.0, 1.0), Some(Zone::Tab { group: 2, index: Some(0) }));
+        assert_eq!(g.zone_at(380.0, 115.0, 1.0), Some(Zone::Tab { group: 2, index: None }), "見出しの右半分は後ろ");
+        // 外は今までどおり（外側の帯は、並べ方の木のまとまりだけを数える）
+        assert_eq!(g.zone_at(650.0, 400.0, 1.0), Some(Zone::Tab { group: 1, index: None }));
+        assert_eq!(g.zone_at(10.0, 300.0, 1.0), Some(Zone::Edge(DockSide::Left)));
+        assert_eq!(g.preview(Zone::Tab { group: 2, index: None }), Some(Rect::new(300.0, 100.0, 300.0, 200.0)));
+        let mut one = g.clone();
+        one.groups.remove(1);
+        assert_eq!(one.zone_at(10.0, 300.0, 1.0), Some(Zone::Split { group: 0, side: DockSide::Left }), "木のまとまりが 1 つなら帯は無い");
+    }
+
+    #[test]
+    fn with_only_floating_groups_the_rest_of_the_dock_takes_the_panel() {
+        let mut g = with_float();
+        g.groups.drain(0..2);
+        assert_eq!(g.zone_at(50.0, 50.0, 1.0), Some(Zone::Edge(DockSide::Left)));
+        assert_eq!(g.preview(Zone::Edge(DockSide::Left)), Some(g.root), "全体に置く");
+        assert_eq!(g.zone_at(350.0, 200.0, 1.0), Some(Zone::Tab { group: 0, index: None }));
+        assert_eq!(g.zone_at(950.0, 50.0, 1.0), None);
+    }
+
     #[test]
     fn previews_show_where_the_panel_lands() {
         let g = two_groups();
@@ -696,7 +1065,8 @@ mod tests {
         assert_eq!(g.preview(Zone::Split { group: 5, side: DockSide::Left }), None);
     }
 
-    /// 木の形を短い文字にする（試験で比べやすいように）。[A* B] はタブ（* が選んでいる物）、h(…|…) は左右、v(…|…) は上下
+    /// 木の形を短い文字にする（試験で比べやすいように）。[A* B] はタブ（* が選んでいる物）、h(…|…) は左右、v(…|…) は上下、
+    /// 後ろの ~[…] は浮いたまとまり（下にある物が先）
     fn shape(d: &Dock<&str>) -> String {
         fn go(n: &Node<&str>) -> String {
             match n {
@@ -707,11 +1077,182 @@ mod tests {
                 Node::Split { stacked, share, a, b } => format!("{}{:.1}({}|{})", if *stacked { "v" } else { "h" }, share, go(a), go(b)),
             }
         }
-        d.root.as_ref().map_or("-".to_string(), go)
+        let mut s = d.root.as_ref().map_or("-".to_string(), go);
+        for f in &d.floating {
+            s += &format!(" ~{}", go(&f.tabs));
+        }
+        s
     }
 
     fn split(of: &'static str, side: DockSide) -> DockTo<&'static str> {
         DockTo::Split { of, side, share: 0.5 }
+    }
+
+    fn float() -> DockTo<&'static str> {
+        DockTo::Float { x: 10.0, y: 20.0, w: 300.0, h: 200.0 }
+    }
+
+    #[test]
+    fn float_takes_a_panel_out_and_dock_puts_it_back_in_its_tab_place() {
+        let mut d = Dock::new(["A", "B", "C"]);
+        d.select(&"C");
+        assert!(d.insert("B", float()));
+        assert_eq!(shape(&d), "[A C*] ~[B*]");
+        assert_eq!(d.panels(), vec![&"A", &"C", &"B"], "浮いたまとまりは木の後");
+        assert_eq!(d.selected(), vec![&"C", &"B"]);
+        assert!(d.is_floating(&"B") && !d.is_floating(&"A"));
+        assert_eq!(d.floating[0].rect, [10.0, 20.0, 300.0, 200.0]);
+        assert!(d.dock_back(&"B"));
+        assert_eq!(shape(&d), "[A B* C]", "元の 2 つ目の位置");
+        assert!(!d.dock_back(&"B"), "浮いていなければ何もしない");
+    }
+
+    #[test]
+    fn a_panel_alone_in_its_group_goes_back_beside_the_same_neighbours() {
+        // 左の F が、上下に分けた E と O の全体の隣にいた。戻すと E と O の全体の左へ（E だけを分けない）
+        let mut d = Dock::new(["E"]);
+        d.insert("O", DockTo::Split { of: "E", side: DockSide::Bottom, share: 0.3 });
+        d.insert("F", DockTo::Edge { side: DockSide::Left, share: 0.2 });
+        let before = shape(&d);
+        assert_eq!(before, "h0.2([F*]|v0.7([E*]|[O*]))");
+        assert!(d.insert("F", float()));
+        assert_eq!(shape(&d), "v0.7([E*]|[O*]) ~[F*]");
+        assert!(d.dock_back(&"F"));
+        assert_eq!(shape(&d), before);
+        // 分割の 2 つ目（右・下）にいた物も、同じ割合で戻る
+        assert!(d.insert("O", float()));
+        assert_eq!(shape(&d), "h0.2([F*]|[E*]) ~[O*]");
+        assert!(d.dock_back(&"O"));
+        assert_eq!(shape(&d), before);
+    }
+
+    #[test]
+    fn docking_back_after_the_neighbours_changed() {
+        let mut d = Dock::new(["A"]);
+        d.insert("B", split("A", DockSide::Right));
+        d.insert("C", split("B", DockSide::Bottom));
+        d.insert("A", float());
+        // 隣にあった物の一部が無くなったら、残っている物の隣
+        d.remove(&"B");
+        assert!(d.dock_back(&"A"));
+        assert_eq!(shape(&d), "h0.5([A*]|[C*])");
+        // 木が空になっていたら、木の全体
+        d.insert("A", float());
+        d.remove(&"C");
+        assert!(d.dock_back(&"A"));
+        assert_eq!(shape(&d), "[A*]");
+        // 元のまとまりが無くなっていたら、全体の右の端
+        let mut d = Dock::new(["A", "B"]);
+        d.insert("C", split("B", DockSide::Right));
+        d.insert("B", float());
+        d.remove(&"A");
+        assert!(d.dock_back(&"B"));
+        assert_eq!(shape(&d), "h0.7([C*]|[B*])");
+    }
+
+    #[test]
+    fn floating_groups_take_tabs_but_are_not_split() {
+        let mut d = Dock::new(["A", "B", "C"]);
+        d.insert("B", float());
+        assert!(d.insert("C", DockTo::Tab { with: "B", index: Some(0) }));
+        assert_eq!(shape(&d), "[A*] ~[C* B]");
+        assert!(!d.insert("A", split("B", DockSide::Right)), "浮いたまとまりは分けない");
+        assert_eq!(shape(&d), "[A*] ~[C* B]");
+        // 木へ引っ張って戻す。最後の 1 つが出ると、浮いたまとまりは消える
+        assert!(d.insert("C", split("A", DockSide::Right)));
+        assert!(d.insert("B", DockTo::Edge { side: DockSide::Bottom, share: 0.3 }));
+        assert_eq!(shape(&d), "v0.7(h0.5([A*]|[C*])|[B*])");
+        assert!(d.floating.is_empty());
+    }
+
+    #[test]
+    fn each_panel_of_a_floating_group_docks_back_to_its_own_place() {
+        // 作者の手の確かめ（0.4 の 2 段目）で、浮いたまとまりへ引いて入れた出力を戻すと、先に浮かせたメモの元の場所へ
+        // 行った。戻る先はパネルごとに覚える
+        let mut d = Dock::new(["A", "B", "C"]);
+        d.insert("D", split("A", DockSide::Bottom));
+        d.insert("B", float());
+        d.insert("D", DockTo::Tab { with: "B", index: None });
+        assert_eq!(shape(&d), "[A* C] ~[B D*]");
+        assert!(d.dock_back(&"D"), "後から入った D は、入る前にいた A の下へ");
+        assert_eq!(shape(&d), "v0.5([A* C]|[D*]) ~[B*]");
+        assert!(d.dock_back(&"B"));
+        assert_eq!(shape(&d), "v0.5([A B* C]|[D*])", "B は元のタブの位置へ");
+        // 浮いたまとまりの中で並べ替えても、戻る先は変わらない
+        d.insert("C", float());
+        d.insert("A", DockTo::Tab { with: "C", index: None });
+        d.insert("A", DockTo::Tab { with: "C", index: Some(0) });
+        assert_eq!(shape(&d), "v0.5([B*]|[D*]) ~[A* C]");
+        assert!(d.dock_back(&"A"));
+        assert!(d.dock_back(&"C"));
+        assert_eq!(shape(&d), "v0.5([A B C*]|[D*])");
+    }
+
+    #[test]
+    fn panels_without_a_place_of_their_own_dock_with_the_first_one_back() {
+        // 読み込んだ浮いたまとまりは戻る先を覚えていない: 最初の 1 つは右の端へ、残りはそのまとまりへ
+        let mut d = Dock::new(["A", "B", "C"]);
+        d.insert("B", float());
+        d.insert("C", DockTo::Tab { with: "B", index: None });
+        let text = d.save(|k| k.to_string());
+        let mut d = Dock::load(&text, |s| ["A", "B", "C"].into_iter().find(|k| *k == s)).unwrap();
+        assert_eq!(shape(&d), "[A*] ~[B C*]");
+        assert!(d.dock_back(&"C"));
+        assert_eq!(shape(&d), "h0.7([A*]|[C*]) ~[B*]");
+        assert!(d.dock_back(&"B"));
+        assert_eq!(shape(&d), "h0.7([A*]|[C B*])", "先に戻した C のまとまりへ");
+    }
+
+    #[test]
+    fn floats_raise_move_and_keep_a_usable_size() {
+        let mut d = Dock::new(["A", "B", "C"]);
+        d.insert("B", DockTo::Float { x: 5.4, y: 6.0, w: 10.0, h: 10.0 });
+        assert_eq!(d.floating[0].rect, [5.0, 6.0, FLOAT_MIN.0, FLOAT_MIN.1], "整数に丸め、小さすぎる大きさは広げる");
+        d.insert("C", float());
+        assert_eq!(shape(&d), "[A*] ~[B*] ~[C*]");
+        assert!(d.raise(0));
+        assert_eq!(shape(&d), "[A*] ~[C*] ~[B*]", "上にした物が最後");
+        assert_eq!(d.float_order(), vec![1, 0], "F6 で回る順は浮かせた順（B、C）のまま");
+        assert!(!d.raise(1), "もういちばん上");
+        d.set_float_rect(1, [100.0, 50.0, 400.0, f32::NAN]);
+        assert_eq!(d.floating[1].rect, [100.0, 50.0, 400.0, FLOAT_MIN.1]);
+        // 浮いた物をもう一度浮かせると、場所だけが変わり、戻る先は変わらない（B は元の 2 つ目へ）
+        d.insert("B", DockTo::Float { x: 0.0, y: 0.0, w: 200.0, h: 200.0 });
+        assert!(d.dock_back(&"B"));
+        assert_eq!(shape(&d), "[A B*] ~[C*]");
+    }
+
+    #[test]
+    fn floats_round_trip_through_save() {
+        let mut d = Dock::new(["A", "B", "C"]);
+        d.insert("B", float());
+        d.insert("C", DockTo::Float { x: 50.0, y: -4.0, w: 320.0, h: 240.0 });
+        let text = d.save(|p| p.to_string());
+        assert!(text.ends_with("float 50 -4 320 240\ntabs 0 1\npanel C\n"), "{text}");
+        let names = ["A", "B", "C"];
+        let known = |n: &str| names.iter().copied().find(|p| *p == n);
+        assert_eq!(Dock::load(&text, known), Some(d), "戻る先は保存しないが、比べる時も見ない");
+        // 浮いたまとまりだけの並べ方
+        let only = Dock::load("kargui-dock 1\nfloat 1 2 300 200\ntabs 0 1\npanel A\n", known).unwrap();
+        assert_eq!(shape(&only), "- ~[A*]");
+        // 知らないパネルだけの浮いたまとまりは捨てる
+        let gone = Dock::load("kargui-dock 1\ntabs 0 1\npanel A\nfloat 1 2 300 200\ntabs 0 1\npanel X\n", known).unwrap();
+        assert_eq!(shape(&gone), "[A*]");
+        let any = |n: &str| Some(n.to_string());
+        assert_eq!(Dock::load("kargui-dock 1\ntabs 0 1\npanel A\nfloat 1 2 300 200\nsplit h 0.5\ntabs 0 1\npanel B\ntabs 0 1\npanel C\n", any), None, "浮いたまとまりは分割にしない");
+        assert_eq!(Dock::load("kargui-dock 1\ntabs 0 1\npanel A\nfloat 1 2\ntabs 0 1\npanel B\n", any), None, "数が足りない");
+        assert_eq!(Dock::load("kargui-dock 1\ntabs 0 1\npanel A\nfloat 1 2 inf 4\ntabs 0 1\npanel B\n", any), None, "数でない");
+    }
+
+    #[test]
+    fn an_empty_dock_can_start_with_a_float() {
+        let mut d = Dock::<&str>::new([]);
+        assert!(d.insert("A", float()));
+        assert_eq!(shape(&d), "- ~[A*]");
+        assert!(d.insert("B", DockTo::Tab { with: "A", index: None }));
+        assert_eq!(shape(&d), "- ~[A B*]");
+        assert!(d.insert("C", DockTo::Edge { side: DockSide::Left, share: 0.3 }), "木が空でも端には置ける");
+        assert_eq!(shape(&d), "[C*] ~[A B*]");
     }
 
     #[test]
@@ -865,7 +1406,7 @@ mod tests {
         assert_eq!(Dock::load("kargui-dock 1\ntabs 0 2\npanel A\n", any), None, "パネルが足りない");
         assert_eq!(Dock::load("kargui-dock 1\nsplit x 0.5\ntabs 0 1\npanel A\ntabs 0 1\npanel B\n", any), None, "向きが壊れている");
         assert_eq!(Dock::load("kargui-dock 1\ntabs 0 1\npanel A\ntabs 0 1\npanel B\n", any), None, "余りの行");
-        assert_eq!(Dock::load("kargui-dock 1\n", any), Some(Dock { root: None }), "空の並べ方");
+        assert_eq!(Dock::load("kargui-dock 1\n", any), Some(Dock { root: None, floating: Vec::new() }), "空の並べ方");
         // 名前の中の空白はそのまま
         let d = Dock::new(["two words".to_string()]);
         assert_eq!(Dock::load(&d.save(|p| p.clone()), any), Some(d));

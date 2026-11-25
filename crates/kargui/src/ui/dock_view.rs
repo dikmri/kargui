@@ -1,9 +1,10 @@
 //! ドッキングの部品（`Ui::dock`）。並べ方は `Dock<K>`（dock.rs）が持ち、ここは毎フレーム木をたどって部品を作る。
-//! 押したタブは作る前に選び、キー・メニュー・仕切りの変更は作り終えてから Dock に当てる（変わったらもう一度回す）
+//! 押したタブは作る前に選び、キー・メニュー・仕切りの変更は作り終えてから Dock に当てる（変わったらもう一度回す）。
+//! 入れ物は重ねる形（Stack）で、1 つ目が並べ方の木、その後に浮いたまとまりの枠を下にある物から重ねる
 
 use std::hash::Hash;
 
-use super::dock::{Dock, DockSide, DockTo, EDGE_SHARE, Node, Zone};
+use super::dock::{Dock, DockSide, DockTo, EDGE_SHARE, FLOAT_MIN, Node, Zone};
 use super::layout::{Align, Dir, Size};
 use super::{Id, Kind, Ui, descends, hash_of};
 use crate::icon::Icon;
@@ -15,6 +16,10 @@ enum Change<K> {
     Move(K, DockTo<K>),
     /// 分割の道（根が 1）と、新しい割合
     Share(u64, f32),
+    /// 浮いたまとまりのパネルを、浮かせる前にいた所へ戻す（メニューの「Dock」）
+    DockBack(K),
+    /// 浮いたまとまりをいちばん上にする（F6 で移った時）
+    Raise(usize),
 }
 
 /// Ui::dock の作り途中の状態
@@ -28,6 +33,8 @@ struct Build<'t, K> {
     groups: Vec<(usize, Vec<K>, usize)>,
     /// まとまりごとの、選んでいるパネルとその題（メニューの「別のまとまりへ」）
     names: Vec<(K, String)>,
+    /// メニューの「Float」で浮かせる場所と大きさ（論理ピクセル）
+    float_at: [f32; 4],
 }
 
 /// 引っ張っているタブの荷物（同じ dock の中でだけ受け取る）
@@ -39,6 +46,11 @@ struct DockDrag<K> {
 /// タブの見出しの id（パネルから作るので、並べ方が変わっても同じ）
 fn tab_id<K: Hash>(dock: Id, k: &K) -> Id {
     Id(hash_of((dock.0, hash_of(k), "tab")))
+}
+
+/// 浮いたまとまりの印の id（まとまりの最初のパネルから作る。resize なら大きさを変える印、ほかは動かす印）
+fn grip_id<K: Hash>(dock: Id, k: &K, resize: bool) -> Id {
+    Id(hash_of((dock.0, hash_of(k), if resize { "float-size" } else { "float-move" })))
 }
 
 /// A dock being built: chain the options, then call [`DockArea::show`]. Made by [`Ui::dock`].
@@ -72,12 +84,17 @@ impl<'a> Ui<'a> {
     ///   focus; Ctrl+Tab and Ctrl+PageDown (Ctrl+Shift+Tab and Ctrl+PageUp) go to the next
     ///   (previous) tab while the focus is in the group;
     /// - move the focused tab within its group with Ctrl+Shift+PageUp and Ctrl+Shift+PageDown;
-    /// - go to the next (previous) group with F6 (Shift+F6);
+    /// - go to the next (previous) group with F6 (Shift+F6), floating groups in the order they
+    ///   floated;
     /// - move a panel to a new group beside its own, or into another group, from the tab's menu
-    ///   (right click, Shift+F10 or the context menu key).
+    ///   (right click, Shift+F10 or the context menu key);
+    /// - float a panel over the others from the tab's menu, move the floating group by the dots
+    ///   at the left of its tabs, change its size by the dots at its bottom-right corner, and put
+    ///   each of its panels back where it was before it joined the group with Dock in the tab's
+    ///   menu.
     ///
-    /// Screen readers hear each group as a tab list with tabs and a tab panel, and the dividers
-    /// as separators with their position in percent.
+    /// Screen readers hear each group as a tab list with tabs and a tab panel, a floating group
+    /// as a pane, and the dividers as separators with their position in percent.
     ///
     /// ```
     /// use kargui::{Dock, DockSide, DockTo};
@@ -110,7 +127,7 @@ impl<'a> Ui<'a> {
     /// ```
     #[track_caller]
     pub fn dock<'u, 'd, K: Clone + PartialEq + Hash + 'static>(&'u mut self, dock: &'d mut Dock<K>) -> DockArea<'u, 'a, 'd, K> {
-        let (idx, id) = self.add(Kind::Dock, Dir::Column);
+        let (idx, id) = self.add(Kind::Dock, Dir::Stack);
         self.tree.layout[idx].align = Align::Stretch;
         DockArea { ui: self, dock, idx, id, closable: false }
     }
@@ -118,7 +135,7 @@ impl<'a> Ui<'a> {
     /// 木の節を 1 つ作る。path は分割の道（根が 1、子は 2p と 2p+1）
     fn dock_node<K: Clone + PartialEq + Hash + 'static>(&mut self, node: &Node<K>, path: u64, st: &mut Build<K>, content: &mut dyn FnMut(&mut Ui, &K)) {
         match node {
-            Node::Tabs { panels, selected } => self.dock_group(panels, *selected, st, content),
+            Node::Tabs { panels, selected } => self.dock_group(panels, *selected, false, st, content),
             Node::Split { stacked, share, a, b } => {
                 let stacked = *stacked;
                 let dir = if stacked { Dir::Column } else { Dir::Row };
@@ -203,11 +220,13 @@ impl<'a> Ui<'a> {
         }
     }
 
-    /// タブのまとまりを 1 つ作る: 見出しの帯と、選んでいるパネルの中身
-    fn dock_group<K: Clone + PartialEq + Hash + 'static>(&mut self, panels: &[K], selected: usize, st: &mut Build<K>, content: &mut dyn FnMut(&mut Ui, &K)) {
+    /// タブのまとまりを 1 つ作る: 見出しの帯と、選んでいるパネルの中身。浮いたまとまり（floating）は、見出しの帯の左に
+    /// 動かす印を置き、はみ出した中身を切り取る
+    fn dock_group<K: Clone + PartialEq + Hash + 'static>(&mut self, panels: &[K], selected: usize, floating: bool, st: &mut Build<K>, content: &mut dyn FnMut(&mut Ui, &K)) {
         let dock = st.dock;
         let (gi, _) = self.push(Id(hash_of((dock.0, hash_of(&panels[0]), "group"))), Kind::DockGroup, Dir::Column);
         self.fill_parent(gi);
+        self.tree.layout[gi].clip = floating;
         let heads: Vec<Id> = panels.iter().map(|k| tab_id(dock, k)).collect();
         let n = panels.len();
         let mut picked = selected.min(n - 1);
@@ -262,14 +281,32 @@ impl<'a> Ui<'a> {
             }
         }
         st.groups.push((gi, panels.to_vec(), picked));
-        // 見出しの帯
+        // 見出しの帯（浮いたまとまりは、動かす印と見出しの帯を並べた行）
         let mut menu_moves: Vec<(K, DockTo<K>)> = Vec::new();
         let mut menu_close = None;
+        let mut menu_dock = None;
         {
             let mut ui = self.child(gi);
+            let head = if floating {
+                let (h, _) = ui.add(Kind::Row, Dir::Row);
+                ui.tree.layout[h].align = Align::Stretch;
+                let mut hu = ui.child(h);
+                let (g, _) = hu.push(grip_id(dock, &panels[0], false), Kind::DockGrip { resize: false }, Dir::Leaf);
+                hu.tree.layout[g].width = Size::Fixed(hu.px(18.0));
+                Some(h)
+            } else {
+                None
+            };
+            let mut ui = match head {
+                Some(h) => ui.child(h),
+                None => ui,
+            };
             let (list, _) = ui.add(Kind::TabList, Dir::Row);
             let gap = ui.px(4.0);
             ui.tree.layout[list].gap = gap;
+            if floating {
+                ui.tree.layout[list].width = Size::Fill(1.0);
+            }
             let mut row = ui.child(list);
             for (k, panel) in panels.iter().enumerate() {
                 let title = (st.title)(panel);
@@ -280,18 +317,25 @@ impl<'a> Ui<'a> {
                 let closable = st.closable;
                 let alone = n == 1;
                 let p = panel.clone();
+                let float_at = st.float_at;
                 // 見出しを引っ張ると、ほかのまとまりや端へ動かせる（4 画素動かしてから。押しただけなら選ぶ）
                 let payload = DockDrag { dock, panel: panel.clone() };
                 row.handle(ti, tid).drag_source(payload).context_menu(|m| {
-                    m.submenu("Move to a new group", |m| {
-                        for (text, side) in [("Left", DockSide::Left), ("Right", DockSide::Right), ("Above", DockSide::Top), ("Below", DockSide::Bottom)] {
-                            if m.item(text).clicked() {
-                                // まとまりにほかのパネルがあれば、そのまとまりの隣。1 つだけなら全体の端
-                                let to = if alone { DockTo::Edge { side, share: 0.3 } } else { DockTo::Split { of: p.clone(), side, share: 0.5 } };
-                                menu_moves.push((p.clone(), to));
-                            }
+                    if floating {
+                        if m.item("Dock").clicked() {
+                            menu_dock = Some(p.clone());
                         }
-                    });
+                    } else {
+                        m.submenu("Move to a new group", |m| {
+                            for (text, side) in [("Left", DockSide::Left), ("Right", DockSide::Right), ("Above", DockSide::Top), ("Below", DockSide::Bottom)] {
+                                if m.item(text).clicked() {
+                                    // まとまりにほかのパネルがあれば、そのまとまりの隣。1 つだけなら全体の端
+                                    let to = if alone { DockTo::Edge { side, share: 0.3 } } else { DockTo::Split { of: p.clone(), side, share: 0.5 } };
+                                    menu_moves.push((p.clone(), to));
+                                }
+                            }
+                        });
+                    }
                     if !others.is_empty() {
                         m.submenu("Move into group", |m| {
                             for (with, text) in &others {
@@ -300,6 +344,10 @@ impl<'a> Ui<'a> {
                                 }
                             }
                         });
+                    }
+                    if !floating && m.item("Float").clicked() {
+                        let [x, y, w, h] = float_at;
+                        menu_moves.push((p.clone(), DockTo::Float { x, y, w, h }));
                     }
                     if closable {
                         m.separator();
@@ -326,6 +374,9 @@ impl<'a> Ui<'a> {
         for (k, to) in menu_moves {
             st.changes.push(Change::Move(k, to));
         }
+        if let Some(k) = menu_dock {
+            st.changes.push(Change::DockBack(k));
+        }
         if let Some(k) = menu_close {
             st.closed = Some(k);
         }
@@ -339,6 +390,14 @@ impl<'a> Ui<'a> {
         ui.tree.layout[p].align = Align::Stretch;
         ui.tree.layout[p].height = Size::Fill(1.0);
         content(&mut ui.child(p), &panels[picked]);
+    }
+}
+
+/// 浮いたまとまりのパネルと見せているパネルの位置
+fn float_tabs<K: Clone>(tabs: &Node<K>) -> Option<(Vec<K>, usize)> {
+    match tabs {
+        Node::Tabs { panels, selected } if !panels.is_empty() => Some((panels.clone(), *selected)),
+        _ => None,
     }
 }
 
@@ -401,21 +460,16 @@ impl<K: Clone + PartialEq + Hash + 'static> DockArea<'_, '_, '_, K> {
     /// ```
     pub fn show(self, title: impl Fn(&K) -> String, mut content: impl FnMut(&mut Ui, &K)) -> Option<K> {
         let DockArea { ui, dock, idx, id, closable } = self;
+        let scale = ui.cx.scale;
         // 落としたタブ: 前のフレームの場所から落とす先を決め、作る前に並べ方を変える（受け取る部品として毎フレーム届け出る）
         let at = ui.cx.drop.as_ref().map(|d| d.at);
         let got = ui.handle(idx, id).dropped::<DockDrag<K>>();
         if let (Some(d), Some(at)) = (got, at)
             && d.dock == id
         {
-            let zone = ui.cx.prev.docks.get(&id).and_then(|g| g.zone_at(at.0, at.1, ui.cx.scale));
-            let mut firsts = Vec::new();
-            if let Some(r) = &dock.root {
-                r.walk(&mut |n| {
-                    if let Node::Tabs { panels, .. } = n {
-                        firsts.push(panels[0].clone());
-                    }
-                });
-            }
+            let zone = ui.cx.prev.docks.get(&id).and_then(|g| g.zone_for(at.0, at.1, ui.cx.scale, tab_id(id, &d.panel)));
+            // まとまりの最初のパネル（落とす先の計算と同じ順: 並べ方の木、浮いたまとまり）
+            let firsts: Vec<K> = dock.groups().into_iter().filter_map(|n| float_tabs(n).map(|(p, _)| p[0].clone())).collect();
             let to = match zone {
                 Some(Zone::Tab { group, index }) => firsts.get(group).map(|w| DockTo::Tab { with: w.clone(), index }),
                 Some(Zone::Split { group, side }) => firsts.get(group).map(|w| DockTo::Split { of: w.clone(), side, share: 0.5 }),
@@ -436,19 +490,91 @@ impl<K: Clone + PartialEq + Hash + 'static> DockArea<'_, '_, '_, K> {
         {
             crate::log::event("dock.select", &format!("tab={:x}", c.0), "click");
         }
-        let root = dock.root.clone();
-        let mut names = Vec::new();
-        if let Some(r) = &root {
-            r.walk(&mut |n| {
-                if let Node::Tabs { panels, selected } = n {
-                    let k = &panels[*selected];
-                    names.push((k.clone(), title(k)));
+        // 前のフレームの全体の大きさ（論理ピクセル。浮いたまとまりを中に収める）
+        let bounds = ui.cx.prev.docks.get(&id).map(|g| (g.root.w / scale, g.root.h / scale));
+        if !ui.disabled {
+            // 浮いたまとまりの上を押したら、いちばん上にする
+            if let Some(p) = ui.cx.press_now
+                && let Some(geom) = ui.cx.prev.docks.get(&id)
+                && let Some(g) = geom.group_at(p.0, p.1).filter(|&g| geom.groups[g].floating)
+            {
+                let docked = geom.groups.iter().filter(|g| !g.floating).count();
+                if dock.raise(g - docked) {
+                    crate::log::event("dock.raise", &format!("at={:.0},{:.0}", p.0, p.1), &format!("float={}", g - docked));
                 }
-            });
+            }
+            // 印を押している間: 押した時の場所と大きさに、ポインターの動いた分を足す（全体の中に収める）
+            for fi in 0..dock.floating.len() {
+                let Some((panels, _)) = float_tabs(&dock.floating[fi].tabs) else { continue };
+                for resize in [false, true] {
+                    let gid = grip_id(id, &panels[0], resize);
+                    let cx = &mut *ui.cx;
+                    if cx.pressed != Some(gid) && cx.released != Some(gid) {
+                        continue;
+                    }
+                    let Some(p) = cx.pointer else { continue };
+                    let (start, from) = match cx.float_grab {
+                        Some((g, r, at)) if g == gid => (r, at),
+                        _ => {
+                            let grab = (dock.floating[fi].rect, cx.press_at.unwrap_or(p));
+                            cx.float_grab = Some((gid, grab.0, grab.1));
+                            crate::log::event(if resize { "dock.float_resize_start" } else { "dock.float_move_start" }, &format!("float={fi}"), &format!("rect={:?}", grab.0));
+                            grab
+                        }
+                    };
+                    let (dx, dy) = ((p.0 - from.0) / scale, (p.1 - from.1) / scale);
+                    let [x, y, w, h] = start;
+                    let mut r = if resize { [x, y, w + dx, h + dy] } else { [x + dx, y + dy, w, h] };
+                    if let Some((bw, bh)) = bounds {
+                        if resize {
+                            r[2] = r[2].min(bw - x);
+                            r[3] = r[3].min(bh - y);
+                        } else {
+                            r[0] = r[0].min(bw - w).max(0.0);
+                            r[1] = r[1].min(bh - h).max(0.0);
+                        }
+                    }
+                    dock.set_float_rect(fi, r);
+                    if cx.released == Some(gid) {
+                        cx.float_grab = None;
+                        crate::log::event(if resize { "dock.float_resize" } else { "dock.float_move" }, &format!("float={fi}"), &format!("rect={:?}", dock.floating[fi].rect));
+                    }
+                }
+            }
         }
-        let mut st = Build { dock: id, closable, title: &title, changes: Vec::new(), closed: None, groups: Vec::new(), names };
+        let root = dock.root.clone();
+        let floats: Vec<(Vec<K>, usize, [f32; 4])> = dock.floating.iter().filter_map(|f| float_tabs(&f.tabs).map(|(p, s)| (p, s, f.rect))).collect();
+        let names = dock.groups().into_iter().filter_map(float_tabs).map(|(p, s)| (p[s].clone(), title(&p[s]))).collect();
+        // メニューの「Float」で出す場所: 全体の真ん中に、浮いたまとまりの数だけずらす
+        let (bw, bh) = bounds.unwrap_or((640.0, 480.0));
+        let (fw, fh) = ((bw * 0.4).clamp(FLOAT_MIN.0, 480.0), (bh * 0.5).clamp(FLOAT_MIN.1, 360.0));
+        let shift = 24.0 * floats.len() as f32;
+        let float_at = [((bw - fw) / 2.0 + shift).min(bw - fw).max(0.0), ((bh - fh) / 2.0 + shift).min(bh - fh).max(0.0), fw, fh];
+        let mut st = Build { dock: id, closable, title: &title, changes: Vec::new(), closed: None, groups: Vec::new(), names, float_at };
+        // 並べ方の木（重ねる入れ物いっぱい）と、その上に浮いたまとまりの枠
+        let (tree_box, _) = ui.child(idx).push(Id(hash_of((id.0, "docked"))), Kind::Column, Dir::Column);
         if let Some(r) = &root {
-            ui.child(idx).dock_node(r, 1, &mut st, &mut content);
+            ui.child(tree_box).dock_node(r, 1, &mut st, &mut content);
+        }
+        let docked = st.groups.len();
+        let line = scale.max(1.0).round();
+        for (panels, selected, [x, y, w, h]) in &floats {
+            let (fr, _) = ui.child(idx).push(Id(hash_of((id.0, hash_of(&panels[0]), "float"))), Kind::DockFloat, Dir::Stack);
+            {
+                let l = &mut ui.tree.layout[fr];
+                l.at = Some((x * scale, y * scale));
+                l.width = Size::Fixed((w * scale).round());
+                l.height = Size::Fixed((h * scale).round());
+                l.pad = (line, line);
+                l.align = Align::Stretch;
+            }
+            let mut fu = ui.child(fr);
+            fu.dock_group(panels, *selected, true, &mut st, &mut content);
+            // 大きさを変える印は右下の隅（位置を大きな数にすると、枠の中の右下へ寄る）
+            let (g, _) = fu.push(grip_id(id, &panels[0], true), Kind::DockGrip { resize: true }, Dir::Leaf);
+            let s = fu.px(16.0);
+            let l = &mut fu.tree.layout[g];
+            (l.width, l.height, l.at) = (Size::Fixed(s), Size::Fixed(s), Some((f32::MAX, f32::MAX)));
         }
         // 焦点のあるまとまり（中身を作り終えたので、中身の部品の中かも分かる）
         let focused = if ui.disabled { None } else { ui.cx.focus.and_then(|f| st.groups.iter().position(|(gi, _, _)| descends(ui.tree, *gi, f))) };
@@ -478,12 +604,20 @@ impl<K: Clone + PartialEq + Hash + 'static> DockArea<'_, '_, '_, K> {
                 ui.cx.again = true;
             }
             if group_step != 0 && st.groups.len() > 1 {
-                let n = st.groups.len() as i32;
-                let to = (g as i32 + group_step).rem_euclid(n) as usize;
+                // 回る順は、木のまとまり、浮いたまとまり（浮かせた順）。移った浮いたまとまりを上にすると重なりの順が
+                // 変わるので、重なりの順で回るとまだ回っていない物を飛ばす
+                let order: Vec<usize> = (0..docked).chain(dock.float_order().into_iter().map(|i| docked + i)).collect();
+                let n = order.len() as i32;
+                let at = order.iter().position(|&x| x == g).unwrap_or(0) as i32;
+                let to = order[(at + group_step).rem_euclid(n) as usize];
                 let (_, panels, picked) = &st.groups[to];
                 ui.cx.focus = Some(tab_id(id, &panels[*picked]));
                 ui.cx.focus_visible = true;
                 crate::log::event("dock.next_group", &format!("from={g} step={group_step}"), &format!("to={to}"));
+                // 浮いたまとまりへ移ったら、いちばん上にする
+                if to >= docked {
+                    st.changes.push(Change::Raise(to - docked));
+                }
             }
         }
         // 集めた変更を当てる。並べ方が変わったらもう一度回す（新しい並べ方をこのフレームで見せる）
@@ -498,12 +632,29 @@ impl<K: Clone + PartialEq + Hash + 'static> DockArea<'_, '_, '_, K> {
                     crate::log::event("dock.share", &format!("path={path}"), &format!("share={s:.3}"));
                 }
                 Change::Move(k, to) => {
+                    let what = match &to {
+                        DockTo::Tab { .. } => "tab",
+                        DockTo::Split { .. } => "split",
+                        DockTo::Edge { .. } => "edge",
+                        DockTo::Float { .. } => "float",
+                    };
                     let ok = dock.insert(k.clone(), to);
-                    crate::log::event("dock.move", &format!("tab={:x}", tab_id(id, &k).0), &format!("ok={ok}"));
+                    crate::log::event("dock.move", &format!("tab={:x} to={what}", tab_id(id, &k).0), &format!("ok={ok}"));
                     if ok {
                         ui.cx.focus = Some(tab_id(id, &k));
                         moved = true;
                     }
+                }
+                Change::DockBack(k) => {
+                    let ok = dock.dock_back(&k);
+                    crate::log::event("dock.dock_back", &format!("tab={:x}", tab_id(id, &k).0), &format!("ok={ok}"));
+                    if ok {
+                        ui.cx.focus = Some(tab_id(id, &k));
+                        moved = true;
+                    }
+                }
+                Change::Raise(i) => {
+                    moved |= dock.raise(i);
                 }
             }
         }

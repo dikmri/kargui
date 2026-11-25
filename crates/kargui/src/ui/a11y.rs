@@ -62,7 +62,7 @@ fn row_name(tree: &Tree, i: usize) -> String {
 
 /// 読み上げの木に出さない物（空き・数の入力欄の小さいボタン。欄が増やす・減らす操作を持つ）
 fn hidden(kind: &Kind) -> bool {
-    matches!(kind, Kind::Space | Kind::SpinButton { .. } | Kind::ColumnGrip)
+    matches!(kind, Kind::Space | Kind::SpinButton { .. } | Kind::ColumnGrip | Kind::DockGrip { .. })
 }
 
 pub(crate) struct A11yBuild {
@@ -253,7 +253,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 }
                 n
             }
-            Kind::ColumnGrip => unreachable!(),
+            Kind::ColumnGrip | Kind::DockGrip { .. } => unreachable!(),
             Kind::DateField { text, open, .. } => {
                 let mut n = Node::new(Role::DateInput);
                 n.set_value(text.clone());
@@ -484,6 +484,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
             },
             Kind::Space | Kind::SpinButton { .. } => unreachable!(),
             Kind::Tabs | Kind::Dock | Kind::DockGroup => Node::new(Role::GenericContainer),
+            Kind::DockFloat => Node::new(Role::Pane),
             Kind::TabList => Node::new(Role::TabList),
             Kind::Tab { selected, .. } => {
                 let mut n = Node::new(Role::Tab);
