@@ -230,9 +230,17 @@ pub struct Options {
     pub full_rate: bool,
     /// Start in dark (`Some(true)`) or light (`Some(false)`) mode; `None` follows the system.
     pub dark: Option<bool>,
-    /// The window's icon (title bar and taskbar), or `None` for the system's default. Windows
-    /// opened with [`Ui::window`] use the main window's icon unless they have their own.
+    /// The window's icon (title bar and taskbar). With `None`, kargui shows its own icon (a
+    /// light "k" on a dark rounded square), or the system's plain icon when
+    /// [`default_icon`](Self::default_icon) is `false`. Windows opened with [`Ui::window`] use
+    /// the main window's icon unless they have their own.
     pub icon: Option<crate::Image>,
+    /// Whether a window without an [`icon`](Self::icon) shows kargui's icon (`true`, the
+    /// default) or the system's plain icon (`false`). A [`tray`](crate::Ui::tray) icon without
+    /// an image uses kargui's icon too, or a plain square when this is `false`. On Wayland the
+    /// compositor takes the window's icon from the app's desktop file, so this changes only the
+    /// tray there.
+    pub default_icon: bool,
     /// The smallest size of the inside of the window, in logical pixels, that the user can make
     /// it, or `None` for no limit.
     pub min_size: Option<(f32, f32)>,
@@ -270,7 +278,9 @@ impl std::fmt::Debug for Options {
             .field("renderer", &self.renderer)
             .field("full_rate", &self.full_rate)
             .field("dark", &self.dark)
+            .field("high_contrast", &self.high_contrast)
             .field("icon", &self.icon)
+            .field("default_icon", &self.default_icon)
             .field("min_size", &self.min_size)
             .field("font", &self.font)
             .field("fonts", &format_args!("{} files, {bytes} bytes", self.fonts.len()))
@@ -298,6 +308,7 @@ impl Options {
             dark: None,
             high_contrast: None,
             icon: None,
+            default_icon: true,
             min_size: None,
             font: crate::Font::Ui,
             fonts: Vec::new(),
@@ -324,6 +335,7 @@ impl Options {
 /// ```
 pub fn run(options: Options, app: impl App) -> Result<(), crate::Error> {
     crate::theme::set_option(options.high_contrast);
+    crate::logo::set_enabled(options.default_icon);
     #[cfg(windows)]
     {
         crate::platform::run(options, Box::new(app))

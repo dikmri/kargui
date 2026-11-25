@@ -688,8 +688,9 @@ struct State {
     open_windows: Vec<String>,
     /// ほかの窓の入力のあとの描き直し（ほかの窓へは広げない）
     synced: bool,
-    /// 窓のアイコン（壊す時に片付ける）と、その元の画像（ほかの窓が引き継ぐ）
-    icon: Option<HICON>,
+    /// 窓のアイコンの大きいのと小さいの（壊す時に片付ける。アプリの画像は 1 つを両方に使う）と、その元の画像
+    /// （ほかの窓が引き継ぐ）
+    icon: Option<(HICON, HICON)>,
     icon_image: Option<crate::Image>,
     /// 中の大きさの下限（論理ピクセル）
     min_size: Option<(f32, f32)>,
@@ -1262,12 +1263,13 @@ impl State {
         }
     }
 
-    /// トレイのアイコン: アプリが渡した画像、無ければ窓のアイコンの画像、それも無ければ kargui の無地のアイコンを、
-    /// 通知領域の大きさにして作る
+    /// トレイのアイコン: アプリが渡した画像、無ければ窓のアイコンの画像、それも無ければ kargui のアイコン（既定の
+    /// アイコンを切ったアプリは無地の四角）を、通知領域の大きさにして作る
     fn tray_icon(&self, d: &crate::ui::tray::TrayDesc) -> Option<HICON> {
         let size = crate::tray_win::icon_size(self.hwnd);
         let image = match d.icon.as_ref().or(self.icon_image.as_ref()) {
             Some(i) => i.resized(size, size),
+            None if crate::logo::enabled() => crate::logo::icon(size),
             None => crate::ui::tray::default_icon(size),
         };
         make_icon(&image)
@@ -1490,8 +1492,11 @@ impl State {
                 }
                 self.adapter = None;
                 let had = self.surface.take().is_some();
-                if let Some(i) = self.icon.take() {
-                    let _ = unsafe { DestroyIcon(i) };
+                if let Some((big, small)) = self.icon.take() {
+                    let _ = unsafe { DestroyIcon(big) };
+                    if small != big {
+                        let _ = unsafe { DestroyIcon(small) };
+                    }
                 }
                 log::event("window.destroy", &format!("key={:?}", self.key), &format!("surface_dropped={had}"));
                 // 主の窓を閉じたらアプリを終える
@@ -2107,15 +2112,24 @@ fn create_window(
     let mut client = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client)? };
     let (cw, ch) = (client.right - client.left, client.bottom - client.top);
-    // 窓のアイコン（題の帯とタスクバー）
-    let icon = icon_image.as_ref().and_then(make_icon);
-    if let Some(i) = icon {
+    // 窓のアイコン（題の帯とタスクバー）。アプリが渡さなければ kargui のアイコンを、大きいアイコンと小さいアイコンの
+    // 大きさ（拡大率に合わせた画素）でそれぞれ描く（1 枚を OS に縮めさせると線がにじむ）
+    let (icons, from) = match icon_image.as_ref() {
+        Some(img) => (make_icon(img).map(|i| (i, i)), "app"),
+        None if crate::logo::enabled() => {
+            let size = |m| unsafe { GetSystemMetricsForDpi(m, dpi) }.clamp(16, 256) as u32;
+            let (big, small) = (size(SM_CXICON), size(SM_CXSMICON));
+            (make_icon(&crate::logo::icon(big)).zip(make_icon(&crate::logo::icon(small))), "kargui")
+        }
+        None => (None, "system"),
+    };
+    if let Some((big, small)) = icons {
         unsafe {
-            SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(i.0 as isize)));
-            SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(i.0 as isize)));
+            SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(big.0 as isize)));
+            SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(small.0 as isize)));
         }
     }
-    log::event("window.icon", &format!("key={key:?}"), &format!("set={}", icon.is_some()));
+    log::event("window.icon", &format!("key={key:?}"), &format!("set={} from={from}", icons.is_some()));
     log::event(
         "window.create",
         &format!("key={key:?} pos={position:?} dpi={dpi} client={cw}x{ch} renderer={renderer:?}"),
@@ -2156,7 +2170,7 @@ fn create_window(
         renderer,
         open_windows: Vec::new(),
         synced: false,
-        icon,
+        icon: icons,
         icon_image,
         min_size,
         font_files,

@@ -1629,7 +1629,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         shm_ok,
         windows: Vec::new(),
         font_files: options.fonts.clone(),
-        main_icon: options.icon.clone(),
+        main_icon: options.icon.clone().or_else(|| crate::logo::enabled().then(|| crate::logo::icon(64))),
         xkb: kb,
         ime: None,
         dnd: None,
@@ -1664,7 +1664,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let rt = st.runtime(&options.title, options.dark.unwrap_or(false), &options.font)?;
     let local = crate::linux::local_date().zip(crate::linux::local_time()).map_or("unknown".to_string(), |((y, m, d), (h, min))| format!("{y}-{m:02}-{d:02} {h:02}:{min:02}"));
     log::event("window.create", &format!("title={:?} size={:.0}x{:.0} class={} local={local}", options.title, options.size.0, options.size.1, app_id()), "ok");
-    let icon = options.icon.clone();
+    let icon = st.main_icon.clone();
     st.new_window(None, &options.title, options.size, options.min_size, None, icon.as_ref(), rt)?;
     // OS の明暗の答えを、最初の絵の前に 150 ms まで待つ
     let answer = st.settings_rx.as_ref().map(|rx| rx.recv_timeout(Duration::from_millis(150)));

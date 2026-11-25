@@ -244,6 +244,8 @@ fn main() {
     samples(&mut app);
     app.dark = a.dark;
     let mut options = Options::new("家計簿（kargui）");
+    // --no-default-icon は、kargui のアイコンの代わりに OS の無地のアイコンを出す
+    options.default_icon = !a.no_default_icon;
     options.size = (720.0, 600.0);
     options.min_size = Some((560.0, 420.0));
     options.position = a.pos;

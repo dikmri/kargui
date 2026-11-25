@@ -209,6 +209,7 @@ fn pixmaps(d: &TrayDesc, fallback: &Option<crate::Image>) -> Pixmaps {
         .map(|size| {
             let image = match d.icon.as_ref().or(fallback.as_ref()) {
                 Some(i) => i.resized(size, size),
+                None if crate::logo::enabled() => crate::logo::icon(size),
                 None => crate::ui::tray::default_icon(size),
             };
             let mut argb = Vec::with_capacity(image.0.pixels.len());

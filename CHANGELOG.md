@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Default icon: a window without `Options::icon` shows kargui's icon (a "k" drawn with lines of
+  light on a dark rounded square) instead of the system's plain icon, and so does a tray icon
+  without an image. kargui draws it at each size it needs (no image file). Set
+  `Options::default_icon` to `false` for the system's plain icon. Guide chapter 17.
 - High contrast: kargui follows the system's high contrast setting (Windows: the contrast themes,
   with their colors as they are, and it redraws when the theme changes; Linux: the desktop
   portal's contrast setting, with `Theme::high_contrast_dark` or `Theme::high_contrast_light` by

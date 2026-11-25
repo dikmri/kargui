@@ -11,6 +11,7 @@
 //! --full-rate        前面にない窓でもフレームを抑えない（比べるときに使う）
 //! --light / --dark   OS の設定に関わらず明るい方・暗い方で描く（写真を撮るときに使う。使える版だけ）
 //! --high-contrast    OS の設定に関わらずハイコントラストで描く（確かめと写真に使う。使える版だけ）
+//! --no-default-icon  アイコンを渡さない窓に、kargui のアイコンを出さない（OS の無地のアイコン。使える版だけ）
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
@@ -27,6 +28,8 @@ pub struct Args {
     pub dark: Option<bool>,
     /// ハイコントラストで描く（無ければ OS の設定に従う）
     pub high_contrast: bool,
+    /// kargui の既定のアイコンを出さない
+    pub no_default_icon: bool,
 }
 
 /// プログラム名を除いた引数の並びを読む。
@@ -57,6 +60,7 @@ pub fn parse<I: IntoIterator<Item = String>>(it: I) -> Args {
             "--light" => a.dark = Some(false),
             "--dark" => a.dark = Some(true),
             "--high-contrast" => a.high_contrast = true,
+            "--no-default-icon" => a.no_default_icon = true,
             _ => {}
         }
     }
@@ -129,6 +133,12 @@ mod tests {
         let a = p(&["--dark", "--high-contrast"]);
         assert!(a.high_contrast);
         assert_eq!(a.dark, Some(true), "明暗と一緒に使える");
+    }
+
+    #[test]
+    fn reads_no_default_icon() {
+        assert!(!p(&[]).no_default_icon, "無ければ kargui のアイコン");
+        assert!(p(&["--no-default-icon"]).no_default_icon);
     }
 
     #[test]

@@ -307,7 +307,7 @@ pub(crate) fn find(nodes: &[TrayNode], want: &str) -> Option<u32> {
     })
 }
 
-/// アプリもアイコンも渡さなかった時のアイコン: 角の丸い四角（kargui の赤）。size × size の画素。縁は 4 × 4 で
+/// アプリがアイコンを渡さず、kargui のアイコンも切った時（Options::default_icon）のアイコン: 角の丸い四角（赤）。size × size の画素。縁は 4 × 4 で
 /// 数えてなめらかにする
 pub(crate) fn default_icon(size: u32) -> crate::Image {
     let s = size.max(1) as f32;

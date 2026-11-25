@@ -34,6 +34,7 @@ mod image;
 mod gpu;
 mod ime;
 mod input;
+mod logo;
 pub mod log;
 mod paint;
 // OS との境目（窓・入力・日本語入力・画面に出す・クリップボード・読み上げの橋渡し）。文字の OS ごとの道は text の中

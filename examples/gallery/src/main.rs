@@ -693,6 +693,7 @@ fn main() {
     if a.high_contrast {
         options.high_contrast = Some(true);
     }
+    options.default_icon = !a.no_default_icon;
     if matches!(a.renderer.as_deref(), Some("d3d11" | "gpu")) {
         options.renderer = kargui::Renderer::Gpu;
     }

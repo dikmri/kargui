@@ -1,4 +1,4 @@
-<!-- source: ja/17-app-mechanisms.md fnv=d87e0e892b839174 -->
+<!-- source: ja/17-app-mechanisms.md fnv=05b19b6e1841eb71 -->
 <!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # App mechanisms
 
@@ -81,6 +81,8 @@ options.min_size = Some((360.0, 240.0));
 ```
 
 `icon` is the icon in the title bar and the taskbar. Other windows use the main window's icon unless they have their own. `min_size` is the smallest size of the inside of the window, in logical pixels, that the user can make it.
+
+Without an `icon`, kargui shows its own icon (a "k" drawn with lines of light on a dark rounded square). kargui doesn't read it from an image file; it draws it at each size it needs. For the system's plain icon, set `options.default_icon = false`. On Wayland the compositor takes the window's icon from the app's desktop file, so only the tray icon changes.
 
 ## Widgets in the title bar
 
