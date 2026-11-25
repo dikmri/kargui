@@ -421,6 +421,7 @@ impl Win {
             tiled: self.constrained,
             left: buttons.0.clone(),
             right: buttons.1.clone(),
+            windows: false,
         });
         if self.rt.cx.csd != want {
             log::event("title_bar.state", &format!("csd={} focused={} maximized={}{}", self.csd, self.focused, self.maximized, self.tag()), "ok");

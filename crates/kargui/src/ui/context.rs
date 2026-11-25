@@ -82,9 +82,11 @@ pub(crate) struct Csd {
     /// 左と右に並べるボタン（OS の設定の順。GNOME の既定は右に閉じるだけ）
     pub left: Vec<CsdButton>,
     pub right: Vec<CsdButton>,
+    /// Windows の形（Options::custom_title_bar）。ボタンは右端に付けた幅 46 の四角で、窓の縁と影は OS が描く
+    pub windows: bool,
 }
 
-// 題の帯を kargui が描くのは、今は Linux（Wayland）だけ
+// GNOME の設定を読むのは Linux（Wayland）だけ
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl Csd {
     /// GNOME の button-layout（org.gnome.desktop.wm.preferences。「appmenu:minimize,maximize,close」の形）を
@@ -117,7 +119,6 @@ impl Csd {
 
 /// 題の帯のボタン
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum CsdButton {
     Minimize,
     Maximize,
@@ -156,6 +157,8 @@ pub(crate) struct WindowRequest {
     /// 中の大きさ（論理ピクセル）と、置く場所（無ければ OS に任せる）
     pub size: (f32, f32),
     pub position: Option<(f32, f32)>,
+    /// kargui が題の帯を描くか（Options::custom_title_bar）
+    pub custom_title_bar: bool,
     /// 開いた時に前面に出すか（Options::activate）
     pub activate: bool,
     /// 窓のアイコン（無ければ主の窓のアイコン）と、中の大きさの下限
@@ -317,6 +320,8 @@ pub(crate) struct Prev {
     pub menubar: Vec<Id>,
     /// アプリが描く題の帯の範囲（Csd がある時。空いた所を押すと窓を動かす）
     pub title_bar: Option<Rect>,
+    /// Windows の形の題の帯の、最大化のボタンの四角（窓の処理が HTMAXBUTTON と答える所）
+    pub caption_max: Option<Rect>,
     /// 数の入力欄の刻み（Up・Down で使う。NumberInput::step は作った後で付くので、前のフレームの値を使う）
     pub steps: HashMap<Id, f64>,
     /// 数の入力欄の小さいボタン → 欄（押しても焦点を欄に残す）

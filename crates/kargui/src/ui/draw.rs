@@ -74,6 +74,7 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
             let laid = cx.text.layout_runs(text, base, &runs, max_w);
             (0.0, laid.height.ceil())
         }
+        Kind::CaptionButton { .. } => (p(46.0), p(super::TITLE_BAR_H)),
         Kind::Button { text, small, icon, .. } => {
             let h = p(if *small { sz::BUTTON_SMALL_H } else { sz::BUTTON_H });
             // アイコンだけのボタンは正方形
@@ -354,7 +355,7 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     }
     p.drag_ghost();
     // kargui が題の帯を描く浮いた窓は、合成が影も縁も描かないので、窓の縁に線を引く（重なった窓の境が分かるように）
-    if p.cx.csd.as_ref().is_some_and(|c| !c.tiled) {
+    if p.cx.csd.as_ref().is_some_and(|c| !c.tiled && !c.windows) {
         let (line, color) = (p.line(), p.cx.theme.border);
         p.outline(window.to_rect(), color, line);
     }
@@ -1407,6 +1408,36 @@ impl Painter<'_> {
                     self.node(tree, c);
                 }
                 self.toolbar = was;
+            }
+            // Windows の形の題の帯のボタン。乗った時と押した時だけ塗り、閉じるは赤に白の印。最大化のボタンの四角は、
+            // 窓の処理が Windows 11 のスナップレイアウトのために OS に答える（HTMAXBUTTON）
+            Kind::CaptionButton { button, maximized } => {
+                use super::context::CsdButton as B;
+                let t = self.cx.theme.clone();
+                let (hover, pressed) = (self.cx.hover == Some(id), self.cx.pressed == Some(id));
+                let close = *button == B::Close;
+                if hover || pressed {
+                    let bg = match (close, pressed) {
+                        (true, false) => [0.769, 0.169, 0.110, 1.0],
+                        (true, true) => [0.78, 0.26, 0.20, 1.0],
+                        (false, false) => t.button_hover,
+                        (false, true) => t.button_pressed,
+                    };
+                    self.d.fill(r, bg, 0.0);
+                }
+                let color = if close && (hover || pressed) { [1.0, 1.0, 1.0, 1.0] } else { t.text };
+                let icon = match (button, maximized) {
+                    (B::Minimize, _) => Icon::Minus,
+                    (B::Maximize, true) => Icon::Restore,
+                    (B::Maximize, false) => Icon::Maximize,
+                    (B::Close, _) => Icon::Close,
+                };
+                let s = self.px(16.0);
+                self.icon(icon, (r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round(), s, color);
+                if *button == B::Maximize {
+                    self.prev.caption_max = Some(r);
+                }
+                self.hit(tree, i, false, false);
             }
             Kind::Toolbar => {
                 let was = self.toolbar;

@@ -94,10 +94,18 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
             }
         }
     }
+    // 根と重ねて出す物からたどれる節だけを送る（どの節の子でもない節があると、accesskit が止めるので）
+    let mut reachable = vec![false; tree.info.len()];
+    let mut stack: Vec<usize> = std::iter::once(0).chain(tree.overlays.iter().map(|o| o.idx)).collect();
+    while let Some(i) = stack.pop() {
+        if !std::mem::replace(&mut reachable[i], true) {
+            stack.extend(tree.layout[i].children.iter().copied());
+        }
+    }
     for i in 0..tree.info.len() {
         let info = &tree.info[i];
         let l = &tree.layout[i];
-        if hidden(&info.kind) {
+        if hidden(&info.kind) || !reachable[i] {
             continue;
         }
         let name = name_of(tree, i);
@@ -161,7 +169,7 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
                 n.set_value(text.clone());
                 n
             }
-            Kind::Button { .. } => {
+            Kind::Button { .. } | Kind::CaptionButton { .. } => {
                 let mut n = Node::new(Role::Button);
                 n.add_action(Action::Click);
                 n.add_action(Action::Focus);

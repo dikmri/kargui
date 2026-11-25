@@ -4407,6 +4407,122 @@ mod tests {
         }
     }
 
+    /// 題の帯にアプリの部品を置くアプリ
+    #[derive(Default)]
+    struct Tooled {
+        news: u32,
+        clicks: u32,
+    }
+
+    impl App for Tooled {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.title_bar(|ui| {
+                if ui.button("New").clicked() {
+                    self.news += 1;
+                }
+                ui.label("Draft");
+            });
+            if ui.button("Count").clicked() {
+                self.clicks += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn title_bar_widgets_make_a_row_where_the_system_draws_the_bar() {
+        // 合成や OS が帯を描く所では、題の帯の部品は窓のいちばん上の行になる（アプリの部品は、どの OS でも使える）
+        let mut h = Harness::new(Tooled::default());
+        let (new, count) = (h.find("New").unwrap(), h.find("Count").unwrap());
+        assert!(new.y + new.h <= count.y, "{new:?} {count:?}");
+        h.click("New");
+        assert_eq!(h.app().news, 1);
+        assert_eq!(h.rt.cx.csd_request.take(), None);
+    }
+
+    #[test]
+    fn title_bar_widgets_go_into_the_gnome_bar_and_its_empty_part_still_moves_the_window() {
+        use crate::ui::context::{Csd, CsdButton as B, CsdRequest as R};
+        let mut h = Harness::new(Tooled::default());
+        h.rt.cx.csd = Some(Csd { title: "Window title".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Close], windows: false });
+        h.frame();
+        let (new, draft, close) = (h.find("New").unwrap(), h.find("Draft").unwrap(), h.find("Close").unwrap());
+        // 部品は帯の中（上から 40）の左に並び、題は出さない
+        assert!(new.y > 0.0 && new.y + new.h < 40.0 && draft.y + draft.h < 40.0, "{new:?} {draft:?}");
+        assert!(new.x < 20.0 && new.x < draft.x && draft.x < close.x, "{new:?} {draft:?} {close:?}");
+        assert!(h.find("Window title").is_none());
+        assert!(h.find("Count").unwrap().y >= 40.0);
+        // 部品は押せる。帯の何も無い所を押して動かすと、窓を動かす
+        h.click("New");
+        assert_eq!((h.app().news, h.rt.cx.csd_request.take()), (1, None));
+        let (x, y) = (600.0, 20.0);
+        h.send(vec![Event::PointerDown { x, y, shift: false, count: 1 }, Event::PointerMove { x: x + 20.0, y }]);
+        assert_eq!(h.rt.cx.csd_request.take(), Some(R::Move));
+        h.send(vec![Event::PointerUp { x: x + 20.0, y }]);
+    }
+
+    #[test]
+    fn windows_style_title_bar_puts_square_buttons_at_the_right_end() {
+        use crate::ui::context::{Csd, CsdButton as B, CsdRequest as R};
+        let windows = || Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Minimize, B::Maximize, B::Close], windows: true });
+        let mut h = Harness::new(Titled::default());
+        h.rt.cx.csd = windows();
+        h.frame();
+        let (min, max, close, title) = (h.find("Minimize").unwrap(), h.find("Maximize").unwrap(), h.find("Close").unwrap(), h.find("Notes").unwrap());
+        // ボタンは幅 46・帯の高さ 40 で、右端と上端に付けて並べる。題は左
+        assert_eq!((close.x + close.w, close.y, close.w, close.h), (900.0, 0.0, 46.0, 40.0));
+        assert_eq!((max.x + max.w, min.x + min.w), (close.x, max.x));
+        assert!(title.x < 20.0, "{title:?}");
+        // 最大化のボタンの四角は、窓の処理がスナップレイアウトのために OS に答える
+        assert_eq!(h.rt.cx.prev.caption_max, Some(max));
+        // 窓の縁と影は OS が描くので、縁の線を引かない
+        let image = h.render();
+        assert_eq!(image.rgb(0, 300), image.rgb(6, 300));
+        // 閉じるのボタンに乗ると赤に白の印
+        h.hover("Close");
+        assert_eq!(h.render().rgb((close.x + 4.0) as u32, (close.y + 4.0) as u32), 0xc42b1c);
+        // ボタンは窓の処理に頼む
+        for (name, want) in [("Maximize", R::ToggleMaximize), ("Minimize", R::Minimize), ("Close", R::Close)] {
+            h.click(name);
+            assert_eq!(h.rt.cx.csd_request.take(), Some(want), "{name}");
+        }
+        h.rt.cx.csd.as_mut().unwrap().maximized = true;
+        h.frame();
+        assert!(h.find("Restore").is_some() && h.find("Maximize").is_none());
+        // アプリの部品は題の代わりに左に並ぶ
+        let mut h = Harness::new(Tooled::default());
+        h.rt.cx.csd = windows();
+        h.frame();
+        let (new, count) = (h.find("New").unwrap(), h.find("Count").unwrap());
+        assert!(new.x < 20.0 && new.y + new.h < 40.0 && count.y >= 40.0, "{new:?} {count:?}");
+        assert!(h.find("Notes").is_none());
+        h.click("New");
+        assert_eq!(h.app().news, 1);
+    }
+
+    #[test]
+    fn title_bars_leave_no_detached_nodes_in_the_reading_tree() {
+        // 作者の手の確かめ（題の帯の 1 回目）で、見本が起動の直後に 3 回とも止まった（accesskit の「どの節の子でもない
+        // 節がある」）。帯の空の入れ物を子の並びから外したので、読み上げの木に親の無い節が入った
+        use crate::ui::context::{Csd, CsdButton as B};
+        for windows in [true, false] {
+            let csd = Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Minimize, B::Maximize, B::Close], windows });
+            let mut h = Harness::new(Titled::default());
+            h.rt.cx.csd = csd.clone();
+            h.frame();
+            assert_eq!(a11y_orphans(&h), Vec::<u64>::new(), "windows={windows}、題を出す時");
+            let mut h = Harness::new(Tooled::default());
+            h.rt.cx.csd = csd;
+            h.frame();
+            assert_eq!(a11y_orphans(&h), Vec::<u64>::new(), "windows={windows}、部品を入れた時");
+        }
+        assert_eq!(a11y_orphans(&Harness::new(Tooled::default())), Vec::<u64>::new(), "帯が無い時");
+        // 読み上げの木は、根と重ねて出す物からたどれる節だけを送る（子の並びから外した節があっても止まらない）
+        let mut h = Harness::new(Tooled::default());
+        let gone = h.rt.tree.layout[0].children.remove(0);
+        assert!(!h.rt.tree.layout.iter().any(|l| l.children.contains(&gone)));
+        assert_eq!(a11y_orphans(&h), Vec::<u64>::new(), "外した節は送らない");
+    }
+
     #[test]
     fn client_side_title_bar_puts_the_app_below_it_and_asks_the_window() {
         use crate::ui::context::{Csd, CsdButton as B, CsdRequest as R};
@@ -4414,7 +4530,7 @@ mod tests {
         // 合成が帯を描く時（Windows・Hyprland）は帯が無い
         assert!(h.find("Close").is_none());
         let plain = h.find("Count").unwrap();
-        h.rt.cx.csd = Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Minimize, B::Maximize, B::Close] });
+        h.rt.cx.csd = Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Minimize, B::Maximize, B::Close], windows: false });
         h.frame();
         // 浮いた窓は縁に線を引く（合成が影も縁も描かないので、重なった窓の境が分かるように）
         let edge = |h: &mut Harness<Titled>| {
@@ -4528,6 +4644,14 @@ mod tests {
 
     fn a11y_nodes<A: App>(h: &Harness<A>) -> Vec<accesskit::Node> {
         a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new()).update.nodes.into_iter().map(|(_, n)| n).collect()
+    }
+
+    /// 読み上げの木で、根でもなく、どの節の子にもなっていない節（accesskit はこれがあると止まる）
+    fn a11y_orphans<A: App>(h: &Harness<A>) -> Vec<u64> {
+        let update = a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new()).update;
+        let children: std::collections::HashSet<u64> = update.nodes.iter().flat_map(|(_, n)| n.children().iter().map(|c| c.0)).collect();
+        let root = h.rt.tree.info[0].id.0;
+        update.nodes.iter().map(|(id, _)| id.0).filter(|id| *id != root && !children.contains(id)).collect()
     }
 
     fn a11y_node<A: App>(h: &Harness<A>, name: &str) -> accesskit::Node {

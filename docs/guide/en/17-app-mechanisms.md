@@ -1,4 +1,4 @@
-<!-- source: ja/17-app-mechanisms.md fnv=2af021f6df3c20bb -->
+<!-- source: ja/17-app-mechanisms.md fnv=41c83d284c55d76e -->
 <!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # App mechanisms
 
@@ -81,6 +81,38 @@ options.min_size = Some((360.0, 240.0));
 ```
 
 `icon` is the icon in the title bar and the taskbar. Other windows use the main window's icon unless they have their own. `min_size` is the smallest size of the inside of the window, in logical pixels, that the user can make it.
+
+## Widgets in the title bar
+
+With `options.custom_title_bar = true`, kargui draws the title bar on Windows too, and `ui.title_bar` in the view puts widgets in it, such as a menu, a search field or tabs.
+
+```rust
+use kargui::{App, Options, Ui};
+
+struct Notes {
+    search: String,
+}
+
+impl App for Notes {
+    fn view(&mut self, ui: &mut Ui) {
+        ui.title_bar(|ui| {
+            ui.label("Notes").bold();
+            ui.text_input(&mut self.search).hint("Search");
+        });
+        ui.label("Body");
+    }
+}
+
+let mut options = Options::new("Notes");
+options.custom_title_bar = true;
+# let _ = (options, Notes { search: String::new() });
+```
+
+- kargui puts the minimize, maximize and close buttons at the bar's right end. On Windows 11, resting the pointer on the maximize button shows the snap layouts.
+- The empty part of the bar (including text that cannot be pressed) works like the system's bar: dragging it moves the window, a double click maximizes it, a right click opens the window menu, and the window can be snapped to the screen's edges.
+- When `ui.title_bar` adds nothing, the window's title is shown at the bar's left. When it adds widgets, the title is not shown; put it in yourself with `ui.label` if you want it.
+- On GNOME (Wayland where the compositor draws no title bars), kargui always draws the bar and puts the `ui.title_bar` widgets in it, whatever `custom_title_bar` says.
+- Where the system or compositor draws the bar (X11, Wayland compositors that draw bars, compositors with no bars) and on Windows with `custom_title_bar` false, the `ui.title_bar` widgets make the top row of the window. Call `ui.title_bar` first in the view so this works everywhere.
 
 ## Tests
 

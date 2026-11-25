@@ -55,6 +55,23 @@ These come from apps that AIs wrote with kargui in a measured test:
 
 ## Widgets and layout (methods of `Ui`)
 
+### `pub fn title_bar(&mut self, f: impl FnOnce(&mut Ui))`
+
+Puts widgets in the window's title bar, such as a menu, a search field or tabs. Where
+kargui draws the bar (on Windows with [`Options::custom_title_bar`](crate::Options::custom_title_bar),
+and on GNOME), they go into it before the window's buttons; the empty part of the bar still
+moves the window, and the window's title is not shown (show it yourself if you want it).
+Where the system draws the bar, they make a row where this is called, so call it first in
+the view.
+
+```
+ui.title_bar(|ui| {
+    ui.label("Notes").bold();
+    ui.button("New");
+});
+ui.label("The rest of the window");
+```
+
 ### `pub fn row(&mut self, f: impl FnOnce(&mut Ui)) -> Handle<'_>`
 
 Places the widgets created in `f` side by side, centered vertically.

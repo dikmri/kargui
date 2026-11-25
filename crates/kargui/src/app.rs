@@ -208,6 +208,12 @@ pub struct Options {
     pub size: (f32, f32),
     /// Position of the window's top-left corner in logical pixels, or `None` to let the system choose.
     pub position: Option<(f32, f32)>,
+    /// Whether kargui draws the title bar on Windows (on GNOME it always does), so the app can put
+    /// widgets in it with [`Ui::title_bar`](crate::Ui::title_bar). kargui keeps the minimize,
+    /// maximize and close buttons at the bar's right end, and the empty part of the bar moves the
+    /// window, maximizes it on a double click and opens the window menu on a right click, as the
+    /// system's bar does. `false` by default.
+    pub custom_title_bar: bool,
     /// Whether the window takes the keyboard focus when it opens.
     pub activate: bool,
     /// How the window is drawn.
@@ -278,6 +284,7 @@ impl Options {
             title: title.into(),
             size: (900.0, 640.0),
             position: None,
+            custom_title_bar: false,
             activate: true,
             renderer: Renderer::default(),
             full_rate: false,

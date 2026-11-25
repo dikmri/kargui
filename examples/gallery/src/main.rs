@@ -500,6 +500,16 @@ impl App for Gallery {
         if let Some(d) = self.dark {
             ui.set_dark(d);
         }
+        // kargui が描く題の帯（Options::custom_title_bar）に、見本の名前と明暗の切り替えを置く。帯を描かない OS では
+        // 窓のいちばん上の行になる
+        ui.title_bar(|ui| {
+            ui.label("部品の見本").bold();
+            let mut dark = ui.dark();
+            if ui.toggle_button(&mut dark, "暗い色").changed() {
+                self.dark = Some(dark);
+                log::event("gallery.dark", "", &dark.to_string());
+            }
+        });
         let mut split = self.split;
         ui.split_left_right(&mut split, |ui, pane| {
             if pane == 0 {
@@ -538,6 +548,8 @@ fn main() {
     options.min_size = Some((600.0, 400.0));
     options.position = a.pos;
     options.activate = !a.no_focus;
+    // 題の帯は kargui が描く（Windows。GNOME はいつも kargui が描く）
+    options.custom_title_bar = true;
     if matches!(a.renderer.as_deref(), Some("d3d11" | "gpu")) {
         options.renderer = kargui::Renderer::Gpu;
     }

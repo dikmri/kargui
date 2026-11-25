@@ -98,6 +98,11 @@ enum Post {
     Quit,
     /// ほかのアプリからファイルを落とせる窓だと OS に届け出る（OLE の準備を借りの外で行う）
     AcceptFiles(HWND),
+    /// 窓を最小化・最大化・元の大きさにする（kargui が描く題の帯のボタン）
+    Show(HWND, SHOW_WINDOW_CMD),
+    /// 窓のメニューを画面の (x, y) に出す（kargui が描く題の帯の右クリック。メニューは閉じるまで窓の知らせを
+    /// 受け続けるので、借りの外で出す）
+    WindowMenu(HWND, i32, i32),
 }
 
 /// 読み上げの操作を、窓の持ち主のスレッドへ渡す係（AccessKit は別のスレッドから呼ぶことがある）
@@ -206,6 +211,28 @@ fn system_dark() -> bool {
         )
     };
     r.is_ok() && value == 0
+}
+
+/// 窓のメニュー（元に戻す・移動・サイズ変更・最小化・最大化・閉じる）を画面の (sx, sy) に出し、選ばれた操作を窓に
+/// 頼む。メニューは閉じるまで窓の知らせを受け続けるので、借りの外で呼ぶ
+fn show_window_menu(hwnd: HWND, sx: i32, sy: i32) {
+    unsafe {
+        let menu = GetSystemMenu(hwnd, false);
+        if menu.is_invalid() {
+            log::event("title_bar.window_menu", &format!("x={sx} y={sy}"), "no menu");
+            return;
+        }
+        // 最大化の間は、元に戻す・最小化・閉じるだけを押せるようにする（OS が出す時と同じ）
+        let zoomed = IsZoomed(hwnd).as_bool();
+        for (cmd, on) in [(SC_RESTORE, zoomed), (SC_MOVE, !zoomed), (SC_SIZE, !zoomed), (SC_MINIMIZE, true), (SC_MAXIMIZE, !zoomed), (SC_CLOSE, true)] {
+            let _ = EnableMenuItem(menu, cmd, MF_BYCOMMAND | if on { MF_ENABLED } else { MF_GRAYED });
+        }
+        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, sx, sy, None, hwnd, None);
+        log::event("title_bar.window_menu", &format!("x={sx} y={sy} zoomed={zoomed}"), &format!("cmd={:#x}", cmd.0));
+        if cmd.0 != 0 {
+            let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(cmd.0 as usize), LPARAM(0));
+        }
+    }
 }
 
 /// システムのファイルのダイアログを出して、選んだファイルを返す（取り消したら空）。モーダルなので借りの外で呼ぶ
@@ -635,6 +662,10 @@ struct State {
     shown: bool,
     full_rate: bool,
     window_focused: bool,
+    /// kargui が題の帯を描く窓か（Options::custom_title_bar）
+    custom_title_bar: bool,
+    /// 題の帯の上（NC）を出た知らせ（WM_NCMOUSELEAVE）を頼んでいるか
+    nc_tracking: bool,
     composing: bool,
     high_surrogate: Option<u16>,
     last_caret: Option<IRect>,
@@ -764,6 +795,10 @@ fn do_post(p: Post) {
                 });
             }
             Post::AcceptFiles(hwnd) => accept_files(hwnd),
+            Post::Show(hwnd, cmd) => unsafe {
+                let _ = ShowWindow(hwnd, cmd);
+            },
+            Post::WindowMenu(hwnd, x, y) => show_window_menu(hwnd, x, y),
             Post::Quit => {
                 if let Some(h) = with_state(|st| st.hwnd) {
                     let res = unsafe { DestroyWindow(h) };
@@ -792,11 +827,14 @@ fn open_window(r: crate::ui::context::WindowRequest) {
     };
     // アイコンが無ければ主の窓のアイコン
     let icon = r.icon.clone().or(main_icon);
-    match create_window(Some(r.key.clone()), &r.title, r.size, r.position, renderer, dark, full_rate, icon, r.min_size, font, font_files, app, started) {
+    match create_window(Some(r.key.clone()), &r.title, r.size, r.position, r.custom_title_bar, renderer, dark, full_rate, icon, r.min_size, font, font_files, app, started) {
         Ok(w) => {
             let hwnd = w.hwnd;
             with_windows(|ws| ws.push(w));
             with_state(|st| st.open_windows.push(r.key.clone()));
+            if r.custom_title_bar {
+                use_custom_frame(hwnd);
+            }
             unsafe {
                 let _ = ShowWindow(hwnd, if r.activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
             }
@@ -912,6 +950,20 @@ impl State {
         // Ui::quit: 主の窓を壊してアプリを終える
         if std::mem::take(&mut self.rt.cx.quit) {
             self.post.push(Post::Quit);
+        }
+        // kargui が描く題の帯のボタン。窓の操作は借りの外で行う（動かす・窓のメニューは HTCAPTION で OS が行う）
+        if let Some(r) = self.rt.cx.csd_request.take() {
+            use crate::ui::context::CsdRequest as R;
+            log::event("title_bar.request", &format!("key={:?}", self.key), &format!("{r:?}"));
+            let zoomed = unsafe { IsZoomed(self.hwnd) }.as_bool();
+            match r {
+                R::Minimize => self.post.push(Post::Show(self.hwnd, SW_MINIMIZE)),
+                R::ToggleMaximize => self.post.push(Post::Show(self.hwnd, if zoomed { SW_RESTORE } else { SW_MAXIMIZE })),
+                R::Close => unsafe {
+                    let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                },
+                R::Move | R::Menu { .. } => {}
+            }
         }
         // ファイルのダイアログは、描いた後で借りの外で出す
         if let Some((key, d)) = self.rt.cx.file_dialog_request.take() {
@@ -1070,6 +1122,70 @@ impl State {
         self.need_frame = true;
     }
 
+    /// kargui が描く題の帯の様子（前面か・最大化か）を Runtime に渡す（Options::custom_title_bar の窓だけ。変わった時
+    /// だけ描き直す）
+    fn sync_csd(&mut self) {
+        use crate::ui::context::{Csd, CsdButton as B};
+        if !self.custom_title_bar {
+            return;
+        }
+        let maximized = unsafe { IsZoomed(self.hwnd) }.as_bool();
+        let want = Some(Csd {
+            title: self.rt.title.clone(),
+            focused: self.window_focused,
+            maximized,
+            tiled: maximized,
+            left: Vec::new(),
+            right: vec![B::Minimize, B::Maximize, B::Close],
+            windows: true,
+        });
+        if self.rt.cx.csd != want {
+            log::event("title_bar.state", &format!("key={:?} focused={} maximized={maximized}", self.key, self.window_focused), "ok");
+            self.rt.cx.csd = want;
+            self.need_frame = true;
+        }
+    }
+
+    /// NC の知らせの画面の位置（lParam）を、窓の中の位置にする
+    fn client_point(&self, lp: LPARAM) -> (f32, f32) {
+        let mut pt = POINT { x: lo(lp.0), y: hi(lp.0) };
+        unsafe {
+            let _ = ScreenToClient(self.hwnd, &mut pt);
+        }
+        (pt.x as f32, pt.y as f32)
+    }
+
+    /// kargui が描く題の帯の当たり（WM_NCHITTEST）。上の縁は大きさを変える所、最大化のボタンは HTMAXBUTTON（Windows 11
+    /// のスナップレイアウト）、帯の何も無い所は HTCAPTION（動かす・2 回押しで最大化は OS が行う。右クリックの窓のメニューは
+    /// open_window_menu）
+    fn title_bar_hit(&self, x: f32, y: f32) -> u32 {
+        let edge = frame_thickness(self.hwnd) as f32;
+        let zoomed = unsafe { IsZoomed(self.hwnd) }.as_bool();
+        let cx = &self.rt.cx;
+        if !zoomed && y < edge {
+            return if x < 2.0 * edge {
+                HTTOPLEFT
+            } else if x >= cx.width - 2.0 * edge {
+                HTTOPRIGHT
+            } else {
+                HTTOP
+            };
+        }
+        if cx.prev.caption_max.is_some_and(|m| m.contains(x, y)) {
+            return HTMAXBUTTON;
+        }
+        if cx.prev.title_bar.is_some_and(|b| b.contains(x, y)) && cx.hit(x, y).filter(|h| h.enabled).is_none() {
+            return HTCAPTION;
+        }
+        HTCLIENT
+    }
+
+    /// 窓のメニューを画面の (sx, sy) に出すよう頼む（出すのは借りを返した後の show_window_menu）。
+    /// 帯を窓の中に含めた窓では、帯の右クリックで OS がこのメニューを出さないので kargui が出す
+    fn open_window_menu(&mut self, sx: i32, sy: i32) {
+        self.post.push(Post::WindowMenu(self.hwnd, sx, sy));
+    }
+
     fn ime_string(&self, kind: IME_COMPOSITION_STRING) -> Option<String> {
         let bytes = self.ime_raw(kind)?;
         let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
@@ -1202,6 +1318,7 @@ impl State {
                 let (w, h) = (lo(lp.0), hi(lp.0));
                 log::event("window.size", &format!("size={w}x{h} kind={}", wp.0), "ok");
                 self.resize(w, h);
+                self.sync_csd();
                 if self.shown && w > 0 && h > 0 {
                     self.frame("size");
                 }
@@ -1257,6 +1374,7 @@ impl State {
             WM_SETFOCUS | WM_KILLFOCUS => {
                 let focused = msg == WM_SETFOCUS;
                 self.window_focused = focused;
+                self.sync_csd();
                 log::event("window.focus", &format!("focused={focused}"), "ok");
                 if let Some(events) = self.adapter.as_mut().and_then(|a| a.update_window_focus_state(focused)) {
                     self.post.push(Post::Raise(events));
@@ -1326,6 +1444,60 @@ impl State {
                     self.rt.cx.bar_hover = bar;
                     self.need_frame = true;
                 }
+                Some(LRESULT(0))
+            }
+            // kargui が題の帯を描く窓: 上の帯（OS の題の帯と上の縁）を窓の中に含める。左右と下の縁は OS のまま（大きさを
+            // 変える所と影）。最大化した窓は画面の外へ縁の分はみ出すので、上もその分だけ下げる
+            WM_NCCALCSIZE if self.custom_title_bar && wp.0 != 0 => {
+                let params = unsafe { &mut *(lp.0 as *mut NCCALCSIZE_PARAMS) };
+                let top = params.rgrc[0].top;
+                let r = unsafe { DefWindowProcW(self.hwnd, msg, wp, lp) };
+                let zoomed = unsafe { IsZoomed(self.hwnd) }.as_bool();
+                params.rgrc[0].top = top + if zoomed { frame_thickness(self.hwnd) } else { 0 };
+                Some(r)
+            }
+            WM_NCHITTEST if self.custom_title_bar => {
+                let r = unsafe { DefWindowProcW(self.hwnd, msg, wp, lp) };
+                if r.0 != HTCLIENT as isize {
+                    return Some(r);
+                }
+                let (x, y) = self.client_point(lp);
+                Some(LRESULT(self.title_bar_hit(x, y) as isize))
+            }
+            // 最大化のボタンの上は、OS が中の動きの代わりに NC の知らせを送るので、kargui の入力に直す（押す・離すを
+            // DefWindowProc に渡すと、古い形のボタンを描いて押すのを待つ）。帯の何も無い所は OS に任せる
+            WM_NCMOUSEMOVE if self.custom_title_bar => {
+                if !self.nc_tracking {
+                    let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: self.hwnd, dwHoverTime: 0 };
+                    self.nc_tracking = unsafe { TrackMouseEvent(&mut t) }.is_ok();
+                }
+                let (x, y) = self.client_point(lp);
+                let hover = if wp.0 as u32 == HTMAXBUTTON { self.rt.hover_at(x, y) } else { None };
+                if hover != self.rt.cx.hover {
+                    log::event("title_bar.hover", &format!("x={x} y={y} ht={}", wp.0), &format!("id={}", hover.map_or("none".to_string(), |h| format!("{:x}", h.0))));
+                    self.rt.cx.set_hover(hover);
+                    self.need_frame = true;
+                }
+                None
+            }
+            WM_NCMOUSELEAVE if self.custom_title_bar => {
+                self.nc_tracking = false;
+                if self.rt.cx.hover.is_some() {
+                    self.rt.cx.set_hover(None);
+                    self.need_frame = true;
+                }
+                None
+            }
+            WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK if self.custom_title_bar && wp.0 as u32 == HTMAXBUTTON => {
+                let (x, y) = self.client_point(lp);
+                log::event("title_bar.max_down", &format!("x={x} y={y}"), "");
+                self.push(Event::PointerDown { x, y, shift: false, count: 1 });
+                Some(LRESULT(0))
+            }
+            WM_NCLBUTTONUP if self.custom_title_bar && wp.0 as u32 == HTMAXBUTTON => {
+                let (x, y) = self.client_point(lp);
+                log::event("title_bar.max_up", &format!("x={x} y={y}"), "");
+                self.push(Event::PointerUp { x, y });
                 Some(LRESULT(0))
             }
             WM_MOUSELEAVE => {
@@ -1410,9 +1582,33 @@ impl State {
                 if x < 0.0 || y < 0.0 || x >= self.rt.cx.width || y >= self.rt.cx.height {
                     return None;
                 }
+                // kargui が描く帯の何も無い所なら、アプリの右クリックにせず窓のメニューを出す
+                if self.custom_title_bar && self.title_bar_hit(x, y) == HTCAPTION {
+                    self.open_window_menu(lo(lp.0), hi(lp.0));
+                    return Some(LRESULT(0));
+                }
                 log::event("context_menu", &format!("x={x} y={y}"), "sent");
                 self.push(Event::ContextMenu { x, y });
                 Some(LRESULT(0))
+            }
+            // 帯の何も無い所などの右ボタン。帯を窓の中に含めた窓では OS が窓のメニューを出さないので、帯の何も無い所で
+            // 離した時に kargui が出す（DefWindowProc に渡さないので、続く WM_CONTEXTMENU も来ない）
+            WM_NCRBUTTONDOWN | WM_NCRBUTTONUP if self.custom_title_bar => {
+                let (x, y) = self.client_point(lp);
+                let up = msg == WM_NCRBUTTONUP;
+                log::event(if up { "title_bar.right_up" } else { "title_bar.right_down" }, &format!("x={x} y={y} ht={}", wp.0), "");
+                if up && wp.0 as u32 == HTCAPTION {
+                    self.open_window_menu(lo(lp.0), hi(lp.0));
+                    return Some(LRESULT(0));
+                }
+                None
+            }
+            // 窓のメニュー（題の帯の右クリック・Alt+Space）が開いた。記録だけして OS に任せる
+            WM_INITMENUPOPUP => {
+                if hi(lp.0) != 0 {
+                    log::event("window.menu", "", "shown");
+                }
+                None
             }
             WM_MOUSEWHEEL => {
                 let delta = hi(wp.0 as isize) as f32;
@@ -1673,6 +1869,7 @@ fn create_window(
     title: &str,
     size: (f32, f32),
     position: Option<(f32, f32)>,
+    custom_title_bar: bool,
     renderer: Renderer,
     dark: bool,
     full_rate: bool,
@@ -1744,7 +1941,7 @@ fn create_window(
     let actions = Arc::new(Mutex::new(VecDeque::new()));
     let focused = unsafe { GetForegroundWindow() } == hwnd;
     let adapter = Adapter::new(hwnd, focused, ActionSink { hwnd: hwnd.0 as isize, queue: actions.clone() });
-    Ok(State {
+    let mut st = State {
         hwnd,
         key,
         app,
@@ -1768,6 +1965,8 @@ fn create_window(
         shown: false,
         full_rate,
         window_focused: focused,
+        custom_title_bar,
+        nc_tracking: false,
         composing: false,
         high_surrogate: None,
         last_caret: None,
@@ -1787,7 +1986,23 @@ fn create_window(
         t_wait: 0.0,
         slow_frames: 0,
         anim: AnimStats::default(),
-    })
+    };
+    st.sync_csd();
+    Ok(st)
+}
+
+/// kargui が題の帯を描く窓にする（見せる前、借りの外で）。WM_NCCALCSIZE を起こし、上の帯を窓の中に含め直す
+fn use_custom_frame(hwnd: HWND) {
+    let res = unsafe { SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) };
+    log::event("title_bar.custom", "", &format!("{res:?}"));
+}
+
+/// 窓の縁の厚さ（大きさを変える所。物理ピクセル）
+fn frame_thickness(hwnd: HWND) -> i32 {
+    unsafe {
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+    }
 }
 
 pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Error> {
@@ -1821,6 +2036,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         &options.title,
         options.size,
         options.position,
+        options.custom_title_bar,
         options.renderer,
         dark,
         options.full_rate,
@@ -1833,6 +2049,9 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     )?;
     let hwnd = main.hwnd;
     STATE.with(|s| s.borrow_mut().push(main));
+    if options.custom_title_bar {
+        use_custom_frame(hwnd);
+    }
 
     unsafe {
         let _ = ShowWindow(hwnd, if options.activate { SW_SHOW } else { SW_SHOWNOACTIVATE });

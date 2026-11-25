@@ -194,6 +194,8 @@ pub(crate) enum Kind {
     Toolbar,
     /// アプリが描く題の帯（合成が描かない時。Ui::with_title_bar が作る）
     TitleBar { focused: bool },
+    /// Windows の形の題の帯のボタン（幅 46 の四角。閉じるは乗ると赤）
+    CaptionButton { button: context::CsdButton, maximized: bool },
     /// 格子の入れ物
     Grid,
     /// 仕切りで分けた 2 つの区画の入れ物（stacked なら上下）
@@ -379,6 +381,8 @@ pub(crate) struct Tree {
     /// 重ねて出す物（作った順。後ろほど上に重なる）
     pub overlays: Vec<Overlay>,
     occurrences: HashMap<(u64, u64, &'static str, u32, u32), u32>,
+    /// kargui が描く題の帯の、アプリの部品を入れる所（Ui::title_bar）。帯が無ければ None
+    pub title_slot: Option<usize>,
 }
 
 impl Tree {
@@ -398,6 +402,7 @@ impl Tree {
             layout: vec![layout],
             overlays: Vec::new(),
             occurrences: HashMap::new(),
+            title_slot: None,
         }
     }
 }
@@ -438,7 +443,9 @@ impl<'a> Ui<'a> {
     }
 
     /// 題の帯をアプリが描く時（cx.csd がある時）の画面。根の下に題の帯と本文を置き、アプリのビューは本文の中で作る。
-    /// 帯は窓の端まで描くので、根の余白と間は 0 にし、いつもの余白と間は本文に付ける
+    /// 帯は窓の端まで描くので、根の余白と間は 0 にし、いつもの余白と間は本文に付ける。帯には、アプリの部品を入れる所
+    /// （Ui::title_bar）を置き、ビューが何も入れなければ題を出す。GNOME は左右のボタンの間の真ん中に題を置き、Windows
+    /// は左に題、右端にボタンを付ける
     pub(crate) fn with_title_bar(&mut self, view: &mut dyn FnMut(&mut Ui)) {
         let Some(csd) = self.cx.csd.clone() else {
             view(self);
@@ -451,28 +458,35 @@ impl<'a> Ui<'a> {
         let (h, side, between) = (self.px(TITLE_BAR_H), self.px(6.0), self.px(4.0));
         let l = &mut self.tree.layout[bar];
         l.height = Size::Fixed(h);
-        l.pad = (side, 0.0);
-        l.gap = between;
+        l.pad = (if csd.windows { 0.0 } else { side }, 0.0);
+        // 帯の子の間は 0 にし、すき間は題を入れる所の余白で作る（空の入れ物があっても題が真ん中からずれないように。
+        // 空の入れ物を子の並びから外すと、読み上げの木に親の無い節が入り、accesskit が止める）
+        l.gap = 0.0;
         l.align = Align::Center;
-        // 左右のボタンを同じ幅の入れ物に入れて、題を窓の真ん中に置く（GNOME と同じ）
+        // 並び: 左のボタン・アプリの部品を入れる所・題を入れる所・右のボタン
         let mut ui = self.child(bar);
-        for (side, buttons) in [(0, &csd.left), (1, &csd.right)] {
-            if side == 1 {
-                let title = ui.label(&csd.title).bold();
-                if !csd.focused {
-                    title.weak();
+        let (left, _) = ui.add(Kind::Row, Dir::Row);
+        ui.tree.layout[left].gap = between;
+        for &b in &csd.left {
+            ui.child(left).title_button(b, csd.maximized);
+        }
+        let (slot, _) = ui.add(Kind::Row, Dir::Row);
+        ui.tree.layout[slot].gap = between;
+        let (title, _) = ui.add(Kind::Row, Dir::Row);
+        let (right, _) = ui.add(Kind::Row, Dir::Row);
+        {
+            let mut g = ui.child(right);
+            if csd.windows {
+                for &b in &csd.right {
+                    g.caption_button(b, csd.maximized, h);
                 }
-            }
-            let (group, _) = ui.add(Kind::Row, Dir::Row);
-            let l = &mut ui.tree.layout[group];
-            l.width = Size::Fill(1.0);
-            l.gap = between;
-            let mut g = ui.child(group);
-            if side == 1 {
+            } else {
+                // 入れ物いっぱいの時に、ボタンを右端へ寄せる
+                g.tree.layout[right].gap = between;
                 g.fill();
-            }
-            for &b in buttons {
-                g.title_button(b, csd.maximized);
+                for &b in &csd.right {
+                    g.title_button(b, csd.maximized);
+                }
             }
         }
         let (body, _) = self.add(Kind::Column, Dir::Column);
@@ -481,7 +495,58 @@ impl<'a> Ui<'a> {
         l.gap = gap;
         l.align = Align::Stretch;
         l.height = Size::Fill(1.0);
+        self.tree.title_slot = Some(slot);
         view(&mut self.child(body));
+        self.tree.title_slot = None;
+        // アプリが帯に何も入れなければ題を出す
+        let empty = self.tree.layout[slot].children.is_empty();
+        if empty {
+            let mut t = self.child(title);
+            let label = t.label(&csd.title).bold();
+            if !csd.focused {
+                label.weak();
+            }
+        }
+        // すき間: GNOME は題の左右とアプリの部品の左に間を 1 つずつ（ボタンとの間）
+        if !csd.windows {
+            self.tree.layout[title].pad = (between, 0.0);
+            if !empty {
+                self.tree.layout[slot].pad = (between, 0.0);
+            }
+        }
+        // GNOME で題を出す時は、左右のボタンの入れ物を同じ幅にして題を窓の真ん中に置く。それ以外は題の所が残りを取る
+        // （何も無い所は窓をつかむ所）
+        let fill = Size::Fill(1.0);
+        if empty && !csd.windows {
+            self.tree.layout[left].width = fill;
+            self.tree.layout[right].width = fill;
+        } else {
+            self.tree.layout[title].width = fill;
+        }
+        if csd.windows {
+            // 左の端から少し空ける
+            let inset = self.px(12.0);
+            self.tree.layout[if empty { title } else { slot }].pad = (inset, 0.0);
+        }
+    }
+
+    /// Windows の形の題の帯のボタン（幅 46・帯の高さ）。押したら窓の処理に頼む（Ui::with_title_bar）
+    fn caption_button(&mut self, b: context::CsdButton, maximized: bool, h: f32) {
+        use context::{CsdButton as B, CsdRequest as R};
+        let (name, request) = match b {
+            B::Minimize => ("Minimize", R::Minimize),
+            B::Maximize if maximized => ("Restore", R::ToggleMaximize),
+            B::Maximize => ("Maximize", R::ToggleMaximize),
+            B::Close => ("Close", R::Close),
+        };
+        let (idx, id) = self.add(Kind::CaptionButton { button: b, maximized }, Dir::Leaf);
+        self.tree.info[idx].label = Some(name.to_string());
+        let w = self.px(46.0);
+        let l = &mut self.tree.layout[idx];
+        (l.width, l.height) = (Size::Fixed(w), Size::Fixed(h));
+        if !self.disabled && self.cx.clicked == Some(id) {
+            self.cx.csd_request = Some(request);
+        }
     }
 
     /// 題の帯のボタン。押したら窓の処理に頼む（Ui::with_title_bar）
@@ -547,6 +612,32 @@ impl<'a> Ui<'a> {
     }
 
     // ---- 入れ物 ----
+
+    /// Puts widgets in the window's title bar, such as a menu, a search field or tabs. Where
+    /// kargui draws the bar (on Windows with [`Options::custom_title_bar`](crate::Options::custom_title_bar),
+    /// and on GNOME), they go into it before the window's buttons; the empty part of the bar still
+    /// moves the window, and the window's title is not shown (show it yourself if you want it).
+    /// Where the system draws the bar, they make a row where this is called, so call it first in
+    /// the view.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// ui.title_bar(|ui| {
+    ///     ui.label("Notes").bold();
+    ///     ui.button("New");
+    /// });
+    /// ui.label("The rest of the window");
+    /// # });
+    /// ```
+    #[track_caller]
+    pub fn title_bar(&mut self, f: impl FnOnce(&mut Ui)) {
+        match self.tree.title_slot {
+            Some(slot) => f(&mut self.child(slot)),
+            None => {
+                self.row(f);
+            }
+        }
+    }
 
     /// Places the widgets created in `f` side by side, centered vertically.
     ///
@@ -2712,7 +2803,16 @@ impl<'a> Ui<'a> {
             crate::log::event("window.closed_by_user", &format!("key={key}"), "open=false");
         }
         if *open {
-            self.cx.windows.push(context::WindowRequest { key: key.to_string(), title: options.title.clone(), size: options.size, position: options.position, activate: options.activate, icon: options.icon.clone(), min_size: options.min_size });
+            self.cx.windows.push(context::WindowRequest {
+                key: key.to_string(),
+                title: options.title.clone(),
+                size: options.size,
+                position: options.position,
+                custom_title_bar: options.custom_title_bar,
+                activate: options.activate,
+                icon: options.icon.clone(),
+                min_size: options.min_size,
+            });
         }
     }
 

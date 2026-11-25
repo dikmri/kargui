@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Title bar: with `Options::custom_title_bar`, kargui draws the title bar on Windows too, and
+  `Ui::title_bar` puts widgets in it (on GNOME kargui always draws the bar). The minimize,
+  maximize and close buttons sit at the bar's right end, the maximize button shows the snap
+  layouts on Windows 11, and the empty part of the bar moves, maximizes and snaps the window and
+  opens its menu as the system's bar does. Where the system draws the bar, the widgets make the
+  top row of the window. Guide chapter 17, `examples/gallery` (its title bar).
 - Docking: `ui.dock(&mut dock).show(title, content)` arranges panels in tab groups that the user
   can rearrange. The app keeps the layout in a `Dock<K>` (`K` is its name for a panel) and builds
   it with `Dock::new` and `Dock::insert(panel, DockTo::Tab | Split | Edge)`; groups are named by a

@@ -81,6 +81,38 @@ options.min_size = Some((360.0, 240.0));
 
 `icon` は題の帯とタスクバーのアイコンです。ほかの窓は、自分のアイコンが無ければ主の窓のアイコンを使います。`min_size` は、利用者が小さくできる中の大きさの下限（論理ピクセル）です。
 
+## 題の帯に部品を置く
+
+`options.custom_title_bar = true` の窓では、Windows でも kargui が題の帯を描きます。ビューの `ui.title_bar` で、帯の中にメニュー・検索・タブなどを置けます。
+
+```rust
+use kargui::{App, Options, Ui};
+
+struct Notes {
+    search: String,
+}
+
+impl App for Notes {
+    fn view(&mut self, ui: &mut Ui) {
+        ui.title_bar(|ui| {
+            ui.label("メモ").bold();
+            ui.text_input(&mut self.search).hint("探す");
+        });
+        ui.label("本文");
+    }
+}
+
+let mut options = Options::new("メモ");
+options.custom_title_bar = true;
+# let _ = (options, Notes { search: String::new() });
+```
+
+- kargui は、帯の右端に最小化・最大化・閉じるのボタンを置きます。Windows 11 では、最大化のボタンに乗るとスナップレイアウト（窓の並べ方の候補）が出ます。
+- 帯の何も無い所（押せない文字の上を含む）は、OS の題の帯と同じく、引っ張ると窓が動き、2 回押すと最大化し、右クリックで窓のメニューが出ます。画面の端へ寄せる操作も使えます。
+- `ui.title_bar` に何も入れなければ、帯の左に窓の題を出します。入れた時は題を出さないので、出したい時はアプリが `ui.label` で置いてください。
+- GNOME（合成が題の帯を描かない Wayland）では、`custom_title_bar` にかかわらず kargui が帯を描き、`ui.title_bar` の部品を帯に入れます。
+- OS や合成が帯を描く所（X11、帯を描く Wayland、帯の無い合成）と、`custom_title_bar` が false の Windows では、`ui.title_bar` の部品は窓のいちばん上の行になります。どの OS でも使えるように、`ui.title_bar` はビューの最初に呼んでください。
+
 ## 試験
 
 試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。
