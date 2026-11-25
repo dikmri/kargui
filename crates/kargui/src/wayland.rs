@@ -561,6 +561,9 @@ struct State {
     /// トレイ（主の窓のビューが Ui::tray を呼んでいる間）と、アプリがアイコンを渡さない時の画像
     tray: Option<crate::sni::Tray>,
     tray_fallback: Option<crate::Image>,
+    /// 通知の係（最初の Ui::notify で始める）と、通知に出すアプリの名前（Options::title）
+    notifier: Option<crate::notify_dbus::Notifier>,
+    notify_app_name: String,
     running: bool,
     /// ポインターとキーボードの焦点がある窓
     pointer_win: Option<WinId>,
@@ -900,6 +903,16 @@ impl State {
             self.settings_rx = None;
             self.apply_settings(s, "late (after the first frame)");
         }
+        // 押された通知の答え（頼んだ窓に入れる）
+        let answers: Vec<crate::notify_dbus::Answer> = self.notifier.as_ref().map(|n| n.rx.try_iter().collect()).unwrap_or_default();
+        for (win, key, a) in answers {
+            if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
+                log::event("notify.answer", &format!("key={key}"), &format!("{a:?}"));
+                w.rt.cx.notification_results.insert(key, a);
+                w.need_frame = true;
+                w.why = "input";
+            }
+        }
         // トレイを押した・項目を選んだ（主の窓の入力にする）
         let inputs: Vec<crate::ui::tray::TrayInput> = self.tray.as_ref().map(|t| t.rx.try_iter().collect()).unwrap_or_default();
         for t in inputs {
@@ -909,6 +922,17 @@ impl State {
                 w.need_frame = true;
                 w.why = "input";
             }
+        }
+    }
+
+    /// 通知を出す（最初の 1 回で通知のスレッドを始める）。答えは窓 win に返す
+    fn notify(&mut self, win: WinId, key: String, n: crate::Notification) {
+        log::event("notify.request", &crate::ui::notify::line(&key, &n), &format!("win={win}"));
+        if self.notifier.is_none() {
+            self.notifier = Some(crate::notify_dbus::spawn(self.notify_app_name.clone(), self.wake.clone()));
+        }
+        if let Some(t) = &self.notifier {
+            t.show(win, key, n);
         }
     }
 
@@ -1179,6 +1203,7 @@ impl State {
         let requested = is_main.then(|| w.rt.cx.windows.clone());
         let tray = is_main.then(|| w.rt.cx.tray.clone());
         let show = w.rt.cx.show_request.take();
+        let notes = std::mem::take(&mut w.rt.cx.notify_requests);
         w.wake_at = out.wake_after.map(|d| Instant::now() + d);
         w.animating = out.want_frame;
         w.need_frame = false;
@@ -1194,6 +1219,9 @@ impl State {
         }
         if let Some(s) = show {
             self.present(id, s);
+        }
+        for (key, n) in notes {
+            self.notify(id, key, n);
         }
         if let Some(r) = title_bar {
             self.title_bar_request(id, r);
@@ -1318,6 +1346,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         settings_rx,
         tray: None,
         tray_fallback: options.icon.clone(),
+        notifier: None,
+        notify_app_name: options.title.clone(),
         running: true,
         pointer_win: None,
         keyboard_win: None,

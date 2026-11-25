@@ -45,6 +45,9 @@ mod wic;
 // トレイ（通知領域のアイコン）の Windows の道
 #[cfg(windows)]
 mod tray_win;
+// 通知（トースト）の Windows の道
+#[cfg(windows)]
+mod toast_win;
 // OS との境目の Linux の版（Wayland と X11 の窓と入力。分け合う物は linux.rs、ポータルは portal.rs）
 #[cfg(target_os = "linux")]
 mod fcitx;
@@ -59,6 +62,9 @@ mod portal;
 // トレイ（StatusNotifierItem と dbusmenu）の Linux の道
 #[cfg(target_os = "linux")]
 mod sni;
+// 通知（org.freedesktop.Notifications）の Linux の道
+#[cfg(target_os = "linux")]
+mod notify_dbus;
 #[cfg(target_os = "linux")]
 mod wayland;
 #[cfg(target_os = "linux")]
@@ -86,6 +92,7 @@ pub use text::Font;
 pub use theme::Theme;
 pub use ui::{Align, Id, Size, SliderValue, Ui};
 pub use ui::dock::{Dock, DockSide, DockTo};
+pub use ui::notify::{Notification, NotificationAction};
 pub use wake::Waker;
 
 /// An error from the operating system while opening or drawing the window.

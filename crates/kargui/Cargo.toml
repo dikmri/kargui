@@ -88,4 +88,8 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
+    # 通知（トースト。toast_win.rs）
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
 ]

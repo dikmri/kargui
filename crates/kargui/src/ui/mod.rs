@@ -52,6 +52,7 @@ pub(crate) mod dock_view;
 pub(crate) mod draw;
 pub(crate) mod edit;
 pub(crate) mod layout;
+pub(crate) mod notify;
 pub(crate) mod rich;
 pub(crate) mod tray;
 
@@ -3015,6 +3016,51 @@ impl<'a> Ui<'a> {
     /// ```
     pub fn show_window(&mut self) {
         self.cx.show_request = Some(true);
+    }
+
+    /// Shows a notification after this frame (on Windows a toast, which also stays in the
+    /// notification center; on Linux through the desktop's notification service). Call it when
+    /// something happens, not every frame: each call shows it again. A notification with the same
+    /// `key` replaces the one shown before. When the user clicks it, read the answer with
+    /// [`notification_clicked`](Self::notification_clicked) and the same key.
+    ///
+    /// On Windows, the first notification registers the app's name ([`Options::title`](crate::Options::title))
+    /// for the user (under `HKEY_CURRENT_USER\Software\Classes\AppUserModelId`, named after the
+    /// program file), so that the toast shows it. Clicks reach the app while it runs; clicking an
+    /// old notification after the app ended does nothing.
+    ///
+    /// ```
+    /// use kargui::Notification;
+    ///
+    /// # kargui::test::example(|ui| {
+    /// if ui.button("Remind me").clicked() {
+    ///     ui.notify("reminder", Notification::new("Meeting").body("In 5 minutes").button("snooze", "Snooze"));
+    /// }
+    /// # });
+    /// ```
+    pub fn notify(&mut self, key: &str, notification: notify::Notification) {
+        self.cx.notify_requests.retain(|(k, _)| k != key);
+        self.cx.notify_requests.push((key.to_string(), notification));
+    }
+
+    /// What the user clicked on the notification shown with `key` ([`notify`](Self::notify)):
+    /// the notification itself or one of its buttons. Returns it once; `None` until then, and
+    /// when the user closed the notification without clicking.
+    ///
+    /// ```
+    /// use kargui::NotificationAction;
+    ///
+    /// # kargui::test::example(|ui| {
+    /// # let mut snoozed = false;
+    /// match ui.notification_clicked("reminder") {
+    ///     Some(NotificationAction::Button(id)) if id == "snooze" => snoozed = true,
+    ///     Some(_) => ui.show_window(),
+    ///     None => {}
+    /// }
+    /// # });
+    /// ```
+    pub fn notification_clicked(&mut self, key: &str) -> Option<notify::NotificationAction> {
+        self.cx.notification_results.remove(key)
     }
 
     /// A built-in [`Icon`], 16 logical pixels by default, in the text color. It is decorative:

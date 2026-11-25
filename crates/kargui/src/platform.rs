@@ -110,6 +110,8 @@ enum Post {
     TrayMenu(HWND, i32, i32, Vec<crate::ui::tray::TrayNode>),
     /// 窓を出す（true。最小化も戻して前に出す）か隠す（false）。Ui::show_window・hide_window
     Present(HWND, bool),
+    /// 通知（トースト）を出す（頼んだ窓, キー, 中身）。WinRT の呼び出しは借りの外で
+    Notify(HWND, String, crate::Notification),
 }
 
 /// 読み上げの操作を、窓の持ち主のスレッドへ渡す係（AccessKit は別のスレッドから呼ぶことがある）
@@ -822,6 +824,12 @@ fn do_post(p: Post) {
                     with_window(hwnd, |st| st.push(Event::Tray(crate::ui::tray::TrayInput::Choose(id))));
                 }
             }
+            Post::Notify(hwnd, key, n) => {
+                ensure_com();
+                // トーストの上に出すアプリの名前は、主の窓の題（Options::title）
+                let name = with_state(|st| st.hwnd).map(crate::toast_win::window_title).unwrap_or_default();
+                crate::toast_win::show(hwnd, &name, &key, &n);
+            }
             Post::Present(hwnd, show) => unsafe {
                 let before = (IsWindowVisible(hwnd).as_bool(), IsIconic(hwnd).as_bool());
                 if show {
@@ -995,6 +1003,11 @@ impl State {
         }
         if let Some(show) = self.rt.cx.show_request.take() {
             self.post.push(Post::Present(self.hwnd, show));
+        }
+        // 通知（どの窓のビューも頼める。答えは頼んだ窓に返す）
+        for (key, n) in std::mem::take(&mut self.rt.cx.notify_requests) {
+            log::event("notify.request", &crate::ui::notify::line(&key, &n), &format!("key={:?}", self.key));
+            self.post.push(Post::Notify(self.hwnd, key, n));
         }
         // kargui が描く題の帯のボタン。窓の操作は借りの外で行う（動かす・窓のメニューは HTCAPTION で OS が行う）
         if let Some(r) = self.rt.cx.csd_request.take() {
@@ -1395,6 +1408,15 @@ impl State {
                 // エクスプローラーはこの知らせを送る（SendMessage）ので、GetMessage の中で処理され、輪は次の知らせが
                 // 積まれるまで戻らない（フレームが回らない）。何もしない知らせを積んで、輪を起こす
                 let _ = unsafe { PostMessageW(Some(self.hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
+                Some(LRESULT(0))
+            }
+            // 押された通知の答え（WinRT のスレッドが列に積んで、この知らせを積んだ）
+            crate::toast_win::WM_APP_NOTIFY => {
+                for (key, a) in crate::toast_win::take_answers(self.hwnd) {
+                    log::event("notify.answer", &format!("key={key}"), &format!("{a:?}"));
+                    self.rt.cx.notification_results.insert(key, a);
+                }
+                self.need_frame = true;
                 Some(LRESULT(0))
             }
             // エクスプローラーが起動し直した: 出していたトレイのアイコンを入れ直す

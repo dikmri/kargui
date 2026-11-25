@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Notifications: `Ui::notify` shows a notification (`Notification`: a title, a body, up to three
+  buttons, `silent`); the same key replaces the one shown before, and
+  `Ui::notification_clicked` returns what the user clicked (`NotificationAction::Body` or
+  `Button(id)`) once. Windows shows a WinRT toast and registers the app's name for the user
+  (`HKEY_CURRENT_USER\Software\Classes\AppUserModelId`); Linux (Wayland and X11) uses
+  org.freedesktop.Notifications over D-Bus. The test harness reads the notifications
+  (`notifications`) and clicks them (`click_notification`). Guide chapter 17,
+  `examples/gallery` (the notification page).
 - Tray: `Ui::tray` puts an icon in the notification area while the main window's view calls
   it, with a tooltip, a click (`Tray::clicked`) and a menu the system draws (`Tray::menu`:
   items, check items, separators, submenus). Windows uses `Shell_NotifyIconW`; Linux (Wayland and

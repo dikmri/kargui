@@ -5,13 +5,13 @@
 use std::time::{Duration, Instant};
 
 use kargui::ui::{TableColumn, TreeBuilder};
-use kargui::{App, Color, Date, Dock, DockSide, DockTo, FileDialog, Frame, Icon, Image, Options, Rect, Size, Time, Ui, rgb};
+use kargui::{App, Color, Date, Dock, DockSide, DockTo, FileDialog, Frame, Icon, Image, Notification, NotificationAction, Options, Rect, Size, Time, Ui, rgb};
 use taskcore::{args, log};
 
 const DEFAULT_LOG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../logs/gallery.log");
 
 /// ページ（名前と、使う関数）
-const PAGES: [(&str, &str); 24] = [
+const PAGES: [(&str, &str); 25] = [
     ("ボタン", "button · icon_button · toggle_button · link"),
     ("チェックと切り替え", "checkbox · toggle · dark_mode_switch"),
     ("ひとつを選ぶ", "radio_group · segmented · dropdown"),
@@ -36,6 +36,7 @@ const PAGES: [(&str, &str); 24] = [
     ("引っ張って落とす", "drag_source · dropped · animate"),
     ("ドッキング", "dock · Dock"),
     ("トレイ", "tray · hide_window · show_window"),
+    ("通知", "notify · notification_clicked"),
 ];
 
 struct Gallery {
@@ -81,6 +82,9 @@ struct Gallery {
     tray_clicks: u32,
     hide_now: bool,
     show_now: bool,
+    // 通知（25 ページ目）: 出した数と、最後に押された答え
+    notified: u32,
+    notify_answer: String,
 }
 
 impl Gallery {
@@ -202,6 +206,8 @@ impl Gallery {
             tray_clicks: 0,
             hide_now: false,
             show_now: false,
+            notified: 0,
+            notify_answer: String::new(),
         }
     }
 
@@ -558,6 +564,29 @@ impl Gallery {
                 ui.label("アイコンを押すと窓が戻る。右クリックのメニューで、窓を出す・明暗・ページを選ぶ・見本を終えるができる").weak().wrap();
                 ui.label("Linux は StatusNotifierItem を表示する帯（KDE・Waybar・Quickshell・拡張機能を入れた GNOME）に出る").weak().wrap();
             }
+            24 => {
+                let mut asked = None;
+                ui.row(|ui| {
+                    if ui.button("通知を出す").clicked() {
+                        asked = Some(Notification::new("部品の見本").body("通知の本文を押すと、見本の窓が前に出る"));
+                    }
+                    if ui.button("音の無い通知").clicked() {
+                        asked = Some(Notification::new("部品の見本").body("音を鳴らさずに出した通知").silent());
+                    }
+                    if ui.button("ボタン付きの通知").clicked() {
+                        asked = Some(Notification::new("部品の見本").body("ボタンを押すと、答えがページに出る").button("later", "あとで").button("open", "開く"));
+                    }
+                });
+                if let Some(n) = asked {
+                    self.notified += 1;
+                    log::event("gallery.notify", "", &self.notified.to_string());
+                    ui.notify("gallery", n);
+                }
+                ui.label(format!("出した通知: {}", self.notified));
+                let answer = if self.notify_answer.is_empty() { "まだ無い" } else { self.notify_answer.as_str() };
+                ui.label(format!("最後に押された所: {answer}"));
+                ui.label("同じキーで出すので、新しい通知は前の通知を置き換える。Windows は最初の通知の時に、見本の名前をレジストリ（HKEY_CURRENT_USER\\Software\\Classes\\AppUserModelId\\gallery-kargui）に書く").weak().wrap();
+            }
             _ => {}
         }
     }
@@ -584,6 +613,19 @@ impl App for Gallery {
         if std::mem::take(&mut self.hide_now) {
             log::event("gallery.hide", "", "");
             ui.hide_window();
+        }
+        // 通知の答え（25 ページ目で出した通知。どのページを開いていても受け取る）
+        if let Some(a) = ui.notification_clicked("gallery") {
+            log::event("gallery.notify_answer", "", &format!("{a:?}"));
+            self.notify_answer = match a {
+                NotificationAction::Body => {
+                    self.show_now = true;
+                    "本文".into()
+                }
+                NotificationAction::Button(id) if id == "later" => "あとで".into(),
+                NotificationAction::Button(id) if id == "open" => "開く".into(),
+                NotificationAction::Button(id) => id,
+            };
         }
         if std::mem::take(&mut self.show_now) {
             log::event("gallery.show", "", "");
@@ -710,6 +752,23 @@ mod tests {
         assert_eq!(h.app().page, Some(3));
         h.tray_choose("見本を終える");
         assert!(h.is_closed());
+    }
+
+    #[test]
+    fn the_notification_page_shows_notifications_and_their_answers() {
+        let mut h = Harness::with_size(Gallery::new(Instant::now()), 900.0, 620.0, 1.0);
+        h.app_mut().page = Some(24);
+        h.frame();
+        h.click("ボタン付きの通知");
+        assert_eq!(h.notifications(), ["gallery: 部品の見本 | ボタンを押すと、答えがページに出る [later: あとで] [open: 開く]"]);
+        h.click_notification("gallery", Some("open"));
+        assert!(h.find("最後に押された所: 開く").is_some());
+        // 同じキーなので置き換える
+        h.click("通知を出す");
+        h.click("音の無い通知");
+        assert_eq!(h.notifications(), ["gallery: 部品の見本 | 音を鳴らさずに出した通知 (silent)"]);
+        h.click_notification("gallery", None);
+        assert!(h.find("最後に押された所: 本文").is_some());
     }
 
     #[test]

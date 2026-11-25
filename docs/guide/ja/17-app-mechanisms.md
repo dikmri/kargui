@@ -168,6 +168,39 @@ impl App for Notes {
 - Windows は、タスクバーの通知領域に出します。Linux は StatusNotifierItem の決まりで出し、KDE、タイル型の合成の帯（Waybar・Quickshell など）、AppIndicator の拡張機能を入れた GNOME が表示します。拡張機能の無い GNOME には出ません。
 - Wayland には、最小化した窓を戻す頼みがありません。`ui.show_window()` が戻せるのは、`ui.hide_window()` で隠した窓だけです。
 
+## 通知
+
+`ui.notify` で通知を出します。Windows はトースト（通知センターにも残る）、Linux はデスクトップの通知の係（org.freedesktop.Notifications）に出します。通知には、題・本文・ボタン（3 つまで）を置けます。押された答えは、同じキーで `ui.notification_clicked` から受け取ります。
+
+```rust
+use kargui::{App, Notification, NotificationAction, Ui};
+
+#[derive(Default)]
+struct Timer {
+    snoozed: u32,
+}
+
+impl App for Timer {
+    fn view(&mut self, ui: &mut Ui) {
+        if ui.button("時間を知らせる").clicked() {
+            ui.notify("time", Notification::new("時間です").body("会議が始まります").button("snooze", "5 分後"));
+        }
+        match ui.notification_clicked("time") {
+            Some(NotificationAction::Button(id)) if id == "snooze" => self.snoozed += 1,
+            Some(_) => ui.show_window(),
+            None => {}
+        }
+    }
+}
+# let _ = Timer::default();
+```
+
+- `ui.notify` は、呼んだ時に 1 回出す命令です。ボタンを押した時など、出来事の時に呼んでください。同じキーで出し直すと、前の通知を置き換えます。
+- `ui.notification_clicked` は、通知の本文（`NotificationAction::Body`）かボタン（`NotificationAction::Button(id)`）が押された時に、1 回だけ答えを返します。押さずに閉じた時は何も返しません。
+- `Notification::silent()` で、音を鳴らさずに出します。
+- Windows では、最初の通知の時に、アプリの名前（`Options::title`）を利用者ごとのレジストリ（`HKEY_CURRENT_USER\Software\Classes\AppUserModelId\実行ファイルの名前`）に書いて登録します。トーストの上には、この名前が出ます。押した答えは、アプリが動いている間だけ届きます。アプリが終わった後に、通知センターに残った通知を押しても何も起きません。
+- Linux では、GNOME・KDE・mako・dunst など、org.freedesktop.Notifications を持つデスクトップに出ます。ボタンを出すかどうかは、通知の係によります。
+
 ## 試験
 
-試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。トレイは、`h.tray_shown()`・`h.tray_tooltip()`・`h.tray_menu()`（1 行ずつの文字）で読み、`h.tray_click()` で押し、`h.tray_choose("終わる")` で項目を選びます。窓が隠れているかは `h.window_shown()` で確かめます。
+試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。トレイは、`h.tray_shown()`・`h.tray_tooltip()`・`h.tray_menu()`（1 行ずつの文字）で読み、`h.tray_click()` で押し、`h.tray_choose("終わる")` で項目を選びます。窓が隠れているかは `h.window_shown()` で確かめます。通知は、`h.notifications()`（1 行ずつの文字）で読み、`h.click_notification("time", Some("snooze"))` でボタンを、`None` で本文を押します。

@@ -96,6 +96,8 @@ pub struct Harness<A: App> {
     font_files: Rc<Vec<Cow<'static, [u8]>>>,
     /// 主の窓が見えているか（Ui::hide_window・show_window）
     shown: bool,
+    /// 出ている通知（キー、頼んだ窓のキー〈主の窓は None〉、中身）。同じキーは置き換える
+    notes: Vec<(String, Option<String>, crate::Notification)>,
 }
 
 impl<A: App> Harness<A> {
@@ -203,7 +205,7 @@ impl<A: App> Harness<A> {
         rt.cx.font = rt.cx.text.fonts.id(font);
         // 窓の場所: 主の窓は画面の (100, 50) にあり、中の左上は (100, 80)（論理の画素）
         rt.cx.place = Some(crate::ui::context::WindowPlace { outer: (100.0, 50.0), client: (100.0, 80.0), unit: 1.0 / scale });
-        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None, font_files, shown: true };
+        let mut h = Self { app, rt, windows: Vec::new(), current: None, file_dialog: None, closed: false, pointer_held: None, font_files, shown: true, notes: Vec::new() };
         h.frame();
         h
     }
@@ -339,7 +341,97 @@ impl<A: App> Harness<A> {
         if let Some(shown) = self.rt.cx.show_request.take() {
             self.shown = shown;
         }
+        // 頼まれた通知を出す（同じキーは置き換える）
+        let asked: Vec<_> = std::iter::once((None, &mut self.rt))
+            .chain(self.windows.iter_mut().map(|(k, rt)| (Some(k.clone()), rt)))
+            .flat_map(|(w, rt)| std::mem::take(&mut rt.cx.notify_requests).into_iter().map(move |(k, n)| (k, w.clone(), n)))
+            .collect();
+        for (key, window, n) in asked {
+            match self.notes.iter_mut().find(|(k, _, _)| *k == key) {
+                Some(slot) => *slot = (key, window, n),
+                None => self.notes.push((key, window, n)),
+            }
+        }
         self
+    }
+
+    /// The notifications shown with [`Ui::notify`] that are still there, one line each in the
+    /// order they were first shown: `key: title | body [id: label] ...` (without ` | body` when
+    /// there is no body). A notification with the same key replaces the line.
+    ///
+    /// ```
+    /// # use kargui::{App, Notification, Ui};
+    /// # use kargui::test::Harness;
+    /// struct Notes;
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("Remind").clicked() {
+    ///             ui.notify("remind", Notification::new("Meeting").body("In 5 minutes").button("snooze", "Snooze"));
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Notes);
+    /// h.click("Remind");
+    /// assert_eq!(h.notifications(), ["remind: Meeting | In 5 minutes [snooze: Snooze]"]);
+    /// ```
+    pub fn notifications(&self) -> Vec<String> {
+        self.notes.iter().map(|(k, _, n)| crate::ui::notify::line(k, n)).collect()
+    }
+
+    /// Clicks the notification shown with `key`: its body (`None`) or the button with this id,
+    /// and draws a frame of the window that showed it. The notification goes away. Panics if
+    /// there is no such notification or button.
+    ///
+    /// ```
+    /// # use kargui::{App, Notification, NotificationAction, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Notes {
+    ///     snoozed: bool,
+    /// }
+    ///
+    /// impl App for Notes {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         if ui.button("Remind").clicked() {
+    ///             ui.notify("remind", Notification::new("Meeting").button("snooze", "Snooze"));
+    ///         }
+    ///         if ui.notification_clicked("remind") == Some(NotificationAction::Button("snooze".into())) {
+    ///             self.snoozed = true;
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Notes::default());
+    /// h.click("Remind");
+    /// h.click_notification("remind", Some("snooze"));
+    /// assert!(h.app().snoozed);
+    /// ```
+    pub fn click_notification(&mut self, key: &str, button: Option<&str>) -> &mut Self {
+        use crate::NotificationAction as A;
+        let i = self.notes.iter().position(|(k, _, _)| k == key).unwrap_or_else(|| panic!("no notification {key:?} in {:?}", self.notifications()));
+        let (_, window, n) = self.notes.remove(i);
+        let action = match button {
+            None => A::Body,
+            Some(id) => {
+                assert!(n.buttons.iter().any(|(b, _)| b == id), "no button {id:?} on {}", crate::ui::notify::line(key, &n));
+                A::Button(id.to_string())
+            }
+        };
+        match window {
+            None => {
+                self.rt.cx.notification_results.insert(key.to_string(), action);
+                self.main_window();
+            }
+            Some(w) => {
+                if let Some((_, rt)) = self.windows.iter_mut().find(|(k, _)| *k == w) {
+                    rt.cx.notification_results.insert(key.to_string(), action);
+                }
+                self.current = Some(w);
+            }
+        }
+        self.send(Vec::new())
     }
 
     /// Whether the main window's view made a tray icon ([`Ui::tray`]) in the last frame.
@@ -4738,6 +4830,55 @@ mod tests {
         // 押せない項目は、選んでも clicked にならない（OS は灰色の項目を選ばせないが、念のため）
         h.tray_choose("Quit");
         assert_eq!(h.app().quits, 0);
+    }
+
+    /// 通知を出すアプリ
+    #[derive(Default)]
+    struct Notifier {
+        answers: Vec<String>,
+    }
+
+    impl App for Notifier {
+        fn view(&mut self, ui: &mut Ui) {
+            use crate::Notification;
+            if ui.button("Remind").clicked() {
+                ui.notify("remind", Notification::new("Meeting").body("In 5 minutes").button("snooze", "Snooze").button("open", "Open"));
+            }
+            if ui.button("Hello").clicked() {
+                ui.notify("hello", Notification::new("Hello"));
+            }
+            if let Some(a) = ui.notification_clicked("remind") {
+                self.answers.push(format!("{a:?}"));
+            }
+        }
+    }
+
+    #[test]
+    fn notifications_go_out_when_asked_and_the_same_key_replaces_the_last_one() {
+        let mut h = Harness::new(Notifier::default());
+        assert_eq!(h.notifications(), Vec::<String>::new());
+        h.click("Remind");
+        assert_eq!(h.notifications(), ["remind: Meeting | In 5 minutes [snooze: Snooze] [open: Open]"]);
+        h.click("Hello");
+        h.click("Remind");
+        h.frame();
+        // 同じキーは置き換えるので 2 つ。出した順に並ぶ
+        assert_eq!(h.notifications(), ["remind: Meeting | In 5 minutes [snooze: Snooze] [open: Open]", "hello: Hello"]);
+    }
+
+    #[test]
+    fn a_click_on_a_notification_reaches_the_view_once() {
+        let mut h = Harness::new(Notifier::default());
+        h.click("Remind");
+        h.click_notification("remind", Some("snooze"));
+        assert_eq!(h.app().answers, ["Button(\"snooze\")"]);
+        h.frame();
+        assert_eq!(h.app().answers.len(), 1, "the answer is taken once");
+        // 押した通知は消える
+        assert_eq!(h.notifications(), Vec::<String>::new());
+        h.click("Remind");
+        h.click_notification("remind", None);
+        assert_eq!(h.app().answers, ["Button(\"snooze\")", "Body"]);
     }
 
     #[test]

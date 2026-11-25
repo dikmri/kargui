@@ -450,6 +450,10 @@ pub(crate) struct Context {
     pub tray_input: Vec<crate::ui::tray::TrayInput>,
     /// 窓を出す（true）か隠す（false）頼み（Ui::show_window・hide_window。窓の処理がフレームの後で取り出す）
     pub show_request: Option<bool>,
+    /// 出すように頼まれた通知（キーと中身。窓の処理がフレームの後で取り出す）
+    pub notify_requests: Vec<(String, crate::ui::notify::Notification)>,
+    /// 押された通知の答え（キー → 答え。窓の処理が入れ、Ui::notification_clicked が 1 回だけ取り出す）
+    pub notification_results: HashMap<String, crate::ui::notify::NotificationAction>,
     /// アプリが描く題の帯（合成が描かない時。Linux の GNOME など。窓の処理が毎フレーム入れる）
     pub csd: Option<Csd>,
     /// 題の帯の操作で、窓の処理に頼む事（動かす・最大化など。窓の処理がフレームの後で取り出す）
@@ -596,6 +600,8 @@ impl Context {
             tray: None,
             tray_input: Vec::new(),
             show_request: None,
+            notify_requests: Vec::new(),
+            notification_results: HashMap::new(),
             csd: None,
             csd_request: None,
             title_press: None,
