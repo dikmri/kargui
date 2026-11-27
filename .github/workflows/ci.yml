@@ -114,14 +114,18 @@ jobs:
           # 角の外 2 ポイントの所は、AppKit が大きさを変える所に入らなかった）・題の帯を引っ張って窓を動かす・閉じる
           # ボタン（アプリが閉じてよいと答えて終わる。写真の時刻より先に押すため、写真は 30 秒後）
           SHOT_MS=30000 drive input-window 600 ./target/release/expenses-kargui rclick:250,311 wait:300 screen:shots/input-window-menu.png key:down key:enter wait:300 click:500,72 type:ab key:cmd+a key:cmd+c key:right key:cmd+v dclick:325,72 wait:300 bounds down:718,598 dragto:818,628 wait:300 screen:shots/input-window-resizing.png up:818,628 wait:500 bounds screen:shots/input-window-resized.png down:360,-16 dragto:260,-6 up:260,-6 wait:500 bounds screen:shots/input-window-moved.png click:16,-16 wait:800
-          # 日本語入力: メモ欄で日本語のローマ字入力に切り替え、nihongo を本物のキーで打ち（変換中）、スペースで変換、
-          # Enter で確定する。英字に戻して ok と打つ（メモ欄は「日本語ok」になるはず）。別のプロセスから入力ソースを
-          # 切り替えると、メニューバーの表示は変わっても前面のアプリの入力の受け手は前のままなので（1 回目は nihongo と
-          # 入った）、デスクトップを押してから欄を押し直し、焦点を移して戻す
-          drive input-ime 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:300 click:-100,300 wait:500 click:500,72 wait:500 type:nihongo wait:500 screen:shots/input-ime-preedit.png key:space wait:800 screen:shots/input-ime-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
-          # テキストエディットでは同じ手順で「日本語」に変換できた。アプリの束（.app と bundle identifier）に入れても
-          # 変わらなかった（2026-11-28）。起動の時に一度 [NSApp run] を通る形（KARGUI_MAC_RUN_ONCE、GLFW と同じ）と比べる
-          KARGUI_MAC_RUN_ONCE=1 drive input-ime-runonce 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-runonce-preedit.png key:space wait:800 screen:shots/input-ime-runonce-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
+          # 日本語入力。先にテキストエディットで一度使う（この Mac で初めて日本語入力を使う時は、準備が済むまで打った
+          # 英字を素通しするかもしれない。kargui を先に試した回は kargui だけ英字のままで、約 20 秒後のテキスト
+          # エディットは変換できた）。その後、kargui のメモ欄で日本語のローマ字入力に切り替え、nihongo を本物のキーで
+          # 打ち（変換中）、スペースで変換、Enter で確定する。英字に戻して ok と打つ（メモ欄は「日本語ok」になるはず）
+          : > /tmp/ime.txt
+          open -a TextEdit /tmp/ime.txt
+          sleep 4
+          tpid=$(pgrep -x TextEdit | head -1)
+          ./target/mac-drive "$tpid" 0 click:200,150 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:500 type:nihongo wait:500 screen:shots/textedit-preedit.png key:space wait:800 screen:shots/textedit-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC > shots/textedit-drive.txt 2>&1 || echo "textedit driver exit=$?"
+          kill "$tpid" 2>/dev/null || true
+          sleep 1
+          drive input-ime 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-preedit.png key:space wait:800 screen:shots/input-ime-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()

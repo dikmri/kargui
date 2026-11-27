@@ -26,7 +26,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSTextInputContext, NSView,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSTextInputContext, NSView,
     NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFData;
@@ -169,38 +169,6 @@ define_class!(
     }
 );
 
-define_class!(
-    // SAFETY: NSObject には派生の決まりが無く、Drop も持たない
-    #[unsafe(super = NSObject)]
-    #[thread_kind = MainThreadOnly]
-    #[name = "KarguiAppDelegate"]
-    struct AppDelegate;
-
-    // SAFETY: NSObjectProtocol に決まりは無い
-    unsafe impl NSObjectProtocol for AppDelegate {}
-
-    // SAFETY: 名前と引数の形は AppKit の applicationDidFinishLaunching: と同じ
-    unsafe impl NSApplicationDelegate for AppDelegate {
-        // 起動の時に一度だけ [NSApp run] を通り、起動が終わったらすぐ止める（GLFW と同じ）。止めるのは次の知らせを
-        // 処理した後なので、空の知らせを積む
-        #[unsafe(method(applicationDidFinishLaunching:))]
-        fn application_did_finish_launching(&self, _notification: &NSNotification) {
-            let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
-            app.stop(None);
-            post_wake();
-            log::event("app.launched", "applicationDidFinishLaunching", "stop the first run");
-        }
-    }
-);
-
-impl AppDelegate {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
-        // SAFETY: NSObject の init の形
-        unsafe { msg_send![super(this), init] }
-    }
-}
-
 impl WindowDelegate {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(DelegateIvars::default());
@@ -331,12 +299,14 @@ define_class!(
         // 文節の区切りを受け取る
         #[unsafe(method_id(validAttributesForMarkedText))]
         fn valid_attributes_for_marked_text(&self) -> Retained<NSArray<NSAttributedStringKey>> {
+            log::event("ime.query", "validAttributesForMarkedText", "NSMarkedClauseSegment");
             // SAFETY: AppKit の定数
             NSArray::from_slice(&[unsafe { NSMarkedClauseSegmentAttributeName }])
         }
 
         #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
-        fn attributed_substring_for_proposed_range(&self, _range: NSRange, _actual: *mut NSRange) -> Option<Retained<NSAttributedString>> {
+        fn attributed_substring_for_proposed_range(&self, range: NSRange, _actual: *mut NSRange) -> Option<Retained<NSAttributedString>> {
+            log::event("ime.query", &format!("attributedSubstringForProposedRange {}+{}", range.location, range.length), "none");
             None
         }
 
@@ -685,19 +655,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let mtm = MainThreadMarker::new().ok_or_else(|| crate::Error("kargui must run on the main thread on macOS".into()))?;
     let ns_app = NSApplication::sharedApplication(mtm);
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    // 確かめの間だけ: KARGUI_MAC_RUN_ONCE があれば、起動の時に一度 [NSApp run] を通る（日本語入力がつながらない
-    // 原因が「run を通らないこと」かを、CI で比べるため）
-    let _app_delegate = if std::env::var_os("KARGUI_MAC_RUN_ONCE").is_some() {
-        let d = AppDelegate::new(mtm);
-        ns_app.setDelegate(Some(ProtocolObject::from_ref(&*d)));
-        // 主のスレッドで、まだ輪を回していない時に呼ぶ（起動の完了の知らせの中で止める）
-        ns_app.run();
-        log::event("app.run_once", "", &format!("running_after={}", ns_app.isRunning()));
-        Some(d)
-    } else {
-        ns_app.finishLaunching();
-        None
-    };
+    // [NSApp run] は通らない（起動の時に一度 run を通る GLFW の形と CI で比べ、日本語入力の振る舞いは変わらなかった）
+    ns_app.finishLaunching();
     let dark = options.dark.unwrap_or_else(|| system_dark(&ns_app));
     log::event("theme.system", &format!("dark={dark}"), if options.dark.is_some() { "app" } else { "system" });
 
