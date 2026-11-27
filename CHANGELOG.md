@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-27)
+
+Docking panels, and the app mechanisms of a desktop app: widgets in the title bar (kargui draws the
+bar on Windows too), a tray icon with a menu, system notifications with buttons, following the
+system's high contrast setting, and a default app icon. `examples/gallery` shows each of them on
+its own page. 0.3.0 was not published to crates.io; if you come from the published 0.2.0, read the
+notes under 0.3.0 as well.
+
+Upgrading from 0.3 (nothing was removed):
+
+- `Options` has three new fields, `custom_title_bar`, `high_contrast` and `default_icon`. Code that
+  builds it by listing every field must add them, or use `..Options::new(title)`.
+- A window without `Options::icon` now shows kargui's icon instead of the system's plain icon. Set
+  `Options::default_icon` to `false` for the plain icon.
+- When the system uses high contrast, widgets are now drawn with a high contrast palette. Set
+  `Options::high_contrast` to `Some(false)` to keep the normal palette.
 
 - Default icon: a window without `Options::icon` shows kargui's icon (a "k" drawn with lines of
   light on a dark rounded square) instead of the system's plain icon, and so does a tray icon

@@ -5,12 +5,14 @@ kargui のアプリは、状態を持つ自分の構造体と、その画面を�
 
 ## 準備
 
-`Cargo.toml` に kargui を足します。
+`Cargo.toml` に kargui を足します（`cargo add kargui` でも足せます）。
 
 ```toml
 [dependencies]
-kargui = { path = "../kargui/crates/kargui" }
+kargui = "0.4"
 ```
+
+crates.io に出す前の新しい物を使う時は `kargui = { git = "https://github.com/dikmri/kargui" }`、手元の kargui を使う時は `kargui = { path = "../kargui/crates/kargui" }` と書きます。Linux で組み立てるには、fontconfig の開発用ファイルが要ります（Debian と Ubuntu では `libfontconfig1-dev` と `pkg-config`）。
 
 ## 数を数えるアプリ
 

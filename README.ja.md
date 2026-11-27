@@ -1,6 +1,6 @@
 # kargui
 
-Rust で書く、軽いネイティブ GUI フレームワーク（Windows 10/11 と Linux。版は 0.3）。名前は「軽い」「Rust」「GUI」から。[English README](README.md)（この文の訳）。
+Rust で書く、軽いネイティブ GUI フレームワーク（Windows 10/11 と Linux。版は 0.4）。名前は「軽い」「Rust」「GUI」から。[English README](README.md)（この文の訳）。
 
 <p align="center">
   <picture>
@@ -65,6 +65,14 @@ fn main() {
 
 測定の道具は CPU の時間を 15.6 ms 単位で数えるので、1 ms 前後の 1 フレームの値は回ごとにばらつく。kargui 自身の時計では、スクロール中の 1 フレームの仕事は約 0.58 ms。
 
+## 自分のアプリで使う
+
+```powershell
+cargo add kargui
+```
+
+最初のアプリの書き方は [ガイドの 1 章](docs/guide/ja/01-first-app.md)。Linux で組み立てるには `libfontconfig1-dev` と `pkg-config` が要る（下の「Linux と macOS」）。
+
 ## 動かし方
 
 ```powershell
@@ -103,12 +111,12 @@ cargo run -p xtask -- check                      # 説明と例の割合・部�
 
 ## 今の状態と今後
 
-0.1 は最初の版。0.2 で、ふつうのデスクトップアプリに要る部品と仕組みの多くを足し、0.3 で Linux でも動くようにした（変わった所と、前の版から上げる時に直す所は [CHANGELOG.md](CHANGELOG.md)）。確かめとして、メモ帳・家計簿・ファイルの閲覧の 3 本を kargui だけで書き（`examples/notepad`・`examples/expenses`・`examples/files`）、書いて見つかった不足は kargui の側で直した。`examples/gallery` は、部品を 1 つずつページに分けて見せる。足すたびに、同じ道具で軽さが保たれているかを測る。
+0.1 は最初の版。0.2 で、ふつうのデスクトップアプリに要る部品と仕組みの多くを足し、0.3 で Linux でも動くようにし、0.4 でドッキングと、題の帯・トレイ・通知・ハイコントラスト・既定のアイコンを足した（変わった所と、前の版から上げる時に直す所は [CHANGELOG.md](CHANGELOG.md)）。確かめとして、メモ帳・家計簿・ファイルの閲覧の 3 本を kargui だけで書き（`examples/notepad`・`examples/expenses`・`examples/files`）、書いて見つかった不足は kargui の側で直した。`examples/gallery` は、部品を 1 つずつページに分けて見せる。足すたびに、同じ道具で軽さが保たれているかを測る。
 
 まだ無い主な物:
 
-- **部品:** 書式付きの文字の編集（表示する `ui.rich_text` はある）と、ドッキングするパネル
-- **アプリの仕組み:** 通知領域のアイコン、OS の通知、Windows でアプリが描く題の帯、ハイコントラストに従うこと、アプリを多言語にする仕組み
+- **部品:** 書式付きの文字の編集（表示する `ui.rich_text` はある）
+- **アプリの仕組み:** アプリを多言語にする仕組み（kargui が出す文字は今は英語）
 - **環境:** macOS（`kargui::run` は、対応していないことを伝える `Err` を返す）。Linux の X11 は XWayland の上で確かめ、Xorg のサーバーでは確かめていない。GPU の道（既定ではない）では、まれに長い途切れが出る。読み上げはナレーターと Orca で確かめ、NVDA では確かめていない。アプリから再変換を始める仕組みが無い
 
 ### Linux と macOS

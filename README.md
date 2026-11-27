@@ -1,6 +1,6 @@
 # kargui
 
-A light native GUI framework for Rust (Windows 10/11 and Linux; version 0.3). The name comes from
+A light native GUI framework for Rust (Windows 10/11 and Linux; version 0.4). The name comes from
 the Japanese word *karui* (light), Rust and GUI. [日本語の README](README.ja.md) (the original; this is
 a translation).
 
@@ -85,6 +85,15 @@ fn main() {
 The measuring tool counts CPU time in 15.6 ms ticks, so per-frame values of about 1 ms vary between
 runs; kargui's own timer reports about 0.58 ms of work per scrolling frame.
 
+## Use it in your app
+
+```powershell
+cargo add kargui
+```
+
+To write a first app, see [chapter 1 of the guide](docs/guide/en/01-first-app.md). Building on Linux
+needs `libfontconfig1-dev` and `pkg-config` (see "Linux and macOS" below).
+
 ## Run the examples
 
 ```powershell
@@ -125,7 +134,9 @@ The input method checks type into the foreground window, so they run only while 
 ## Status and next steps
 
 0.1 was the first release. 0.2 added the widgets and mechanisms most everyday desktop apps need,
-and 0.3 brings apps to Linux (changes and how to upgrade: [CHANGELOG.md](CHANGELOG.md)). As a check,
+0.3 brought apps to Linux, and 0.4 adds docking panels, the title bar, a tray icon,
+notifications, high contrast and a default app icon (changes and how to upgrade:
+[CHANGELOG.md](CHANGELOG.md)). As a check,
 three ordinary apps were written with kargui alone: a text editor, a household budget and a file
 browser (`examples/notepad`, `examples/expenses`, `examples/files`); what they showed was fixed in
 kargui. `examples/gallery` shows every widget on its own page. Each addition is measured with the
@@ -133,9 +144,9 @@ same tools to keep kargui light.
 
 Not there yet:
 
-- **Widgets:** editing rich text (showing it, `ui.rich_text`, is there) and docking panels.
-- **App mechanisms:** a tray icon, system notifications, a title bar drawn by the app on Windows,
-  following the high contrast mode, and support for translating an app.
+- **Widgets:** editing rich text (showing it, `ui.rich_text`, is there).
+- **App mechanisms:** support for translating an app (the text kargui shows itself is in English
+  for now).
 - **Platforms:** macOS (`kargui::run` returns an `Err` saying the system is not supported). On
   Linux, X11 has been checked under XWayland but not on an Xorg server. The Direct3D 11 renderer
   (not the default) occasionally stalls for a long frame. Screen reading has been checked with

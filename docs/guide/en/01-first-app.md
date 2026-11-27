@@ -1,4 +1,4 @@
-<!-- source: ja/01-first-app.md fnv=564304130d0dd4c1 -->
+<!-- source: ja/01-first-app.md fnv=83337ac724e6385c -->
 <!-- covers: App Options run Ui::heading Ui::label Ui::button Ui::row sig=c5a08b17950f69d8 -->
 # Your first app
 
@@ -6,12 +6,14 @@ A kargui app is two things: your own struct that holds the state, and `view`, wh
 
 ## Setup
 
-Add kargui to `Cargo.toml`.
+Add kargui to `Cargo.toml` (or run `cargo add kargui`).
 
 ```toml
 [dependencies]
-kargui = { path = "../kargui/crates/kargui" }
+kargui = "0.4"
 ```
+
+For what is newer than the crates.io release, write `kargui = { git = "https://github.com/dikmri/kargui" }`; for a kargui on your disk, write `kargui = { path = "../kargui/crates/kargui" }`. Building on Linux needs the fontconfig development files (`libfontconfig1-dev` and `pkg-config` on Debian and Ubuntu).
 
 ## A counter
 
