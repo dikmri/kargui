@@ -227,14 +227,16 @@ define_class!(
                 // interpretKeyEvents は「入力の受け手の handleEvent（IME）→ 使わなければキーの割り当て（insertText・
                 // doCommandBySelector）」の順。IME が受け取ったかを記録するため、handleEvent を先に呼ぶ
                 let ctx = self.inputContext();
-                // 入力ソースが変わっていたら、残っている変換中の文字を先に確定する（そのままにすると、次の英字の
-                // insertText を変換の確定と取り違えて、変換中の文字が消えた）
-                let source = ctx.as_ref().and_then(|c| c.selectedKeyboardInputSource()).map(|s| s.to_string()).unwrap_or_default();
-                self.note_source(&source);
+                // 入力ソースは IME に渡した後で読む（先に読んだ回は、参考のアプリが変換できた同じ Mac で、kargui だけ
+                // 英字のままだった。1 例なので確かではない）
                 let handled = ctx.as_ref().is_some_and(|c| c.handleEvent(event));
                 iv.handled.set(handled);
+                let source = ctx.as_ref().and_then(|c| c.selectedKeyboardInputSource()).map(|s| s.to_string()).unwrap_or_default();
                 log::event("ime.key", &format!("code={} source={source:?}", event.keyCode()), &format!("handled_by_input_method={handled}"));
                 if !handled {
+                    // 入力ソースが変わっていたら（日本語入力から英字の配列へ）、残っている変換中の文字を先に確定する
+                    // （そのままにすると、次の英字の insertText を変換の確定と取り違えて、変換中の文字が消えた）
+                    self.note_source(&source);
                     self.interpretKeyEvents(&NSArray::from_slice(&[event]));
                 }
             }

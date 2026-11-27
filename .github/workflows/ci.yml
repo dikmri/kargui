@@ -142,6 +142,8 @@ jobs:
           ./target/mac-drive "$rpid" 200 click:100,100 inputsource:$J wait:500 type:nihongo wait:500 screen:shots/ime-3-ref-app.png key:space wait:800 key:enter inputsource:com.apple.keylayout.ABC > shots/ime-3-ref-app-drive.txt 2>&1 || true
           wait "$rpid"
           drive input-ime 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-preedit.png key:space wait:800 screen:shots/input-ime-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
+          # 結果の例を増やすため、もう 1 回（別のアプリとして開き直す）
+          drive input-ime-2 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-2-preedit.png key:space wait:800 screen:shots/input-ime-2-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()
