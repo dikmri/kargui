@@ -241,8 +241,8 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
         }
     }
     let mut again = false;
-    for i in 0..tree.info.len() {
-        if in_overlay[i] {
+    for (i, &overlaid) in in_overlay.iter().enumerate() {
+        if overlaid {
             continue;
         }
         if let Kind::Label { wrap: true, .. } | Kind::RichText { .. } = tree.info[i].kind {
