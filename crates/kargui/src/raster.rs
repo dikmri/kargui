@@ -225,7 +225,7 @@ mod tests {
         let mut c = canvas(&mut px, 8, 4);
         let mut list = DrawList::default();
         list.begin(IRect::new(0, 0, 8, 4));
-        list.push_clip(IRect::new(0, 0, 4, 4), None);
+        list.push_clip(IRect::new(0, 0, 4, 4));
         list.fill(Rect::new(0.0, 0.0, 8.0, 4.0), rgb(0x000000), 0.0);
         list.pop_clip();
         list.finish();

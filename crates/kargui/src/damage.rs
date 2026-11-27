@@ -79,7 +79,7 @@ fn is_uniform_cover(q: &crate::paint::Quad, clip: IRect) -> bool {
 
 pub(crate) fn summarize(list: &DrawList, size: (i32, i32)) -> Summary {
     let mut s = Summary { size, ..Default::default() };
-    // スクロールする部品ごとに、最初の層（部品そのものの切り取り範囲）を覚える
+    // スクロールする部品ごとに、重なりの前後を判定するため最初の描画層を覚える
     let mut first_layer: HashMap<u64, usize> = HashMap::new();
     for (li, layer) in list.layers.iter().enumerate() {
         let quads = &list.quads[layer.start..layer.end];
@@ -98,7 +98,7 @@ pub(crate) fn summarize(list: &DrawList, size: (i32, i32)) -> Summary {
             Some(sc) => {
                 first_layer.entry(sc.id).or_insert(li);
                 let e = s.scrolls.entry(sc.id).or_insert_with(|| ScrollSummary {
-                    clip: layer.clip,
+                    clip: sc.viewport,
                     offset: sc.offset,
                     ..Default::default()
                 });
@@ -241,21 +241,23 @@ pub(crate) fn plan(prev: &Summary, cur: &Summary) -> Plan {
 mod tests {
     use super::*;
     use crate::geom::{Rect, rgb};
-    use crate::paint::Scroll;
 
     const W: i32 = 256;
     const H: i32 = 256;
 
     /// 背景に灰色の四角、真ん中にスクロールする一覧（y=64〜192）、行は 32 画素ごと
     fn frame(offset: i32, changed_row: Option<i32>, overlay: bool) -> DrawList {
+        frame_in(IRect::new(0, 64, W, 128), offset, changed_row, overlay)
+    }
+
+    fn frame_in(clip: IRect, offset: i32, changed_row: Option<i32>, overlay: bool) -> DrawList {
         let mut d = DrawList::default();
         d.begin(IRect::new(0, 0, W, H));
         d.fill(Rect::new(10.0, 10.0, 40.0, 20.0), rgb(0x888888), 0.0);
-        let clip = IRect::new(0, 64, W, 128);
-        d.push_clip(clip, Some(Scroll { id: 1, offset }));
+        d.push_scroll(clip, 1, offset);
         for row in 0..100 {
-            let y = 64 + row * 32 - offset;
-            if y + 32 <= 64 || y >= 192 {
+            let y = clip.y + row * 32 - offset;
+            if y + 32 <= clip.y || y >= clip.bottom() {
                 continue;
             }
             let color = if Some(row) == changed_row { rgb(0xff0000) } else { rgb(0x0000ff) };
@@ -346,10 +348,7 @@ mod tests {
     #[test]
     fn moved_scroll_clip_redraws_both_places() {
         let a = sum(&frame(0, None, false));
-        let mut d = frame(0, None, false);
-        for l in d.layers.iter_mut().filter(|l| l.scroll.is_some()) {
-            l.clip = IRect::new(0, 70, W, 100);
-        }
+        let d = frame_in(IRect::new(0, 70, W, 100), 0, None, false);
         let b = sum(&d);
         // この窓では、前と後の 2 か所で窓の 6 割を超えるので、全体を描き直す
         assert!(plan(&a, &b).full);

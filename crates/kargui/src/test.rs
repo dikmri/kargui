@@ -2197,6 +2197,44 @@ mod tests {
     }
 
     #[test]
+    fn drawing_only_changes_matches_full_redraw_below_a_scrolling_canvas() {
+        // 最初の描画層はキャンバスの範囲に限られるが、下のカードも一緒に動く
+        struct Page;
+        impl App for Page {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.scroll(|ui| {
+                    ui.column(|ui| {
+                        ui.canvas(96.0, 100.0, |d| {
+                            d.rect(Rect::new(0.0, 0.0, 96.0, 100.0), crate::rgb(0x306090));
+                        });
+                    })
+                    .align(crate::Align::Center);
+                    ui.card(|ui| {
+                        ui.heading("Below the canvas");
+                    })
+                    .height(Size::Fixed(176.0));
+                })
+                .height(Size::Fixed(160.0));
+            }
+        }
+        let mut h = Harness::new(Page);
+        let r = h.rt.cx.prev.lists[0].rect;
+        let (w, hh) = (h.rt.cx.width as i32, h.rt.cx.height as i32);
+        let mut px = vec![0; (w * hh) as usize];
+        let mut summary = crate::damage::Summary::default();
+        for dy in [0.0, 32.0, 80.0, -80.0, -32.0] {
+            if dy != 0.0 {
+                h.send(vec![Event::Wheel { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, dy }]);
+            }
+            let out = crate::cpu_frame::draw(&mut px, w, hh, &h.rt.draw, &h.rt.cx.text.atlas, h.rt.cx.theme.background, &summary, false);
+            summary = out.summary;
+            let full = h.render();
+            let diff = px.iter().zip(&full.pixels).filter(|(a, b)| a != b).count();
+            assert_eq!(diff, 0, "wheel delta {dy}: {diff} pixels differ ({})", out.mode);
+        }
+    }
+
+    #[test]
     fn drawing_only_changes_shows_the_dock_targets_while_dragging_a_tab() {
         // 作者の手の確かめ（ドッキングの 1 回目）で、十字の的と外側の的に 1 回も落とさなかった。見本のページと同じく
         // スクロールする入れ物の中のドッキングで、引っ張っている間の絵が全部描き直した絵と同じかを比べる
