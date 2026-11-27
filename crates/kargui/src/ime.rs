@@ -183,6 +183,28 @@ pub(crate) fn ibus_clauses(text: &str, attrs: &[[u32; 4]], cursor: u32) -> Claus
     Clauses { bounds, target, cursor: Some(at(cursor)) }
 }
 
+/// macOS の setMarkedText:selectedRange:replacementRange: を文節にする。`segment_starts` は変換中の文字の属性
+/// NSMarkedClauseSegment の区切りの始まり（UTF-16 の位置。日本語入力は文節ごとに違う値を付ける）、`selected` は
+/// IME が選んだ範囲（UTF-16 の始まりと長さ。変換している間は今の文節、ローマ字を打っている間は長さ 0 のキャレット）。
+/// 区切りが 2 つ以上あって正しければ文節の境目にし、そうでなければ選んだ範囲の前と後を別の文節にする（Wayland と同じ）。
+/// 文字の外の範囲は終わりに寄せる
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn mac_clauses(text: &str, segment_starts: &[usize], selected: (usize, usize)) -> Clauses {
+    let len = text.encode_utf16().count();
+    let a = selected.0.min(len);
+    let b = selected.0.saturating_add(selected.1).min(len);
+    let (target, cursor) = if a < b { (Some((a, b)), Some(b)) } else { (None, Some(a)) };
+    let raw: Vec<u32> = segment_starts.iter().chain(std::iter::once(&len)).map(|&s| s as u32).collect();
+    let bounds = if segment_starts.len() >= 2 && clause_bounds(&raw, len).len() == raw.len() {
+        clause_bounds(&raw, len)
+    } else {
+        let mut v = vec![0, a, b, len];
+        v.dedup();
+        v
+    };
+    Clauses { bounds, target, cursor }
+}
+
 /// 変換中の文字（text と文節）を kargui の入力にする。shown は今見せている変換中の文字。
 /// 変換中の文字が空になったら（取り消し・確定の後）、見せていた時だけ消す
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -244,6 +266,28 @@ pub(crate) fn confirmed_range(value: &str, comp_offset_bytes: u32, comp_len: u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mac_clauses_follow_the_clause_segments_and_the_selected_range() {
+        // ローマ字を打っている間: 文節の印は 1 つ、選んだ範囲は長さ 0（キャレット）
+        assert_eq!(mac_clauses("にほ", &[0], (2, 0)), Clauses { bounds: vec![0, 2], target: None, cursor: Some(2) });
+        // 変換した後: 「日本語|を」の 2 つの文節で、最初の文節を変換している
+        assert_eq!(mac_clauses("日本語を", &[0, 3], (0, 3)), Clauses { bounds: vec![0, 3, 4], target: Some((0, 3)), cursor: Some(3) });
+        // 2 つ目の文節へ移った
+        assert_eq!(mac_clauses("日本語を", &[0, 3], (3, 1)), Clauses { bounds: vec![0, 3, 4], target: Some((3, 4)), cursor: Some(4) });
+    }
+
+    #[test]
+    fn mac_clauses_without_segments_split_around_the_selected_range() {
+        // 文節の印が無い IME: 選んだ範囲を今の文節にし、前と後を別の文節にする（Wayland と同じ）
+        assert_eq!(mac_clauses("あいうえ", &[], (1, 2)), Clauses { bounds: vec![0, 1, 3, 4], target: Some((1, 3)), cursor: Some(3) });
+        // 文字の外の範囲は終わりに寄せる（IME が長すぎる位置を送ることがある）
+        assert_eq!(mac_clauses("あい", &[], (10, 0)), Clauses { bounds: vec![0, 2], target: None, cursor: Some(2) });
+        // 印が壊れている（文字の外・増えていない）時は、選んだ範囲で分ける
+        assert_eq!(mac_clauses("あいう", &[0, 5], (0, 1)), Clauses { bounds: vec![0, 1, 3], target: Some((0, 1)), cursor: Some(1) });
+        // 位置は UTF-16（𠮷 は 2 つ）
+        assert_eq!(mac_clauses("𠮷野", &[0, 2], (2, 1)), Clauses { bounds: vec![0, 2, 3], target: Some((2, 3)), cursor: Some(3) });
+    }
 
     #[test]
     fn target_range_finds_the_clause_being_converted() {

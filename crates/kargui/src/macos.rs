@@ -1,6 +1,13 @@
 //! OS との境目の macOS の版（AppKit）。M1: 主の窓を 1 つ開き、CPU の絵を窓の層（CALayer）に写す。マウス・ホイール・
-//! キー・文字・拡大率（Retina）・明暗・閉じる前の確認・クリップボード（文字）。日本語入力（M2）、読み上げ・ファイルの
-//! ダイアログ・複数の窓・引っ張って落とす（M3）、題の帯・トレイ・通知など（M4）はまだ。
+//! キー・文字・拡大率（Retina）・明暗・閉じる前の確認・クリップボード（文字）。M2: 日本語入力（NSTextInputClient）。
+//! 読み上げ・ファイルのダイアログ・複数の窓・引っ張って落とす（M3）、題の帯・トレイ・通知など（M4）はまだ。
+//!
+//! 日本語入力: 窓の中身は自前の NSView（KarguiView）で、NSTextInputClient を持つ。入力欄に焦点がある時だけ、キーを
+//! interpretKeyEvents で IME に通す。IME は setMarkedText（変換中）・insertText（確定、または IME を使わない打ち方の
+//! 文字）・doCommandBySelector（IME が使わなかったキー。矢印・Enter など）で返すので、それを kargui の入力にして
+//! KarguiView の待ち行列に積み、輪が取り出す（呼び返しは State を借りない）。候補の窓を出す場所は、フレームの後に
+//! 変換中の範囲かキャレットの場所を KarguiView に写しておき、firstRectForCharacterRange で答える。Command・Control の
+//! 近道、パスワードの欄、入力欄が無い時は IME を通さない。
 //!
 //! 輪は自前: NSApplication の nextEventMatchingMask で、次に起きる時刻まで待つ。届いた知らせを kargui の入力に直して
 //! から sendEvent で AppKit にも渡す（題の帯で窓を動かす・大きさを変える・閉じるボタンは AppKit がする）。キーの
@@ -16,23 +23,27 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{DefinedClass, MainThreadOnly, class, define_class, msg_send};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::{ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeString, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSView,
+    NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo};
-use objc2_foundation::{MainThreadMarker, NSArray, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate, NSDefaultRunLoopMode, NSNotFound, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger,
+};
 
 use crate::app::{App, Frame, Options};
 use crate::cpu_frame;
 use crate::damage::Summary;
-use crate::input::Event;
+use crate::input::{Event, Key, Mods};
 use crate::log;
 use crate::mac_keys::{key_of, mods_of, typed};
 use crate::runtime::Runtime;
 use crate::text::Text;
+use crate::ui::Id;
 use crate::ui::context::Clipboard;
 
 /// アニメーションの 1 コマの間（60 Hz）
@@ -166,6 +177,220 @@ impl WindowDelegate {
     }
 }
 
+#[derive(Default)]
+struct ViewIvars {
+    /// 今の変換中の文字（IME が setMarkedText で渡した物。空なら変換していない）
+    marked: RefCell<String>,
+    /// IME の呼び返しが作った入力（輪が interpretKeyEvents の後に取り出す）
+    queue: RefCell<Vec<Event>>,
+    /// 今 IME に通しているキー（IME が使わなかった時と、IME を使わない打ち方の時に、アプリへ渡す）
+    key: Cell<Option<(Key, Mods)>>,
+    /// IME が何か返した（変換中の文字・確定・使わなかったキー）
+    answered: Cell<bool>,
+    /// 候補の窓を出す場所（窓の中身の座標。論理ピクセル、左下が原点）
+    ime_rect: Cell<NSRect>,
+}
+
+define_class!(
+    // SAFETY: NSView の派生の決まり（init は initWithFrame:）に従う。Drop は持たない
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "KarguiView"]
+    #[ivars = ViewIvars]
+    struct KarguiView;
+
+    impl KarguiView {
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        // キーは kargui の輪が直接読む。AppKit から届いても何もしない（受け手が無いと警告の音が鳴る）
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, _event: &NSEvent) {}
+    }
+
+    // SAFETY: NSObjectProtocol に決まりは無い
+    unsafe impl NSObjectProtocol for KarguiView {}
+
+    // SAFETY: 名前と引数の形は AppKit の NSTextInputClient と同じ（位置と長さは UTF-16 の単位）
+    unsafe impl NSTextInputClient for KarguiView {
+        #[unsafe(method(hasMarkedText))]
+        fn has_marked_text(&self) -> bool {
+            !self.ivars().marked.borrow().is_empty()
+        }
+
+        #[unsafe(method(markedRange))]
+        fn marked_range(&self) -> NSRange {
+            let n = self.ivars().marked.borrow().encode_utf16().count();
+            if n > 0 { NSRange::new(0, n) } else { NSRange::new(NSNotFound as NSUInteger, 0) }
+        }
+
+        // 入力欄の中の位置は IME に知らせない（前後の文字を渡さない。Wayland の版と同じ）
+        #[unsafe(method(selectedRange))]
+        fn selected_range(&self) -> NSRange {
+            NSRange::new(NSNotFound as NSUInteger, 0)
+        }
+
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text(&self, string: &AnyObject, selected: NSRange, _replacement: NSRange) {
+            let (text, starts) = marked_parts(string);
+            let iv = self.ivars();
+            let shown = iv.marked.replace(text.clone());
+            let clauses = crate::ime::mac_clauses(&text, &starts, (selected.location, selected.length));
+            log::event(
+                "ime.preedit",
+                &format!("text={text:?} selected={}+{} segments={starts:?}", selected.location, selected.length),
+                &format!("clauses={:?} target={:?} cursor={:?}", clauses.bounds, clauses.target, clauses.cursor),
+            );
+            iv.queue.borrow_mut().extend(crate::ime::preedit_events(&shown, text, clauses));
+            iv.answered.set(true);
+        }
+
+        // 変換中の文字をそのまま確定する（Apple の決まり）
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            let iv = self.ivars();
+            let text = iv.marked.take();
+            log::event("ime.unmark", &format!("text={text:?}"), if text.is_empty() { "nothing" } else { "commit" });
+            if !text.is_empty() {
+                iv.queue.borrow_mut().extend([Event::ImePreedit(String::new()), Event::ImeCommit(text)]);
+            }
+            if let Some(ctx) = self.inputContext() {
+                ctx.discardMarkedText();
+            }
+        }
+
+        // 文節の区切りを受け取る
+        #[unsafe(method_id(validAttributesForMarkedText))]
+        fn valid_attributes_for_marked_text(&self) -> Retained<NSArray<NSAttributedStringKey>> {
+            // SAFETY: AppKit の定数
+            NSArray::from_slice(&[unsafe { NSMarkedClauseSegmentAttributeName }])
+        }
+
+        #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
+        fn attributed_substring_for_proposed_range(&self, _range: NSRange, _actual: *mut NSRange) -> Option<Retained<NSAttributedString>> {
+            None
+        }
+
+        #[unsafe(method(characterIndexForPoint:))]
+        fn character_index_for_point(&self, _point: NSPoint) -> NSUInteger {
+            0
+        }
+
+        // 候補の窓を出す場所（画面の座標）
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        fn first_rect_for_character_range(&self, range: NSRange, _actual: *mut NSRange) -> NSRect {
+            let r = self.ivars().ime_rect.get();
+            let screen = match self.window() {
+                Some(win) => win.convertRectToScreen(self.convertRect_toView(r, None)),
+                None => r,
+            };
+            log::event(
+                "ime.first_rect",
+                &format!("range={}+{}", range.location, range.length),
+                &format!("screen=({:.0}, {:.0}, {:.0}, {:.0})", screen.origin.x, screen.origin.y, screen.size.width, screen.size.height),
+            );
+            screen
+        }
+
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text(&self, string: &AnyObject, _replacement: NSRange) {
+            let (text, _) = marked_parts(string);
+            let iv = self.ivars();
+            let key = iv.key.take();
+            let was_marked = !iv.marked.take().is_empty();
+            let mut q = iv.queue.borrow_mut();
+            if was_marked {
+                // 変換の確定。確定に使ったキー（Enter など）はアプリへ渡さない
+                log::event("ime.commit", &format!("text={text:?}"), "commit");
+                q.push(Event::ImePreedit(String::new()));
+                q.push(Event::ImeCommit(text));
+            } else {
+                // IME を使わない打ち方（英字の配列、日本語入力の英数）: キーと文字
+                if let Some((key, mods)) = key {
+                    q.push(Event::Key { key, mods });
+                }
+                for c in text.chars().filter(|c| typed(*c)) {
+                    log::event("char", &format!("u=0x{:04X}", c as u32), "insert");
+                    q.push(Event::Char(c));
+                }
+            }
+            iv.answered.set(true);
+        }
+
+        // IME が使わなかったキー（矢印・Enter・Backspace・Tab・Esc など）。アプリへ渡す
+        #[unsafe(method(doCommandBySelector:))]
+        fn do_command_by_selector(&self, selector: Sel) {
+            let iv = self.ivars();
+            if let Some((key, mods)) = iv.key.take() {
+                log::event("key", &format!("key={key:?} mods={mods:?} command={}", selector.name().to_string_lossy()), "sent");
+                iv.queue.borrow_mut().push(Event::Key { key, mods });
+            }
+            iv.answered.set(true);
+        }
+    }
+);
+
+impl KarguiView {
+    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ViewIvars::default());
+        // SAFETY: NSView の init の形
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+
+    /// キーを IME に通し、IME が返した入力を取り出す。IME が何も返さなければ、キーをそのままアプリへ渡す
+    fn interpret(&self, ev: &NSEvent, key: Option<(Key, Mods)>) -> Vec<Event> {
+        let iv = self.ivars();
+        iv.key.set(key);
+        iv.answered.set(false);
+        self.interpretKeyEvents(&NSArray::from_slice(&[ev]));
+        let mut out = iv.queue.take();
+        if !iv.answered.get()
+            && let Some((key, mods)) = iv.key.get()
+        {
+            log::event("key", &format!("key={key:?} mods={mods:?}"), "sent (the input method returned nothing)");
+            out.push(Event::Key { key, mods });
+        }
+        iv.key.set(None);
+        out
+    }
+
+    /// 入力欄から焦点が外れた（別の欄へ移った）時、変換中の文字を捨てる
+    fn discard_marked(&self) {
+        if self.ivars().marked.take().is_empty() {
+            return;
+        }
+        if let Some(ctx) = self.inputContext() {
+            ctx.discardMarkedText();
+        }
+        log::event("ime.discard", "focus moved", "ok");
+    }
+}
+
+/// IME が渡す文字（NSString か NSAttributedString）から、文字と、文節の区切りの始まり（UTF-16 の位置）を取り出す
+fn marked_parts(string: &AnyObject) -> (String, Vec<usize>) {
+    if let Some(attr) = string.downcast_ref::<NSAttributedString>() {
+        let len = attr.length();
+        let mut starts = Vec::new();
+        let mut i = 0;
+        while i < len {
+            let mut range = NSRange::new(0, 0);
+            // SAFETY: i は文字の中、range は書き込める場所。属性の名前は AppKit の定数
+            let value = unsafe { attr.attribute_atIndex_longestEffectiveRange_inRange(NSMarkedClauseSegmentAttributeName, i, &mut range, NSRange::new(0, len)) };
+            if value.is_some() {
+                starts.push(range.location);
+            }
+            i = (range.location + range.length).max(i + 1);
+        }
+        (attr.string().to_string(), starts)
+    } else if let Some(s) = string.downcast_ref::<NSString>() {
+        (s.to_string(), Vec::new())
+    } else {
+        (String::new(), Vec::new())
+    }
+}
+
 /// OS のクリップボード（文字だけ）
 struct MacClipboard;
 
@@ -222,7 +447,7 @@ fn post_wake() {
 
 struct Window {
     ns: Retained<NSWindow>,
-    view: Retained<NSView>,
+    view: Retained<KarguiView>,
     delegate: Retained<WindowDelegate>,
     rt: Runtime,
     /// 窓の中の大きさ（物理ピクセル）と拡大率
@@ -241,9 +466,33 @@ struct Window {
     left_down: bool,
     /// 題の帯に頼んだ明暗（None はまだ頼んでいない）
     dark_title: Option<bool>,
+    /// 前のフレームで IME を向けていた入力欄
+    ime_target: Option<Id>,
 }
 
 impl Window {
+    /// フレームの後に、IME を向ける入力欄と、候補の窓を出す場所を KarguiView に写す
+    fn sync_ime(&mut self) {
+        let target = self.rt.cx.ime_target();
+        if target != self.ime_target {
+            self.view.discard_marked();
+            log::event("ime.focus", &format!("to={}", target.map_or("none".to_string(), |t| format!("{:x}", t.0))), "ok");
+            self.ime_target = target;
+        }
+        // 変換中なら変換中の範囲、そうでなければキャレット（物理ピクセル、左上が原点）
+        let Some(c) = self.rt.cx.preedit_rect.or(self.rt.cx.caret) else { return };
+        let s = self.scale.max(1.0);
+        let h = self.view.bounds().size.height;
+        let r = NSRect::new(NSPoint::new(c.x as f64 / s, h - (c.y + c.h) as f64 / s), NSSize::new((c.w as f64 / s).max(1.0), c.h as f64 / s));
+        let iv = self.view.ivars();
+        if r != iv.ime_rect.get() {
+            iv.ime_rect.set(r);
+            if let Some(ctx) = self.view.inputContext() {
+                ctx.invalidateCharacterCoordinates();
+            }
+        }
+    }
+
     /// 題の帯の明暗を kargui の明暗に合わせる（アプリが OS と違う明暗を選んでも、題の帯が中身と同じになる）
     fn sync_title_appearance(&mut self) {
         let want = self.rt.cx.dark;
@@ -355,8 +604,12 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     ns.setAcceptsMouseMovedEvents(true);
     let delegate = WindowDelegate::new(mtm);
     ns.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    let view = ns.contentView().ok_or_else(|| crate::Error("the window has no content view".into()))?;
+    // 中身は自前の NSView（日本語入力の受け手）。窓の大きさに合わせて AppKit が広げる
+    let view = KarguiView::new(mtm, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(lw, lh)));
+    ns.setContentView(Some(view.as_super()));
     view.setWantsLayer(true);
+    let first_responder = ns.makeFirstResponder(Some(view.as_super().as_super()));
+    log::event("view.first_responder", "KarguiView", &format!("ok={first_responder}"));
     match options.position {
         // 画面の座標は左下が原点。kargui の位置は左上なので、ここでは真ん中に置く（位置の対応は後で）
         Some(_) | None => ns.center(),
@@ -387,6 +640,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         created: Instant::now(),
         left_down: false,
         dark_title: None,
+        ime_target: None,
     };
     w.sync_size();
     w.sync_title_appearance();
@@ -496,6 +750,7 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
     }
     w.draw_and_present(why);
     w.sync_title_appearance();
+    w.sync_ime();
     let first = !w.shown;
     w.shown = true;
     if first {
@@ -579,6 +834,13 @@ fn handle(w: &mut Window, ev: &NSEvent, last_press: &mut Option<(Instant, f32, f
         NSEventType::KeyDown => {
             let code = ev.keyCode();
             let repeat = ev.isARepeat();
+            // 入力欄に焦点があり、近道（Command・Control）でなければ、IME に通す
+            if !mods.ctrl && w.rt.cx.ime_target().is_some() {
+                for e in w.view.interpret(ev, key_of(code).map(|k| (k, mods))) {
+                    w.push(e);
+                }
+                return false;
+            }
             if let Some(key) = key_of(code) {
                 if !repeat {
                     log::event("key", &format!("code={code} key={key:?} mods={mods:?}"), "sent");

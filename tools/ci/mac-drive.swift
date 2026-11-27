@@ -14,10 +14,13 @@
 //   type:文字     英小文字・数字・空白は本物のキーで、ほかは Unicode の文字として送る
 //   screen:場所   画面を撮る（screencapture）
 //   bounds        窓の外枠を書き出し、窓の中の左上を読み直す（窓を動かした後の手順の座標が合う）
+//   inputsource:ID  入力ソースを入れて切り替える（例: com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese は日本語の
+//                 ローマ字入力、com.apple.keylayout.ABC は英字）。入力モードの時は、親の入力ソースも入れる
 //   wait:ミリ秒   待つ
 // X,Y は窓の中の左上からの論理ピクセル（題の帯は負の Y）。窓の場所は、最初に CGWindowList で pid の窓を探して決める。
 
 import AppKit
+import Carbon
 import CoreGraphics
 import Foundation
 
@@ -117,6 +120,42 @@ func key(_ code: CGKeyCode, _ flags: CGEventFlags = [], unicode: [UniChar]? = ni
     }
 }
 
+/// 入力ソースの文字の属性（ID など）
+func sourceProperty(_ s: TISInputSource, _ key: CFString) -> String? {
+    guard let p = TISGetInputSourceProperty(s, key) else { return nil }
+    return Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String
+}
+
+func currentSource() -> String {
+    guard let s = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return "none" }
+    return sourceProperty(s, kTISPropertyInputSourceID) ?? "?"
+}
+
+/// 入っている入力ソースすべて（入れていない物も含む）
+func allSources() -> [TISInputSource] {
+    guard let list = TISCreateInputSourceList(nil, true)?.takeRetainedValue() as? [TISInputSource] else { return [] }
+    return list
+}
+
+/// ID の入力ソースを入れて切り替える。入力モード（親の ID + "." + モード）なら親も入れる
+func selectSource(_ id: String) -> String {
+    let sources = allSources()
+    let parent = id.split(separator: ".").dropLast().joined(separator: ".")
+    var log: [String] = []
+    if let p = sources.first(where: { sourceProperty($0, kTISPropertyInputSourceID) == parent }) {
+        log.append("enable_parent=\(TISEnableInputSource(p))")
+    }
+    guard let src = sources.first(where: { sourceProperty($0, kTISPropertyInputSourceID) == id }) else {
+        let near = sources.compactMap { sourceProperty($0, kTISPropertyInputSourceID) }.filter { $0.contains("Kotoeri") || $0.contains("Japanese") || $0.contains("ABC") }
+        return "not found; similar=\(near)"
+    }
+    log.append("enable=\(TISEnableInputSource(src))")
+    log.append("select=\(TISSelectInputSource(src))")
+    usleep(300_000)
+    log.append("current=\(currentSource())")
+    return log.joined(separator: " ")
+}
+
 /// 押したままの間の、今のポインターの場所
 var pointer = origin
 
@@ -197,6 +236,9 @@ for step in args.dropFirst(3) {
                 key(unicodeKey, unicode: Array(String(c).utf16))
             }
         }
+    case "inputsource":
+        say("step \(step) \(selectSource(rest))")
+        continue
     case "bounds":
         guard let r = windowRect() else {
             say("step \(step) window not found")
