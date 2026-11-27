@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed: screen readers did not hear the names of the minimize, maximize and close buttons in
+  the title bar kargui draws on Windows (`Options::custom_title_bar`); they were buttons with no
+  name. They still are not Tab stops, as in the system's title bar.
 - Language: the words kargui shows itself (the title bar's buttons, the docking menu, the buttons
   of number fields, resize handles, the toolbar's More options, the date, time and color pickers,
   and the names screen readers hear for them) are in English or Japanese, following the system's

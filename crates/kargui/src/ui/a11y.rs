@@ -570,10 +570,12 @@ pub(crate) fn build(tree: &Tree, cx: &Context, title: &str, warned: &mut HashSet
         if let Some(d) = &info.description {
             node.set_description(d.clone());
         }
-        if info.kind.interactive() || matches!(info.kind, Kind::List { .. }) {
+        // 題の帯のボタンは Tab で止まらないので押せる部品の判定（Tab の順にも使う）には入れないが、名前は付ける
+        let pressable = info.kind.interactive() || matches!(info.kind, Kind::CaptionButton { .. });
+        if pressable || matches!(info.kind, Kind::List { .. }) {
             match &name {
                 Some(nm) => node.set_label(nm.clone()),
-                None if info.kind.interactive() => {
+                None if pressable => {
                     unlabeled += 1;
                     if warned.insert(info.id.0) {
                         log::event("a11y.unlabeled", &format!("kind={:?}", std::mem::discriminant(&info.kind)), "add a label with .label(..)");

@@ -5287,6 +5287,30 @@ mod tests {
         update.nodes.iter().map(|(id, _)| id.0).filter(|id| *id != root && !children.contains(id)).collect()
     }
 
+    #[test]
+    fn windows_style_title_bar_buttons_have_names_for_screen_readers() {
+        // 多言語の確かめの途中で、UI オートメーションの木に、題の帯のボタンが名前の無いボタンとして出ていた。
+        // 題の帯のボタンは押せる部品の判定に入っておらず、読み上げの名前を付ける条件から外れていた
+        use crate::ui::context::{Csd, CsdButton as B};
+        let mut h = Harness::new(Titled::default());
+        h.rt.cx.csd = Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Minimize, B::Maximize, B::Close], windows: true });
+        h.frame();
+        for name in ["Minimize", "Maximize", "Close"] {
+            let n = a11y_node(&h, name);
+            assert_eq!((n.role(), n.label()), (accesskit::Role::Button, Some(name)), "{name}");
+        }
+        // 言語を変えると、読み上げの名前も変わる
+        h.set_locale(crate::Locale::Japanese);
+        assert_eq!(a11y_node(&h, "最小化").label(), Some("最小化"));
+        // Tab では止まらない（Windows の題の帯のボタンと同じ。窓のメニューは Alt+Space）
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            h.press(Key::Tab);
+            seen.push(focused_name(&h).unwrap_or_default());
+        }
+        assert!(!seen.iter().any(|n| n == "最小化" || n == "最大化" || n == "閉じる"), "{seen:?}");
+    }
+
     fn a11y_node<A: App>(h: &Harness<A>, name: &str) -> accesskit::Node {
         let id = id_named(h, name);
         a11y::build(&h.rt.tree, &h.rt.cx, "t", &mut std::collections::HashSet::new()).update.nodes.into_iter().find(|(n, _)| n.0 == id.0).unwrap().1
