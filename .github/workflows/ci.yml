@@ -1,11 +1,13 @@
 # 送るたびに、Windows・Linux・macOS で試験を走らせる。
 # - Windows: 全部の試験と検査（説明と例の割合・部品の写真・AI 向けの索引・ガイドの古さ）、Windows 以外の文字の道の試験
-# - Linux・macOS: kargui の試験（部品・並べ方・描き方・試験台・文字）。窓はまだ Windows だけなので、窓を開く試験は無い
+# - Linux・macOS: kargui の試験（部品・並べ方・描き方・試験台・文字）
+# - macOS の窓: 見本を本物の窓で開き、窓に出した絵を写真に残す（作者は Mac を持たないので、macOS の窓はここで確かめる）
+# macos ブランチは macOS の作りかけの作業用（作者の許可で、毎回聞かずに送る）
 name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, macos]
   pull_request:
 
 permissions:
@@ -53,3 +55,40 @@ jobs:
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Tests
         run: cargo test --locked -p kargui
+
+  # 見本を本物の窓で開き、kargui が窓に出した絵（KARGUI_SHOT）と、画面の写真（screencapture。許可が無いと窓が
+  # 写らないことがある）を残す。写真と記録は artifact（macos-window）で取り出す
+  macos-window:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Build the examples
+        run: cargo build --locked --release -p gallery-kargui -p expenses-kargui
+      - name: Open the examples and save what they drew
+        run: |
+          mkdir -p shots
+          sw_vers > shots/system.txt
+          uname -m >> shots/system.txt
+          system_profiler SPDisplaysDataType > shots/displays.txt 2>&1 || true
+          shot() {
+            name="$1"; shift
+            KARGUI_SHOT="shots/$name.png" KARGUI_SHOT_MS=3000 "$@" --log "shots/$name.log" &
+            pid=$!
+            ( sleep 30; kill "$pid" 2>/dev/null && echo "$name: killed after 30 s" ) &
+            sleep 2
+            screencapture -x "shots/$name-screen.png" || echo "$name: screencapture failed"
+            wait "$pid"; echo "$name: exit=$?"
+          }
+          shot gallery ./target/release/gallery-kargui
+          shot gallery-dark ./target/release/gallery-kargui --dark
+          GALLERY_PAGE=13 shot gallery-dates ./target/release/gallery-kargui --light
+          shot expenses ./target/release/expenses-kargui
+          ls -la shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-window
+          path: shots

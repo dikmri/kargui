@@ -357,8 +357,12 @@ pub fn run(options: Options, app: impl App) -> Result<(), crate::Error> {
             crate::linux::Backend::X11 => crate::x11::run(options, Box::new(app)),
         }
     }
-    // macOS の窓はまだ無い（部品・並べ方・描き方・試験台は動く）
-    #[cfg(not(any(windows, target_os = "linux")))]
+    // macOS は AppKit の窓（M1: 主の窓・描画・マウス・キー。日本語入力などは後の段階）
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::run(options, Box::new(app))
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = (options, app);
         Err(crate::Error("kargui cannot open windows on this operating system yet: Windows and Linux (Wayland and X11) are supported (macOS is planned)".into()))
