@@ -119,22 +119,9 @@ jobs:
           # 切り替えると、メニューバーの表示は変わっても前面のアプリの入力の受け手は前のままなので（1 回目は nihongo と
           # 入った）、デスクトップを押してから欄を押し直し、焦点を移して戻す
           drive input-ime 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:300 click:-100,300 wait:500 click:500,72 wait:500 type:nihongo wait:500 screen:shots/input-ime-preedit.png key:space wait:800 screen:shots/input-ime-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
-          # テキストエディットでは同じ手順で「日本語」に変換できた（2026-11-28）。kargui の見本は cargo が作った裸の
-          # 実行ファイルで、アプリの束（.app と Info.plist の bundle identifier）が無い。束に入れた物でも同じ手順で比べる
-          mkdir -p target/Expenses.app/Contents/MacOS
-          cp target/release/expenses-kargui target/Expenses.app/Contents/MacOS/
-          cat > target/Expenses.app/Contents/Info.plist <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-          <key>CFBundleIdentifier</key><string>io.github.dikmri.kargui.expenses</string>
-          <key>CFBundleExecutable</key><string>expenses-kargui</string>
-          <key>CFBundleName</key><string>Expenses</string>
-          <key>CFBundlePackageType</key><string>APPL</string>
-          <key>NSHighResolutionCapable</key><true/>
-          </dict></plist>
-          PLIST
-          drive input-ime-bundle 600 ./target/Expenses.app/Contents/MacOS/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-bundle-preedit.png key:space wait:800 screen:shots/input-ime-bundle-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
+          # テキストエディットでは同じ手順で「日本語」に変換できた。アプリの束（.app と bundle identifier）に入れても
+          # 変わらなかった（2026-11-28）。起動の時に一度 [NSApp run] を通る形（KARGUI_MAC_RUN_ONCE、GLFW と同じ）と比べる
+          KARGUI_MAC_RUN_ONCE=1 drive input-ime-runonce 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-runonce-preedit.png key:space wait:800 screen:shots/input-ime-runonce-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()
