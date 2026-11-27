@@ -67,7 +67,7 @@ jobs:
       - name: Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Build the examples
-        run: cargo build --locked --release -p gallery-kargui -p expenses-kargui
+        run: cargo build --locked --release -p gallery-kargui -p expenses-kargui -p files-kargui
       - name: Open the examples and save what they drew
         run: |
           mkdir -p shots
@@ -155,6 +155,9 @@ jobs:
           # 読み上げの木でメニューの項目を見て、⌘Q で終わる（閉じる前の確認を通る）
           SHOT_MS=30000 drive input-system 620 ./target/release/gallery-kargui wait:800 theme:dark wait:1000 screen:shots/input-system-dark.png theme:light wait:1000 screen:shots/input-system-light.png ax key:cmd+q wait:1000
           defaults delete -g AppleInterfaceStyle 2>/dev/null || true
+          # 複数の窓（Ui::window）: files の表の行を右クリックしてプロパティを選ぶと別の窓が開く。撮ってから、その窓の
+          # 閉じるボタン（主の窓から 30 ずつ右下にずらして置く）を押す（アプリが閉じたと知り、別の窓が閉じる）
+          SHOT_MS=25000 drive input-windows 520 ./target/release/files-kargui wait:500 screen:shots/input-windows-main.png rclick:500,118 wait:400 key:down key:enter wait:1200 screen:shots/input-windows-props.png ax click:46,14 wait:1200 screen:shots/input-windows-closed.png
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()

@@ -56,11 +56,21 @@ const WAKE_SUBTYPE: i16 = 0x6b67; // "kg"
 /// 窓と App。kargui の輪のほかに、AppKit が自分の輪を回している間の呼び返し（引っ張って大きさを変える間の
 /// windowDidResize: など）からも使うので、Rc<RefCell<…>> で持つ。kargui の輪は sendEvent の間は借りない
 struct State {
-    w: Window,
+    /// 開いている窓。0 番が主の窓、ほかは Ui::window で頼まれた窓（key を持つ）
+    windows: Vec<Window>,
     app: Box<dyn App>,
     started: Instant,
     /// アプリが終わりを頼んだ（呼び返しの中のフレームで頼まれた時も、輪が読んで終わる）
     quit: bool,
+    /// アプリが渡した書体のファイル（別の窓の Runtime にも読ませる）
+    fonts: Vec<std::borrow::Cow<'static, [u8]>>,
+}
+
+impl State {
+    /// この委任先を持つ窓
+    fn index_of(&self, d: &WindowDelegate) -> Option<usize> {
+        self.windows.iter().position(|w| std::ptr::eq(&*w.delegate, d))
+    }
 }
 
 #[derive(Default)]
@@ -140,11 +150,13 @@ define_class!(
             // 窓の中身の角を押して始まった時、その押下は kargui に渡さない（放した知らせは AppKit の輪が受け取るので
             // kargui に届かず、kargui が押したままだと思い続ける）
             iv.with_state(|s| {
-                if s.w.left_down {
-                    if let Some(i) = s.w.events.iter().rposition(|e| matches!(e, Event::PointerDown { .. })) {
-                        s.w.events.remove(i);
+                let Some(i) = s.index_of(self) else { return };
+                let w = &mut s.windows[i];
+                if w.left_down {
+                    if let Some(k) = w.events.iter().rposition(|e| matches!(e, Event::PointerDown { .. })) {
+                        w.events.remove(k);
                     }
-                    s.w.left_down = false;
+                    w.left_down = false;
                     log::event("pointer.taken_by_window", "live_resize", "ok");
                 }
             });
@@ -158,10 +170,13 @@ define_class!(
                 return;
             }
             iv.with_state(|s| {
-                if s.w.sync_size() {
-                    s.w.why = "live_resize";
-                    if !frame(&mut s.w, &mut *s.app, s.started) {
-                        s.quit = true;
+                let Some(i) = s.index_of(self) else { return };
+                let State { windows, app, started, quit, .. } = s;
+                let w = &mut windows[i];
+                if w.sync_size() {
+                    w.why = "live_resize";
+                    if !frame(w, &mut **app, *started) {
+                        *quit = true;
                     }
                     iv.live_frames.set(iv.live_frames.get() + 1);
                 }
@@ -650,6 +665,8 @@ fn post_wake() {
 }
 
 struct Window {
+    /// None は主の窓。ほかの窓は Ui::window の鍵
+    key: Option<String>,
     ns: Retained<NSWindow>,
     view: Retained<KarguiView>,
     delegate: Retained<WindowDelegate>,
@@ -682,6 +699,39 @@ struct Window {
 }
 
 impl Window {
+    /// 記録に付ける窓の名前（主の窓は空）
+    fn tag(&self) -> String {
+        self.key.as_ref().map_or(String::new(), |k| format!(" win={k}"))
+    }
+
+    /// フレームの前に、大きさ・時刻・起こし・IME の後から届く入力・読み上げの頼み・前面の変化を読む
+    fn before_frame(&mut self, app_active: bool) {
+        if self.sync_size() {
+            self.need_frame = true;
+            self.why = "resize";
+        }
+        if self.wake_at.is_some_and(|t| t <= Instant::now()) {
+            self.wake_at = None;
+            self.need_frame = true;
+            self.why = "timer";
+        }
+        if self.rt.cx.waker.take_woken() {
+            self.need_frame = true;
+            self.why = "wake";
+        }
+        // キーの外で届いた IME の入力（後から届く確定など）と、読み上げからの頼み
+        for e in self.view.ivars().queue.take() {
+            self.push(e);
+        }
+        self.apply_a11y_actions();
+        if let Some(focused) = self.delegate.ivars().focus.take() {
+            log::event("window.focus", &format!("focused={focused}{}", self.tag()), &format!("app_active={app_active}"));
+            if let Some(ev) = self.a11y.update_view_focus_state(focused) {
+                ev.raise();
+            }
+        }
+    }
+
     /// 読み上げからの頼み（押す・焦点・増減）を kargui の入力にする
     fn apply_a11y_actions(&mut self) {
         let requests = std::mem::take(&mut *self.a11y_actions.borrow_mut());
@@ -818,25 +868,29 @@ fn present(view: &NSView, pixels: &[u32], w: i32, h: i32) -> bool {
     true
 }
 
-/// 主の窓を開いて、閉じるまで輪を回す
-pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Error> {
-    let started = Instant::now();
-    let mtm = MainThreadMarker::new().ok_or_else(|| crate::Error("kargui must run on the main thread on macOS".into()))?;
-    let ns_app = NSApplication::sharedApplication(mtm);
-    ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    // [NSApp run] は通らない（起動の時に一度 run を通る GLFW の形と CI で比べ、日本語入力の振る舞いは変わらなかった）
-    ns_app.finishLaunching();
-    let dark = options.dark.unwrap_or_else(|| system_dark(&ns_app));
-    log::event("theme.system", &format!("dark={dark}"), if options.dark.is_some() { "app" } else { "system" });
+/// 窓の Runtime を作る（主の窓と、Ui::window で頼まれた窓）
+fn new_runtime(title: &str, dark: bool, font: &crate::Font, fonts: &[std::borrow::Cow<'static, [u8]>]) -> Result<Runtime, crate::Error> {
+    let text = Text::new()?;
+    let mut rt = Runtime::new(text, dark, Box::new(MacClipboard), title.to_string());
+    rt.cx.waker = crate::wake::Waker::new(post_wake);
+    rt.cx.text.load_fonts(fonts);
+    rt.cx.font = rt.cx.text.fonts.id(font);
+    crate::locale::apply_to(&mut rt.cx, title);
+    // OS のハイコントラスト（アプリの Options::high_contrast が先。kargui の配色を使う）
+    rt.cx.set_system_high_contrast(system_high_contrast(), None);
+    Ok(rt)
+}
 
-    let (lw, lh) = (options.size.0 as f64, options.size.1 as f64);
+/// NSWindow・委任先・中身の NSView・読み上げの橋渡しを作り、Window にする（まだ出さない）
+fn new_window(mtm: MainThreadMarker, key: Option<String>, title: &str, size: (f32, f32), min_size: Option<(f32, f32)>, rt: Runtime, follow_dark: bool) -> Window {
+    let (lw, lh) = (size.0 as f64, size.1 as f64);
     let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable;
     // SAFETY: 窓を作る AppKit の関数。閉じた時に放さない（下の setReleasedWhenClosed）ので、Retained の持ち方と合う
     let ns = unsafe { NSWindow::initWithContentRect_styleMask_backing_defer(NSWindow::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(lw, lh)), style, NSBackingStoreType::Buffered, false) };
     // SAFETY: Retained で持つので、閉じた時に AppKit に放させない
     unsafe { ns.setReleasedWhenClosed(false) };
-    ns.setTitle(&NSString::from_str(&options.title));
-    if let Some((mw, mh)) = options.min_size {
+    ns.setTitle(&NSString::from_str(title));
+    if let Some((mw, mh)) = min_size {
         ns.setContentMinSize(NSSize::new(mw as f64, mh as f64));
     }
     ns.setAcceptsMouseMovedEvents(true);
@@ -847,49 +901,15 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     ns.setContentView(Some(view.as_super()));
     view.setWantsLayer(true);
     let first_responder = ns.makeFirstResponder(Some(view.as_super().as_super()));
-    log::event("view.first_responder", "KarguiView", &format!("ok={first_responder}"));
     // 読み上げの橋渡し。窓を出す前に付ける（accesskit_macos の決まり）
     let sink = MacA11ySink::default();
     let a11y_actions = sink.actions.clone();
     // SAFETY: view は生きている NSView（Window が持ち続ける）。窓を出す前で、まだ誰も KVO で見ていない
     let a11y = unsafe { accesskit_macos::SubclassingAdapter::new(Retained::as_ptr(&view) as *mut std::ffi::c_void, sink.clone(), sink) };
-    log::event("a11y.adapter", "SubclassingAdapter on KarguiView", "ok");
-    match options.position {
-        // 画面の座標は左下が原点。kargui の位置は左上なので、ここでは真ん中に置く（位置の対応は後で）
-        Some(_) | None => ns.center(),
-    }
-
-    let text = Text::new()?;
-    let mut rt = Runtime::new(text, dark, Box::new(MacClipboard), options.title.clone());
-    rt.cx.waker = crate::wake::Waker::new(post_wake);
-    rt.cx.text.load_fonts(&options.fonts);
-    rt.cx.font = rt.cx.text.fonts.id(&options.font);
-    crate::locale::apply_to(&mut rt.cx, &options.title);
-    // OS のハイコントラスト（アプリの Options::high_contrast が先。kargui の配色を使う）
-    let hc = system_high_contrast();
-    rt.cx.set_system_high_contrast(hc, None);
-    log::event("theme.contrast", &format!("high={hc}"), &format!("system forced={:?}", crate::theme::option()));
-    // OS の明暗とハイコントラストの変化を聞く
-    // SAFETY: 委任先は窓（Window）が輪の終わりまで持つ。知らせの名前は Apple の物
-    unsafe {
-        let observer: &AnyObject = delegate.as_ref();
-        objc2_foundation::NSDistributedNotificationCenter::defaultCenter().addObserver_selector_name_object(
-            observer,
-            objc2::sel!(systemSettingsChanged:),
-            Some(&NSString::from_str("AppleInterfaceThemeChangedNotification")),
-            None,
-        );
-        objc2_app_kit::NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
-            observer,
-            objc2::sel!(systemSettingsChanged:),
-            Some(objc2_app_kit::NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
-            None,
-        );
-    }
-    install_menu(mtm, &ns_app, &ns, matches!(rt.cx.locale, crate::Locale::Japanese));
     let mut w = Window {
-        ns: ns.clone(),
-        view: view.clone(),
+        key,
+        ns,
+        view,
         delegate,
         rt,
         size: (0, 0),
@@ -910,12 +930,104 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         pending_dialog: None,
         a11y,
         a11y_actions,
-        follow_dark: options.dark.is_none(),
+        follow_dark,
     };
     w.sync_size();
     w.sync_title_appearance();
-    log::event("window.create", &format!("title={:?} size={lw:.0}x{lh:.0}", options.title), &format!("physical={}x{} scale={}", w.size.0, w.size.1, w.scale));
-    ns.makeKeyAndOrderFront(None);
+    log::event(
+        "window.create",
+        &format!("title={title:?} size={lw:.0}x{lh:.0}{}", w.tag()),
+        &format!("physical={}x{} scale={} first_responder={first_responder} a11y=SubclassingAdapter", w.size.0, w.size.1, w.scale),
+    );
+    w
+}
+
+/// 主の窓のビューが頼んだ窓（Ui::window）を開き、頼まれなくなった窓を閉じる（X11 の版の sync_windows と同じ）
+fn sync_windows(s: &mut State, mtm: MainThreadMarker) {
+    let requested = s.windows[0].rt.cx.windows.clone();
+    let new: Vec<_> = requested.iter().filter(|r| !s.windows.iter().any(|w| w.key.as_deref() == Some(r.key.as_str()))).cloned().collect();
+    for r in new {
+        let main = &s.windows[0];
+        let (dark, font, follow) = (main.rt.cx.dark, main.rt.cx.text.fonts.get(main.rt.cx.font).clone(), main.follow_dark);
+        let main_frame = main.ns.frame();
+        let rt = match new_runtime(&r.title, dark, &font, &s.fonts) {
+            Ok(rt) => rt,
+            Err(e) => {
+                log::event("window.open_other", &format!("key={}", r.key), &format!("error={e}"));
+                continue;
+            }
+        };
+        let w = new_window(mtm, Some(r.key.clone()), &r.title, r.size, r.min_size, rt, follow);
+        // 置く場所: 頼まれた場所（画面の左上から。macOS の画面の座標は左下が原点）か、主の窓から右下へずらす
+        match (r.position, w.ns.screen()) {
+            (Some((x, y)), Some(screen)) => {
+                let sf = screen.frame();
+                w.ns.setFrameTopLeftPoint(NSPoint::new(sf.origin.x + x as f64, sf.origin.y + sf.size.height - y as f64));
+            }
+            _ => {
+                let n = s.windows.len() as f64;
+                w.ns.setFrameTopLeftPoint(NSPoint::new(main_frame.origin.x + 30.0 * n, main_frame.origin.y + main_frame.size.height - 30.0 * n));
+            }
+        }
+        if r.activate {
+            w.ns.makeKeyAndOrderFront(None);
+        } else {
+            w.ns.orderFront(None);
+        }
+        log::event("window.open_other", &format!("key={} size={:.0}x{:.0} position={:?}", r.key, r.size.0, r.size.1, r.position), &format!("activate={}", r.activate));
+        s.windows.push(w);
+    }
+    let mut i = 1;
+    while i < s.windows.len() {
+        let gone = s.windows[i].key.as_ref().is_some_and(|k| !requested.iter().any(|r| &r.key == k));
+        if gone {
+            let w = s.windows.remove(i);
+            w.ns.orderOut(None);
+            log::event("window.close_other", &format!("key={}", w.key.as_deref().unwrap_or("")), "ok");
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// 主の窓を開いて、閉じるまで輪を回す
+pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Error> {
+    let started = Instant::now();
+    let mtm = MainThreadMarker::new().ok_or_else(|| crate::Error("kargui must run on the main thread on macOS".into()))?;
+    let ns_app = NSApplication::sharedApplication(mtm);
+    ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    // [NSApp run] は通らない（起動の時に一度 run を通る GLFW の形と CI で比べ、日本語入力の振る舞いは変わらなかった）
+    ns_app.finishLaunching();
+    let dark = options.dark.unwrap_or_else(|| system_dark(&ns_app));
+    log::event("theme.system", &format!("dark={dark}"), if options.dark.is_some() { "app" } else { "system" });
+
+    let rt = new_runtime(&options.title, dark, &options.font, &options.fonts)?;
+    log::event("theme.contrast", &format!("high={}", rt.cx.os_high_contrast), &format!("system forced={:?}", crate::theme::option()));
+    let japanese = matches!(rt.cx.locale, crate::Locale::Japanese);
+    let w = new_window(mtm, None, &options.title, options.size, options.min_size, rt, options.dark.is_none());
+    match options.position {
+        // 画面の座標は左下が原点。kargui の位置は左上なので、ここでは真ん中に置く（位置の対応は後で）
+        Some(_) | None => w.ns.center(),
+    }
+    // OS の明暗とハイコントラストの変化を、主の窓の委任先で聞く
+    // SAFETY: 委任先は主の窓（Window）が輪の終わりまで持つ。知らせの名前は Apple の物
+    unsafe {
+        let observer: &AnyObject = w.delegate.as_ref();
+        objc2_foundation::NSDistributedNotificationCenter::defaultCenter().addObserver_selector_name_object(
+            observer,
+            objc2::sel!(systemSettingsChanged:),
+            Some(&NSString::from_str("AppleInterfaceThemeChangedNotification")),
+            None,
+        );
+        objc2_app_kit::NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
+            observer,
+            objc2::sel!(systemSettingsChanged:),
+            Some(objc2_app_kit::NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+            None,
+        );
+    }
+    install_menu(mtm, &ns_app, &w.ns, japanese);
+    w.ns.makeKeyAndOrderFront(None);
     if options.activate {
         // 端末などから起動したアプリは、前面のアプリが譲らないと activate（macOS 14 からの穏やかな頼み方）では前面に
         // ならない（CI の Mac では Finder が前面のまま、窓は灰色の題の帯だった）。winit と同じく、ほかのアプリより先に
@@ -924,98 +1036,110 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         ns_app.activateIgnoringOtherApps(true);
         log::event("app.activate", "ignoring_other_apps=true", &format!("active_now={}", ns_app.isActive()));
     }
-    // アプリの束の名前（cargo が作った裸の実行ファイルでは無い。IME がつながるかに関わるかもしれないので残す）
+    // アプリの束の名前（cargo が作った裸の実行ファイルでは無い）
     let bundle = objc2_foundation::NSBundle::mainBundle();
     log::event("app.bundle", &format!("path={:?}", bundle.bundlePath().to_string()), &format!("identifier={:?}", bundle.bundleIdentifier().map(|s| s.to_string())));
 
-    let state = Rc::new(RefCell::new(State { w, app, started, quit: false }));
-    state.borrow().w.delegate.ivars().state.replace(Rc::downgrade(&state));
+    let state = Rc::new(RefCell::new(State { windows: vec![w], app, started, quit: false, fonts: options.fonts.clone() }));
 
     let shot = std::env::var("KARGUI_SHOT").ok().filter(|s| !s.is_empty());
     let shot_at = started + Duration::from_millis(std::env::var("KARGUI_SHOT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500));
     let mut last_press: Option<(Instant, f32, f32, u8)> = None;
     loop {
+        // 新しく開いた窓の委任先にも、窓と App の弱い参照を渡す（引っ張って大きさを変える間の呼び返しが使う）
+        {
+            let s = state.borrow();
+            for w in &s.windows {
+                if w.delegate.ivars().state.borrow().upgrade().is_none() {
+                    w.delegate.ivars().state.replace(Rc::downgrade(&state));
+                }
+            }
+        }
         // 頼まれたファイルのダイアログを、State を借りずに出す。答え（取り消しは空）は Ui::chosen_file が読む
-        let dialog = state.borrow_mut().w.pending_dialog.take();
-        if let Some((key, d)) = dialog {
+        let dialog = state.borrow_mut().windows.iter_mut().enumerate().find_map(|(i, w)| w.pending_dialog.take().map(|d| (i, d)));
+        if let Some((i, (key, d))) = dialog {
             let files = show_file_dialog(mtm, &d);
             log::event("file_dialog.answer", &format!("key={key} save={}", d.save), &format!("files={}", files.len()));
             let mut guard = state.borrow_mut();
-            guard.w.rt.cx.file_results.insert(key, files);
-            guard.w.need_frame = true;
-            guard.w.why = "file_dialog";
+            if let Some(w) = guard.windows.get_mut(i) {
+                w.rt.cx.file_results.insert(key, files);
+                w.need_frame = true;
+                w.why = "file_dialog";
+            }
         }
         let date = {
             let mut guard = state.borrow_mut();
             let s = &mut *guard;
-            let w = &mut s.w;
-            if w.sync_size() {
-                w.need_frame = true;
-                w.why = "resize";
-            }
-            if w.wake_at.is_some_and(|t| t <= Instant::now()) {
-                w.wake_at = None;
-                w.need_frame = true;
-                w.why = "timer";
-            }
-            if w.rt.cx.waker.take_woken() {
-                w.need_frame = true;
-                w.why = "wake";
-            }
-            // キーの外で届いた IME の入力（後から届く確定など）と、読み上げからの頼み
-            for e in w.view.ivars().queue.take() {
-                w.push(e);
-            }
-            w.apply_a11y_actions();
-            // OS の明暗・ハイコントラストが変わった
-            if w.delegate.ivars().system_changed.replace(false) {
-                let dark = system_dark_setting();
-                if w.follow_dark {
-                    w.rt.cx.set_dark(dark);
-                }
-                log::event("theme.system", &format!("dark={dark}"), if w.follow_dark { "changed" } else { "ignored (the app chose)" });
-                let hc = system_high_contrast();
-                if w.rt.cx.set_system_high_contrast(hc, None) {
-                    log::event("theme.contrast", &format!("high={hc}"), &format!("changed forced={:?}", crate::theme::option()));
-                }
-                w.need_frame = true;
-                w.why = "theme";
-            }
-            if let Some(focused) = w.delegate.ivars().focus.take() {
-                log::event("window.focus", &format!("focused={focused}"), &format!("app_active={}", ns_app.isActive()));
-                if let Some(ev) = w.a11y.update_view_focus_state(focused) {
-                    ev.raise();
+            // OS の明暗・ハイコントラストが変わった（主の窓の委任先が聞く）。全部の窓に入れる
+            if s.windows[0].delegate.ivars().system_changed.replace(false) {
+                let (dark, hc) = (system_dark_setting(), system_high_contrast());
+                log::event("theme.system", &format!("dark={dark}"), if s.windows[0].follow_dark { "changed" } else { "ignored (the app chose)" });
+                for w in &mut s.windows {
+                    if w.follow_dark {
+                        w.rt.cx.set_dark(dark);
+                    }
+                    if w.rt.cx.set_system_high_contrast(hc, None) && w.key.is_none() {
+                        log::event("theme.contrast", &format!("high={hc}"), &format!("changed forced={:?}", crate::theme::option()));
+                    }
+                    w.need_frame = true;
+                    w.why = "theme";
                 }
             }
-            if w.need_frame && !frame(w, &mut *s.app, s.started) {
-                s.quit = true;
+            let active = ns_app.isActive();
+            for w in &mut s.windows {
+                w.before_frame(active);
+            }
+            // 閉じるボタン: 主の窓はアプリに聞き、ほかの窓はアプリに閉じたことを知らせる（主の窓のビューが頼むのを
+            // やめたら閉じる）
+            let mut close_main = false;
+            for i in 0..s.windows.len() {
+                if !s.windows[i].delegate.ivars().close_asked.replace(false) {
+                    continue;
+                }
+                match s.windows[i].key.clone() {
+                    None => {
+                        let ok = s.app.close_requested();
+                        log::event("window.close_requested", "", &format!("allowed={ok}"));
+                        close_main |= ok;
+                        s.windows[0].need_frame = true;
+                        s.windows[0].why = "close_asked";
+                    }
+                    Some(key) => {
+                        log::event("window.close_requested", &format!("key={key}"), "closed by the user");
+                        s.windows[0].rt.cx.closed_windows.insert(key);
+                        s.windows[0].need_frame = true;
+                        s.windows[0].why = "input";
+                    }
+                }
+            }
+            if close_main {
+                break;
+            }
+            // 主の窓を先に回す（ほかの窓を開くか閉じるかは、主の窓のビューが決める）
+            for i in 0..s.windows.len() {
+                let State { windows, app, started, quit, .. } = &mut *s;
+                if windows[i].need_frame && !frame(&mut windows[i], &mut **app, *started) {
+                    *quit = true;
+                }
             }
             if s.quit {
                 break;
             }
+            sync_windows(s, mtm);
             if let Some(path) = shot.as_ref().filter(|_| Instant::now() >= shot_at) {
-                save_shot(w, path);
+                save_shot(&s.windows[0], path);
                 break;
             }
-            if w.delegate.ivars().close_asked.replace(false) {
-                let ok = s.app.close_requested();
-                log::event("window.close_requested", "", &format!("allowed={ok}"));
-                if ok {
-                    break;
-                }
-                w.need_frame = true;
-                w.why = "close_asked";
-            }
             // 次に起きる時刻まで知らせを待つ（描く物が残っていれば待たない）
-            let until = if w.need_frame || w.pending_dialog.is_some() {
-                Some(Instant::now())
-            } else {
-                let mut t = w.wake_at;
-                if shot.is_some() {
-                    t = Some(t.map_or(shot_at, |x| x.min(shot_at)));
-                }
-                t
-            };
+            let now = Instant::now();
+            let mut until: Option<Instant> = shot.as_ref().map(|_| shot_at);
+            for w in &s.windows {
+                let t = if w.need_frame || w.pending_dialog.is_some() { Some(now) } else { w.wake_at };
+                until = match (until, t) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
             match until {
                 Some(t) => NSDate::dateWithTimeIntervalSinceNow(t.saturating_duration_since(Instant::now()).as_secs_f64()),
                 None => NSDate::distantFuture(),
@@ -1024,20 +1148,30 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         // SAFETY: NSDefaultRunLoopMode は Foundation の定数
         let ev = ns_app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, Some(&date), unsafe { NSDefaultRunLoopMode }, true);
         let Some(ev) = ev else { continue };
-        let pass = handle(&mut state.borrow_mut().w, &ev, &mut last_press);
+        // 知らせを窓に振り分ける（起こす知らせなど、窓の無い知らせは輪を起こすだけ）
+        let target = ev.window(mtm).and_then(|win| state.borrow().windows.iter().position(|w| std::ptr::eq(&*w.ns, &*win)));
+        let pass = match target {
+            Some(i) => handle(&mut state.borrow_mut().windows[i], &ev, &mut last_press),
+            None => !(ev.r#type() == NSEventType::ApplicationDefined && ev.subtype().0 == WAKE_SUBTYPE),
+        };
         if pass {
             // 借りずに渡す（AppKit が中で自分の輪を回し、委任先が State を借りることがある）
             ns_app.sendEvent(&ev);
             // IME に通したキーの結果
-            let mut guard = state.borrow_mut();
-            let w = &mut guard.w;
-            for e in w.view.finish_key() {
-                w.push(e);
+            if let Some(i) = target {
+                let mut guard = state.borrow_mut();
+                if let Some(w) = guard.windows.get_mut(i) {
+                    for e in w.view.finish_key() {
+                        w.push(e);
+                    }
+                }
             }
         }
     }
     log::event("window.close", "", "ok");
-    ns.orderOut(None);
+    for w in &state.borrow().windows {
+        w.ns.orderOut(None);
+    }
     Ok(())
 }
 
@@ -1045,7 +1179,11 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
 fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
     let why = w.why;
     let events = std::mem::take(&mut w.events);
-    let out = w.rt.frame(app, events);
+    // 主の窓は App::view、ほかの窓は App::window で描く
+    let out = match w.key.clone() {
+        None => w.rt.frame(app, events),
+        Some(k) => w.rt.frame_with(&mut |ui: &mut crate::ui::Ui| app.window(&k, ui), events),
+    };
     let quit = std::mem::take(&mut w.rt.cx.quit);
     w.wake_at = out.wake_after.map(|d| Instant::now() + d);
     if out.want_frame {
@@ -1072,10 +1210,12 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
     let first = !w.shown;
     w.shown = true;
     if first {
-        log::event("window.shown", &format!("physical={}x{} scale={}", w.size.0, w.size.1, w.scale), &format!("ms={:.1}", w.created.elapsed().as_secs_f64() * 1000.0));
+        log::event("window.shown", &format!("physical={}x{} scale={}{}", w.size.0, w.size.1, w.scale, w.tag()), &format!("ms={:.1}", w.created.elapsed().as_secs_f64() * 1000.0));
     }
-    let number = if first { 0 } else { w.rt.frames.saturating_sub(1) };
-    app.presented(&Frame { number, since_start: started.elapsed() });
+    if w.key.is_none() {
+        let number = if first { 0 } else { w.rt.frames.saturating_sub(1) };
+        app.presented(&Frame { number, since_start: started.elapsed() });
+    }
     if quit {
         log::event("window.quit", "", "ok");
     }
