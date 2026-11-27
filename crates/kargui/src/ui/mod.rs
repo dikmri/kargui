@@ -6687,6 +6687,8 @@ impl<'u> Table<'u, '_> {
             l.pad = ((ROW_PAD * scale).round(), 0.0);
             l.height = Size::Fixed((32.0 * scale).round());
             l.align = Align::Stretch;
+            // 列の幅の合計が表より広い時、行（一覧）と同じく表の端で切り取る（隣の欄に見出しを描かない）
+            l.clip = true;
             let mut hui = tui.child(hr);
             for (k, c) in columns.iter().enumerate() {
                 let hid = Id(hash_of((id.0, k, "heading")));

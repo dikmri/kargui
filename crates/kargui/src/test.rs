@@ -6248,6 +6248,42 @@ mod tests {
         assert!(b.y > name.bottom() - 1.0, "升は見出しの下");
     }
 
+    /// 列の幅の合計が置き場所より広い表を、仕切りの左に置く（アプリで、見出しが右の欄に描かれた）
+    struct WideTable;
+
+    impl App for WideTable {
+        fn view(&mut self, ui: &mut Ui) {
+            use crate::ui::TableColumn;
+            let cols = [TableColumn::new("Alpha").width(200.0), TableColumn::new("Bravo").width(200.0), TableColumn::new("Charlie").width(200.0), TableColumn::new("Delta").width(200.0)];
+            let mut left = 300.0;
+            ui.split_left_right(&mut left, |ui, pane| {
+                if pane == 0 {
+                    ui.table(&cols, 3, 28.0).label("Wide").grow().show(|row, i| {
+                        for k in 0..4 {
+                            row.text(format!("r{i}c{k}"));
+                        }
+                    });
+                } else {
+                    ui.label("Right");
+                }
+            })
+            .grow();
+        }
+    }
+
+    #[test]
+    fn table_headers_wider_than_the_table_are_cut_at_its_edge() {
+        let mut h = Harness::with_size(WideTable, 900.0, 300.0, 1.0);
+        let (alpha, right) = (h.find("Alpha").unwrap(), h.find("Right").unwrap());
+        let img = h.render();
+        let bg = img.rgb(right.x as u32 + 300, 280);
+        // 右の欄の、見出しの行の高さ（「Right」の文字より右）に、表の見出しの文字や仕切りが描かれていない
+        let ink = |x0: u32, x1: u32| (alpha.y as u32..alpha.bottom() as u32).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| img.rgb(x, y) != bg).count();
+        assert_eq!(ink(right.x as u32 + 80, 890), 0, "見出しが表の外（右の欄）に描かれている");
+        // 表の中の見出しは描かれている
+        assert!(ink(alpha.x as u32, alpha.x as u32 + 60) > 0);
+    }
+
     #[test]
     fn tables_sort_by_clicking_headers_and_resize_columns() {
         let mut h = Harness::new(FileTable::default());
