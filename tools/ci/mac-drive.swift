@@ -13,9 +13,9 @@
 //   key:名前      キーを 1 回押す（cmd+a・shift+tab・tab・enter・backspace・left など）
 //   type:文字     英小文字・数字・空白は本物のキーで、ほかは Unicode の文字として送る
 //   screen:場所   画面を撮る（screencapture）
+//   bounds        窓の外枠を書き出し、窓の中の左上を読み直す（窓を動かした後の手順の座標が合う）
 //   wait:ミリ秒   待つ
-// X,Y は窓の中の左上からの論理ピクセル（題の帯は負の Y）。窓の場所は、最初に CGWindowList で pid の窓を探して決める
-// （右下を引っ張って大きさを変えても、左上は動かない）。
+// X,Y は窓の中の左上からの論理ピクセル（題の帯は負の Y）。窓の場所は、最初に CGWindowList で pid の窓を探して決める。
 
 import AppKit
 import CoreGraphics
@@ -41,31 +41,39 @@ guard args.count >= 3, let pid = Int(args[1]), let contentHeight = Double(args[2
 
 say("access post_event=\(CGPreflightPostEventAccess()) screen_capture=\(CGPreflightScreenCaptureAccess())")
 
-/// pid の窓の中の左上（画面の座標。左上が原点、論理ピクセル）
-func contentOrigin() -> CGPoint? {
+/// pid の窓の外枠（画面の座標。左上が原点、論理ピクセル。題の帯を含む）
+func windowRect() -> CGRect? {
     guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
     for w in list {
         guard let owner = w[kCGWindowOwnerPID as String] as? Int, owner == pid else { continue }
         guard let layer = w[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
         guard let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b as CFDictionary) else { continue }
-        return CGPoint(x: r.minX, y: r.maxY - contentHeight)
+        return r
     }
     return nil
 }
 
-var found: CGPoint? = nil
+func describe(_ r: CGRect) -> String {
+    "x=\(Int(r.minX)) y=\(Int(r.minY)) w=\(Int(r.width)) h=\(Int(r.height))"
+}
+
+var found: CGRect? = nil
 for _ in 0..<100 {
-    if let o = contentOrigin() {
-        found = o
+    if let r = windowRect() {
+        found = r
         break
     }
     usleep(100_000)
 }
-guard let origin = found else {
+guard let first = found else {
     say("window not found pid=\(pid)")
     exit(1)
 }
-say("window content_origin=\(Int(origin.x)),\(Int(origin.y)) frontmost=\(frontmost())")
+/// 題の帯の高さ（外枠の高さ − 中の高さ）
+let titleBar = first.height - contentHeight
+/// 窓の中の左上（画面の座標）。bounds の手順で読み直す
+var origin = CGPoint(x: first.minX, y: first.minY + titleBar)
+say("window \(describe(first)) title_bar=\(Int(titleBar)) content_origin=\(Int(origin.x)),\(Int(origin.y)) frontmost=\(frontmost())")
 
 let source = CGEventSource(stateID: .hidSystemState)
 
@@ -189,6 +197,14 @@ for step in args.dropFirst(3) {
                 key(unicodeKey, unicode: Array(String(c).utf16))
             }
         }
+    case "bounds":
+        guard let r = windowRect() else {
+            say("step \(step) window not found")
+            continue
+        }
+        origin = CGPoint(x: r.minX, y: r.minY + titleBar)
+        say("step \(step) window \(describe(r)) content_origin=\(Int(origin.x)),\(Int(origin.y))")
+        continue
     case "screen":
         let shot = Process()
         shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")

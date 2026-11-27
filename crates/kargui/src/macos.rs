@@ -46,6 +46,8 @@ struct DelegateIvars {
     close_asked: Cell<bool>,
     /// 窓が前面（キーを受ける窓）になった・外れた。輪が読んで記録する
     focus: Cell<Option<bool>>,
+    /// 引っ張って大きさを変えている間に、窓の大きさが変わった回数
+    live_resizes: Cell<u32>,
 }
 
 define_class!(
@@ -76,6 +78,29 @@ define_class!(
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
             self.ivars().focus.set(Some(false));
+        }
+
+        // 引っ張って大きさを変える間は、AppKit が sendEvent の中で自分の輪を回す（kargui の輪は止まる）
+        #[unsafe(method(windowWillStartLiveResize:))]
+        fn window_will_start_live_resize(&self, _notification: &NSNotification) {
+            self.ivars().live_resizes.set(0);
+            log::event("window.live_resize", "start", "ok");
+        }
+
+        #[unsafe(method(windowDidResize:))]
+        fn window_did_resize(&self, _notification: &NSNotification) {
+            let n = &self.ivars().live_resizes;
+            n.set(n.get() + 1);
+        }
+
+        #[unsafe(method(windowDidEndLiveResize:))]
+        fn window_did_end_live_resize(&self, _notification: &NSNotification) {
+            log::event("window.live_resize", "end", &format!("resizes={}", self.ivars().live_resizes.get()));
+        }
+
+        #[unsafe(method(windowDidMove:))]
+        fn window_did_move(&self, _notification: &NSNotification) {
+            log::event("window.move", "", "ok");
         }
     }
 );
@@ -439,6 +464,9 @@ fn handle(w: &mut Window, ev: &NSEvent, last_press: &mut Option<(Instant, f32, f
                 w.push(Event::PointerDown { x, y, shift: mods.shift, count });
                 w.left_down = true;
                 *last_press = Some((Instant::now(), x, y, count));
+            } else {
+                // 題の帯や窓の縁（大きさを変える所）。AppKit に任せる
+                log::event("pointer.outside", &format!("x={x:.0} y={y:.0}"), "to AppKit");
             }
             true
         }
