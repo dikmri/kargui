@@ -189,6 +189,10 @@ struct ViewIvars {
     answered: Cell<bool>,
     /// 今のキーを sendEvent で AppKit に渡し、keyDown: で IME に通す
     via_appkit: Cell<bool>,
+    /// IME（入力の受け手の handleEvent）が今のキーを受け取った
+    handled: Cell<bool>,
+    /// 入力の受け手が使っている入力ソース
+    source: RefCell<String>,
     /// keyDown: に届いた
     reached: Cell<bool>,
     /// 候補の窓を出す場所（窓の中身の座標。論理ピクセル、左下が原点）
@@ -223,12 +227,13 @@ define_class!(
                 // interpretKeyEvents は「入力の受け手の handleEvent（IME）→ 使わなければキーの割り当て（insertText・
                 // doCommandBySelector）」の順。IME が受け取ったかを記録するため、handleEvent を先に呼ぶ
                 let ctx = self.inputContext();
+                // 入力ソースが変わっていたら、残っている変換中の文字を先に確定する（そのままにすると、次の英字の
+                // insertText を変換の確定と取り違えて、変換中の文字が消えた）
+                let source = ctx.as_ref().and_then(|c| c.selectedKeyboardInputSource()).map(|s| s.to_string()).unwrap_or_default();
+                self.note_source(&source);
                 let handled = ctx.as_ref().is_some_and(|c| c.handleEvent(event));
-                log::event(
-                    "ime.key",
-                    &format!("code={} source={:?}", event.keyCode(), ctx.as_ref().and_then(|c| c.selectedKeyboardInputSource()).map(|s| s.to_string())),
-                    &format!("handled_by_input_method={handled}"),
-                );
+                iv.handled.set(handled);
+                log::event("ime.key", &format!("code={} source={source:?}", event.keyCode()), &format!("handled_by_input_method={handled}"));
                 if !handled {
                     self.interpretKeyEvents(&NSArray::from_slice(&[event]));
                 }
@@ -280,6 +285,7 @@ define_class!(
             );
             iv.queue.borrow_mut().extend(crate::ime::preedit_events(&shown, text, clauses));
             iv.answered.set(true);
+            self.wake_if_outside_key();
         }
 
         // 変換中の文字をそのまま確定する（Apple の決まり）
@@ -290,6 +296,7 @@ define_class!(
             log::event("ime.unmark", &format!("text={text:?}"), if text.is_empty() { "nothing" } else { "commit" });
             if !text.is_empty() {
                 iv.queue.borrow_mut().extend([Event::ImePreedit(String::new()), Event::ImeCommit(text)]);
+                self.wake_if_outside_key();
             }
             if let Some(ctx) = self.inputContext() {
                 ctx.discardMarkedText();
@@ -356,6 +363,7 @@ define_class!(
                 }
             }
             iv.answered.set(true);
+            self.wake_if_outside_key();
         }
 
         // IME が使わなかったキー（矢印・Enter・Backspace・Tab・Esc など）。アプリへ渡す
@@ -367,6 +375,7 @@ define_class!(
                 iv.queue.borrow_mut().push(Event::Key { key, mods });
             }
             iv.answered.set(true);
+            self.wake_if_outside_key();
         }
     }
 );
@@ -394,6 +403,7 @@ impl KarguiView {
         iv.key.set(key);
         iv.answered.set(false);
         iv.reached.set(false);
+        iv.handled.set(false);
         iv.via_appkit.set(true);
     }
 
@@ -410,11 +420,45 @@ impl KarguiView {
         if !iv.answered.get()
             && let Some((key, mods)) = iv.key.get()
         {
-            log::event("key", &format!("key={key:?} mods={mods:?}"), "sent (the input method returned nothing)");
-            out.push(Event::Key { key, mods });
+            if iv.handled.get() {
+                // IME が受け取った。結果は後から届くことがある（CI の Mac では、変換中の Enter の確定が届かなかった）。
+                // アプリへ渡すと、変換中に Enter などが欄の操作として効いてしまう
+                log::event("ime.key", &format!("key={key:?}"), "consumed by the input method (no answer yet)");
+            } else {
+                log::event("key", &format!("key={key:?} mods={mods:?}"), "sent (the input method returned nothing)");
+                out.push(Event::Key { key, mods });
+            }
         }
         iv.key.set(None);
         out
+    }
+
+    /// 入力の受け手が使っている入力ソースを覚える。変わった時に変換中の文字が残っていれば、そのまま確定する
+    /// （unmarkText と同じ扱い）。変わったら true
+    fn note_source(&self, source: &str) -> bool {
+        let iv = self.ivars();
+        if source.is_empty() || *iv.source.borrow() == source {
+            return false;
+        }
+        let old = iv.source.replace(source.to_string());
+        log::event("ime.source", &format!("from={old:?}"), &format!("to={source:?}"));
+        let text = iv.marked.take();
+        if !text.is_empty() {
+            log::event("ime.commit", &format!("text={text:?}"), "commit (the input source changed)");
+            iv.queue.borrow_mut().extend([Event::ImePreedit(String::new()), Event::ImeCommit(text)]);
+            if let Some(ctx) = self.inputContext() {
+                ctx.discardMarkedText();
+            }
+        }
+        true
+    }
+
+    /// IME の呼び返しがキーの外で届いた（後から届く確定など）時、輪を起こして待ち行列を取り出させる
+    fn wake_if_outside_key(&self) {
+        if !self.ivars().via_appkit.get() {
+            log::event("ime.async", "", "a callback outside a key; wake the loop");
+            post_wake();
+        }
     }
 
     /// 入力欄から焦点が外れた（別の欄へ移った）時、変換中の文字を捨てる
@@ -529,8 +573,6 @@ struct Window {
     dark_title: Option<bool>,
     /// 前のフレームで IME を向けていた入力欄
     ime_target: Option<Id>,
-    /// 入力の受け手が使っている入力ソース（記録のため）
-    ime_source: String,
 }
 
 impl Window {
@@ -542,12 +584,13 @@ impl Window {
             log::event("ime.focus", &format!("to={}", target.map_or("none".to_string(), |t| format!("{:x}", t.0))), "ok");
             self.ime_target = target;
         }
-        // 入力の受け手が今使っている入力ソース（日本語入力・英字など）。変わった時に記録する
+        // 入力の受け手が今使っている入力ソース（日本語入力・英字など）。変わったら記録し、変換中の文字が残っていれば確定する
         if let Some(source) = self.view.inputContext().and_then(|ctx| ctx.selectedKeyboardInputSource()).map(|s| s.to_string())
-            && source != self.ime_source
+            && self.view.note_source(&source)
         {
-            log::event("ime.source", &format!("from={:?}", self.ime_source), &format!("to={source:?}"));
-            self.ime_source = source;
+            for e in self.view.ivars().queue.take() {
+                self.push(e);
+            }
         }
         // 変換中なら変換中の範囲、そうでなければキャレット（物理ピクセル、左上が原点）
         let Some(c) = self.rt.cx.preedit_rect.or(self.rt.cx.caret) else { return };
@@ -712,7 +755,6 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         left_down: false,
         dark_title: None,
         ime_target: None,
-        ime_source: String::new(),
     };
     w.sync_size();
     w.sync_title_appearance();
@@ -753,6 +795,10 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             if w.rt.cx.waker.take_woken() {
                 w.need_frame = true;
                 w.why = "wake";
+            }
+            // キーの外で届いた IME の入力（後から届く確定など）
+            for e in w.view.ivars().queue.take() {
+                w.push(e);
             }
             if w.need_frame && !frame(w, &mut *s.app, s.started) {
                 s.quit = true;
