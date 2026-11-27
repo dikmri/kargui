@@ -1,7 +1,7 @@
 //! 部品の大きさを測り、描く物の一覧を作る。次のフレームの当たり判定に使う情報（Prev）もここで作る。
 
 use crate::geom::{Color, IRect, Rect};
-use crate::paint::{DrawList, Scroll};
+use crate::paint::DrawList;
 use crate::text::{FontId, Laid, TextStyle};
 use crate::ime::ImeField;
 use crate::ui::context::{Context, Hit, ListInfo, OverlayInfo, Prev};
@@ -630,7 +630,7 @@ impl Painter<'_> {
         let s = self.cx.scale;
         let at = |(x, y): (f32, f32)| (r.x + x * s, r.y + y * s);
         let rect = |q: &Rect| Rect::new(r.x + q.x * s, r.y + q.y * s, q.w * s, q.h * s);
-        self.d.push_clip(IRect::covering(r), None);
+        self.d.push_clip(IRect::covering(r));
         for op in ops {
             match op {
                 DrawOp::Rect { r: q, color, radius } => self.d.fill(rect(q), *color, radius * s),
@@ -829,7 +829,7 @@ impl Painter<'_> {
         });
         if tree.layout[i].reveal.is_some() || tree.layout[i].clip {
             // 一部だけ見せる物と切り取る物（表の升）: 範囲の外を切り取る。外に出た子は押せず、Tab でも移らない
-            self.d.push_clip(IRect::covering(r), None);
+            self.d.push_clip(IRect::covering(r));
             let outer = self.clip;
             self.clip = intersect(r, outer).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));
             self.node_body(tree, i);
@@ -907,7 +907,7 @@ impl Painter<'_> {
         let line = self.line();
         let bg = t.background;
         self.d.fill(r.inset(line), [bg[0], bg[1], bg[2], 0.94], (radius - line).max(0.0));
-        self.d.push_clip(IRect::covering(r), None);
+        self.d.push_clip(IRect::covering(r));
         let st = style(self.cx, TextKind::Body, false);
         text_mid(self.d, self.cx, &text, st, r.x + self.px(8.0), r, t.text);
         self.d.pop_clip();
@@ -1913,7 +1913,7 @@ impl Painter<'_> {
         let (thumb, bar) = self.scrollbar_geometry(r, l.content, l.offset);
         let k = self.prev.lists.len();
         self.prev.lists.push(ListInfo { id, rect: r, content_h: l.content, thumb, bar, order: 0 });
-        self.d.push_clip(IRect::covering(r), Some(Scroll { id: id.0, offset: l.offset as i32 }));
+        self.d.push_scroll(IRect::covering(r), id.0, l.offset as i32);
         let outer = (self.clip, self.scroller);
         self.clip = intersect(r, outer.0).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));
         self.scroller = Some(id);
@@ -1994,7 +1994,7 @@ impl Painter<'_> {
         }
         self.cx.edit_scroll.insert(id, scroll);
         let x0 = inner.x - scroll;
-        self.d.push_clip(IRect::covering(inner), None);
+        self.d.push_clip(IRect::covering(inner));
         let mut picked = None;
         if cursor != anchor && preedit.is_empty() {
             let (a, b) = (cursor.min(anchor), cursor.max(anchor));
@@ -2011,7 +2011,7 @@ impl Painter<'_> {
             put(self.d, &laid, x0, ty, if off { t.done_text } else { t.text });
             // ハイコントラストの選んだ範囲は Highlight の上なので、文字を HighlightText で描き直す
             if let Some(sel) = picked.filter(|_| self.cx.high_contrast) {
-                self.d.push_clip(IRect::covering(sel), None);
+                self.d.push_clip(IRect::covering(sel));
                 put(self.d, &laid, x0, ty, t.on_accent);
                 self.d.pop_clip();
             }
@@ -2099,7 +2099,7 @@ impl Painter<'_> {
         }
         self.cx.scrolls.insert(id, offset / scale);
         let (ox, oy) = (inner.x, (inner.y - offset).round());
-        self.d.push_clip(IRect::covering(view), None);
+        self.d.push_clip(IRect::covering(view));
         // 選んだ範囲
         let mut picked = Vec::new();
         if cursor != anchor && preedit.is_empty() {
@@ -2118,7 +2118,7 @@ impl Painter<'_> {
             // ハイコントラストの選んだ範囲は Highlight の上なので、行ごとに文字を HighlightText で描き直す
             if self.cx.high_contrast {
                 for sel in picked {
-                    self.d.push_clip(IRect::covering(sel), None);
+                    self.d.push_clip(IRect::covering(sel));
                     put(self.d, &laid, ox, oy, t.on_accent);
                     self.d.pop_clip();
                 }
@@ -2177,7 +2177,7 @@ impl Painter<'_> {
         let (thumb, bar) = self.scrollbar_geometry(r, content_h, l.offset);
         let k = self.prev.lists.len();
         self.prev.lists.push(ListInfo { id, rect: r, content_h, thumb, bar, order: 0 });
-        self.d.push_clip(IRect::covering(r), Some(Scroll { id: id.0, offset: l.offset as i32 }));
+        self.d.push_scroll(IRect::covering(r), id.0, l.offset as i32);
         let outer = self.clip;
         self.clip = intersect(r, outer).unwrap_or(Rect::new(r.x, r.y, 0.0, 0.0));
         for &c in &l.children {
