@@ -468,6 +468,8 @@ struct Window {
     dark_title: Option<bool>,
     /// 前のフレームで IME を向けていた入力欄
     ime_target: Option<Id>,
+    /// 入力の受け手が使っている入力ソース（記録のため）
+    ime_source: String,
 }
 
 impl Window {
@@ -478,6 +480,13 @@ impl Window {
             self.view.discard_marked();
             log::event("ime.focus", &format!("to={}", target.map_or("none".to_string(), |t| format!("{:x}", t.0))), "ok");
             self.ime_target = target;
+        }
+        // 入力の受け手が今使っている入力ソース（日本語入力・英字など）。変わった時に記録する
+        if let Some(source) = self.view.inputContext().and_then(|ctx| ctx.selectedKeyboardInputSource()).map(|s| s.to_string())
+            && source != self.ime_source
+        {
+            log::event("ime.source", &format!("from={:?}", self.ime_source), &format!("to={source:?}"));
+            self.ime_source = source;
         }
         // 変換中なら変換中の範囲、そうでなければキャレット（物理ピクセル、左上が原点）
         let Some(c) = self.rt.cx.preedit_rect.or(self.rt.cx.caret) else { return };
@@ -641,6 +650,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         left_down: false,
         dark_title: None,
         ime_target: None,
+        ime_source: String::new(),
     };
     w.sync_size();
     w.sync_title_appearance();
