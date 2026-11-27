@@ -26,7 +26,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSTextInputContext, NSView,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard, NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSTextInputContext, NSView,
     NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFData;
@@ -296,12 +296,14 @@ define_class!(
             }
         }
 
-        // 文節の区切りを受け取る
+        // 変換中の文字に IME が付けてよい属性。変換中の文字は下線で表すので、下線と下線の色を受け付けると答える
+        // （Chromium と同じ）。文節の区切りだけと答えると、日本語入力（Kotoeri）はキーを受け取っても変換中の文字を
+        // 作らず、打った英字をそのまま確定した。kargui は下線を自分で描くので、受け取った属性のうち使うのは文節の区切りだけ
         #[unsafe(method_id(validAttributesForMarkedText))]
         fn valid_attributes_for_marked_text(&self) -> Retained<NSArray<NSAttributedStringKey>> {
-            log::event("ime.query", "validAttributesForMarkedText", "NSMarkedClauseSegment");
+            log::event("ime.query", "validAttributesForMarkedText", "underline, underline color, clause segment");
             // SAFETY: AppKit の定数
-            NSArray::from_slice(&[unsafe { NSMarkedClauseSegmentAttributeName }])
+            unsafe { NSArray::from_slice(&[NSUnderlineStyleAttributeName, NSUnderlineColorAttributeName, NSMarkedClauseSegmentAttributeName]) }
         }
 
         #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]

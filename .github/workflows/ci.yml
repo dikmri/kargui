@@ -122,10 +122,10 @@ jobs:
           open -a TextEdit /tmp/ime.txt
           sleep 4
           tpid=$(pgrep -x TextEdit | head -1)
-          # この仮想の Mac で日本語入力を初めて使ってから、打つまでが短い（1〜11 秒）と、テキストエディットでも英字が
-          # そのまま入った（18 秒の時は変換できた）。先に切り替えて 1 字打ち、45 秒待つ
+          # この仮想の Mac で最初に日本語入力を使ったアプリは、45 秒待っても英字がそのまま入った（2 番目のアプリの
+          # テキストエディットは変換できた）。最初の 1 回はテキストエディットで使い、kargui は 2 番目に試す
           ./target/mac-drive "$tpid" 0 click:200,150 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:500 type:a wait:500 key:escape > shots/ime-warmup-drive.txt 2>&1 || true
-          sleep 45
+          sleep 5
           ./target/mac-drive "$tpid" 0 click:200,150 key:cmd+a key:delete wait:300 type:nihongo wait:500 screen:shots/textedit-preedit.png key:space wait:800 screen:shots/textedit-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC > shots/textedit-drive.txt 2>&1 || echo "textedit driver exit=$?"
           kill "$tpid" 2>/dev/null || true
           sleep 1
