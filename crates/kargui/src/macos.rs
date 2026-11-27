@@ -26,13 +26,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard, NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSTextInputContext, NSView,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSModalResponseOK, NSOpenPanel, NSPasteboard, NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSPasteboardTypeString, NSResponder, NSSavePanel, NSTextInputClient, NSTextInputContext, NSView,
     NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo};
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate, NSDefaultRunLoopMode, NSNotFound, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger,
+    MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate, NSDefaultRunLoopMode, NSNotFound, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger, NSURL,
 };
 
 use crate::app::{App, Frame, Options};
@@ -575,6 +575,8 @@ struct Window {
     dark_title: Option<bool>,
     /// 前のフレームで IME を向けていた入力欄
     ime_target: Option<Id>,
+    /// 出すのを待っているファイルのダイアログ（頼んだ時の鍵と中身）
+    pending_dialog: Option<(String, crate::file_dialog::FileDialog)>,
 }
 
 impl Window {
@@ -757,6 +759,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         left_down: false,
         dark_title: None,
         ime_target: None,
+        pending_dialog: None,
     };
     w.sync_size();
     w.sync_title_appearance();
@@ -781,6 +784,16 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let shot_at = started + Duration::from_millis(std::env::var("KARGUI_SHOT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500));
     let mut last_press: Option<(Instant, f32, f32, u8)> = None;
     loop {
+        // 頼まれたファイルのダイアログを、State を借りずに出す。答え（取り消しは空）は Ui::chosen_file が読む
+        let dialog = state.borrow_mut().w.pending_dialog.take();
+        if let Some((key, d)) = dialog {
+            let files = show_file_dialog(mtm, &d);
+            log::event("file_dialog.answer", &format!("key={key} save={}", d.save), &format!("files={}", files.len()));
+            let mut guard = state.borrow_mut();
+            guard.w.rt.cx.file_results.insert(key, files);
+            guard.w.need_frame = true;
+            guard.w.why = "file_dialog";
+        }
         let date = {
             let mut guard = state.borrow_mut();
             let s = &mut *guard;
@@ -825,7 +838,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 w.why = "close_asked";
             }
             // 次に起きる時刻まで知らせを待つ（描く物が残っていれば待たない）
-            let until = if w.need_frame {
+            let until = if w.need_frame || w.pending_dialog.is_some() {
                 Some(Instant::now())
             } else {
                 let mut t = w.wake_at;
@@ -870,10 +883,12 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
         w.wake_at = Some(w.wake_at.map_or(Instant::now() + ANIMATION_STEP, |t| t.min(Instant::now() + ANIMATION_STEP)));
     }
     w.need_frame = false;
-    // まだ作っていない仕組みの頼みは、記録して捨てる
-    if let Some((key, _)) = w.rt.cx.file_dialog_request.take() {
-        log::event("file_dialog.request", &format!("key={key}"), "not on macOS yet (M3)");
+    // ファイルのダイアログは、輪の頭で State を借りずに出す（runModal の間は AppKit が自分の輪を回す）
+    if let Some((key, d)) = w.rt.cx.file_dialog_request.take() {
+        log::event("file_dialog.request", &format!("key={key} save={} multiple={}", d.save, d.multiple), "show at the top of the loop");
+        w.pending_dialog = Some((key, d));
     }
+    // まだ作っていない仕組みの頼みは、記録して捨てる
     for (key, _) in std::mem::take(&mut w.rt.cx.notify_requests) {
         log::event("notify.request", &format!("key={key}"), "not on macOS yet (M4)");
     }
@@ -996,6 +1011,47 @@ fn handle(w: &mut Window, ev: &NSEvent, last_press: &mut Option<(Instant, f32, f
 /// 窓の中の点か（題の帯や窓の外の知らせを、部品へ渡さない）
 fn inside(w: &Window, x: f32, y: f32) -> bool {
     x >= 0.0 && y >= 0.0 && x < w.size.0 as f32 && y < w.size.1 as f32
+}
+
+/// システムのファイルのダイアログ（NSOpenPanel・NSSavePanel）を出して、選んだファイルを返す（取り消しは空）。
+/// 選べる種類は、全部の種類の拡張子をまとめて渡す（setAllowedFileTypes。新しい allowedContentTypes は UTType の依存が
+/// 増えるので使わない）。保存は、名前に拡張子が無ければ最初の拡張子を足し、同じ名前があれば上書きしてよいか聞く
+fn show_file_dialog(mtm: MainThreadMarker, d: &crate::file_dialog::FileDialog) -> Vec<std::path::PathBuf> {
+    let exts: Vec<Retained<NSString>> = d.filters.iter().flat_map(|(_, e)| e.iter()).map(|e| NSString::from_str(e)).collect();
+    let types = (!exts.is_empty()).then(|| NSArray::from_retained_slice(&exts));
+    let common = |p: &NSSavePanel| {
+        if let Some(t) = &d.title {
+            p.setTitle(Some(&NSString::from_str(t)));
+            p.setMessage(Some(&NSString::from_str(t)));
+        }
+        if let Some(f) = &d.folder {
+            p.setDirectoryURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(&f.to_string_lossy()))));
+        }
+        #[allow(deprecated)]
+        p.setAllowedFileTypes(types.as_deref());
+    };
+    let path_of = |u: &NSURL| u.path().map(|s| std::path::PathBuf::from(s.to_string()));
+    if d.save {
+        let p = NSSavePanel::savePanel(mtm);
+        common(&p);
+        if let Some(n) = &d.file_name {
+            p.setNameFieldStringValue(&NSString::from_str(n));
+        }
+        if p.runModal() != NSModalResponseOK {
+            return Vec::new();
+        }
+        p.URL().and_then(|u| path_of(&u)).into_iter().collect()
+    } else {
+        let p = NSOpenPanel::openPanel(mtm);
+        common(&p);
+        p.setCanChooseFiles(true);
+        p.setCanChooseDirectories(false);
+        p.setAllowsMultipleSelection(d.multiple);
+        if p.runModal() != NSModalResponseOK {
+            return Vec::new();
+        }
+        p.URLs().iter().filter_map(|u| path_of(&u)).collect()
+    }
 }
 
 /// 窓に出した絵を PNG で保存する（KARGUI_SHOT）

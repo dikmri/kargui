@@ -116,6 +116,10 @@ jobs:
           # 角の外 2 ポイントの所は、AppKit が大きさを変える所に入らなかった）・題の帯を引っ張って窓を動かす・閉じる
           # ボタン（アプリが閉じてよいと答えて終わる。写真の時刻より先に押すため、写真は 30 秒後）
           SHOT_MS=30000 drive input-window 600 ./target/release/expenses-kargui rclick:250,311 wait:300 screen:shots/input-window-menu.png key:down key:enter wait:300 click:500,72 type:ab key:cmd+a key:cmd+c key:right key:cmd+v dclick:325,72 wait:300 bounds down:718,598 dragto:818,628 wait:300 screen:shots/input-window-resizing.png up:818,628 wait:500 bounds screen:shots/input-window-resized.png down:360,-16 dragto:260,-6 up:260,-6 wait:500 bounds screen:shots/input-window-moved.png click:16,-16 wait:800
+          # ファイルのダイアログ（見本の 19 ページ目）: 開くを出して撮り、Esc で取り消す（答えは空）。もう一度出し、
+          # Command+Shift+G で場所を打って /tmp/kargui-open.txt を選ぶ（答えは 1 つ。見本が選んだ場所を表示する）
+          echo hello > /tmp/kargui-open.txt
+          GALLERY_PAGE=19 SHOT_MS=25000 drive input-file-dialog 620 ./target/release/gallery-kargui click:300,154 wait:1500 screen:shots/input-file-dialog-open.png key:escape wait:800 click:300,154 wait:1500 key:cmd+shift+g wait:1000 type:/tmp/kargui-open.txt wait:800 screen:shots/input-file-dialog-goto.png key:enter wait:1000 key:enter wait:1500
           # 日本語入力を 4 つの相手で比べる。この仮想の Mac で最初に日本語入力を使ったアプリは、45 秒待っても英字が
           # そのまま入った。2 番目に使ったテキストエディットは変換できた（1 回）。
           # (1) テキストエディットで一度使って終わらせる (2) 新しく開いたテキストエディット (3) 最小の参考のアプリ
