@@ -189,8 +189,10 @@ struct ViewIvars {
     answered: Cell<bool>,
     /// 今のキーを sendEvent で AppKit に渡し、keyDown: で IME に通す
     via_appkit: Cell<bool>,
-    /// IME（入力の受け手の handleEvent）の中にいる（その間の insertText は変換の確定）
+    /// IME（入力の受け手の handleEvent）の中にいる（外から来た insertText の時に残っている変換中の文字は置き去り）
     in_ime: Cell<bool>,
+    /// 今のキーの文字（NSEvent の characters）
+    key_chars: RefCell<String>,
     /// IME（入力の受け手の handleEvent）が今のキーを受け取った
     handled: Cell<bool>,
     /// 入力の受け手が使っている入力ソース
@@ -231,6 +233,7 @@ define_class!(
                 let ctx = self.inputContext();
                 // 入力ソースは IME に渡した後で読む（先に読んだ回は、参考のアプリが変換できた同じ Mac で、kargui だけ
                 // 英字のままだった。1 例なので確かではない）
+                iv.key_chars.replace(event.characters().map(|s| s.to_string()).unwrap_or_default());
                 iv.in_ime.set(true);
                 let handled = ctx.as_ref().is_some_and(|c| c.handleEvent(event));
                 iv.in_ime.set(false);
@@ -350,7 +353,10 @@ define_class!(
             let iv = self.ivars();
             let key = iv.key.take();
             let marked = iv.marked.take();
-            let left_over = self.left_over_marked();
+            // キーの文字そのもの（英字の配列へ切り替えた後の「o」など）は確定ではない。入力の受け手は英字の配列でも
+            // handleEvent の中で insertText するので、IME の中かどうかでは見分けられなかった
+            let key_text = !marked.is_empty() && iv.via_appkit.get() && text != marked && *iv.key_chars.borrow() == text;
+            let left_over = self.left_over_marked() || key_text;
             let mut q = iv.queue.borrow_mut();
             if !marked.is_empty() && !left_over {
                 // 変換の確定（IME の中から、またはキーの外で後から届いた）。確定に使ったキー（Enter など）はアプリへ渡さない
