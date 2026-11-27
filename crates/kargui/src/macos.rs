@@ -189,6 +189,8 @@ struct ViewIvars {
     answered: Cell<bool>,
     /// 今のキーを sendEvent で AppKit に渡し、keyDown: で IME に通す
     via_appkit: Cell<bool>,
+    /// IME（入力の受け手の handleEvent）の中にいる（その間の insertText は変換の確定）
+    in_ime: Cell<bool>,
     /// IME（入力の受け手の handleEvent）が今のキーを受け取った
     handled: Cell<bool>,
     /// 入力の受け手が使っている入力ソース
@@ -229,14 +231,14 @@ define_class!(
                 let ctx = self.inputContext();
                 // 入力ソースは IME に渡した後で読む（先に読んだ回は、参考のアプリが変換できた同じ Mac で、kargui だけ
                 // 英字のままだった。1 例なので確かではない）
+                iv.in_ime.set(true);
                 let handled = ctx.as_ref().is_some_and(|c| c.handleEvent(event));
+                iv.in_ime.set(false);
                 iv.handled.set(handled);
                 let source = ctx.as_ref().and_then(|c| c.selectedKeyboardInputSource()).map(|s| s.to_string()).unwrap_or_default();
+                self.note_source(&source);
                 log::event("ime.key", &format!("code={} source={source:?}", event.keyCode()), &format!("handled_by_input_method={handled}"));
                 if !handled {
-                    // 入力ソースが変わっていたら（日本語入力から英字の配列へ）、残っている変換中の文字を先に確定する
-                    // （そのままにすると、次の英字の insertText を変換の確定と取り違えて、変換中の文字が消えた）
-                    self.note_source(&source);
                     self.interpretKeyEvents(&NSArray::from_slice(&[event]));
                 }
             }
@@ -347,15 +349,22 @@ define_class!(
             let (text, _) = marked_parts(string);
             let iv = self.ivars();
             let key = iv.key.take();
-            let was_marked = !iv.marked.take().is_empty();
+            let marked = iv.marked.take();
+            let left_over = self.left_over_marked();
             let mut q = iv.queue.borrow_mut();
-            if was_marked {
-                // 変換の確定。確定に使ったキー（Enter など）はアプリへ渡さない
+            if !marked.is_empty() && !left_over {
+                // 変換の確定（IME の中から、またはキーの外で後から届いた）。確定に使ったキー（Enter など）はアプリへ渡さない
                 log::event("ime.commit", &format!("text={text:?}"), "commit");
                 q.push(Event::ImePreedit(String::new()));
                 q.push(Event::ImeCommit(text));
             } else {
-                // IME を使わない打ち方（英字の配列、日本語入力の英数）: キーと文字
+                // IME を使わない打ち方（英字の配列、日本語入力の英数）: キーと文字。日本語入力から英字の配列へ切り替えた
+                // 後に変換中の文字が残っていたら、先にそのまま確定する（この insertText を確定と取り違えると消える）
+                if !marked.is_empty() {
+                    log::event("ime.commit", &format!("text={marked:?}"), "commit (left over; the input method is no longer active)");
+                    q.push(Event::ImePreedit(String::new()));
+                    q.push(Event::ImeCommit(marked));
+                }
                 if let Some((key, mods)) = key {
                     q.push(Event::Key { key, mods });
                 }
@@ -372,6 +381,14 @@ define_class!(
         #[unsafe(method(doCommandBySelector:))]
         fn do_command_by_selector(&self, selector: Sel) {
             let iv = self.ivars();
+            // 英字の配列へ切り替えた後に置き去りの変換中の文字があれば、先にそのまま確定する
+            if self.left_over_marked() {
+                let marked = iv.marked.take();
+                if !marked.is_empty() {
+                    log::event("ime.commit", &format!("text={marked:?}"), "commit (left over; the input method is no longer active)");
+                    iv.queue.borrow_mut().extend([Event::ImePreedit(String::new()), Event::ImeCommit(marked)]);
+                }
+            }
             if let Some((key, mods)) = iv.key.take() {
                 log::event("key", &format!("key={key:?} mods={mods:?} command={}", selector.name().to_string_lossy()), "sent");
                 iv.queue.borrow_mut().push(Event::Key { key, mods });
@@ -435,8 +452,8 @@ impl KarguiView {
         out
     }
 
-    /// 入力の受け手が使っている入力ソースを覚える。変わった時に変換中の文字が残っていれば、そのまま確定する
-    /// （unmarkText と同じ扱い）。変わったら true
+    /// 入力の受け手が使っている入力ソースを覚えて記録する（確定には使わない。入力の受け手は入力ソースを遅れて知らせる）。
+    /// 変わったら true
     fn note_source(&self, source: &str) -> bool {
         let iv = self.ivars();
         if source.is_empty() || *iv.source.borrow() == source {
@@ -444,15 +461,14 @@ impl KarguiView {
         }
         let old = iv.source.replace(source.to_string());
         log::event("ime.source", &format!("from={old:?}"), &format!("to={source:?}"));
-        let text = iv.marked.take();
-        if !text.is_empty() {
-            log::event("ime.commit", &format!("text={text:?}"), "commit (the input source changed)");
-            iv.queue.borrow_mut().extend([Event::ImePreedit(String::new()), Event::ImeCommit(text)]);
-            if let Some(ctx) = self.inputContext() {
-                ctx.discardMarkedText();
-            }
-        }
         true
+    }
+
+    /// 今の呼び返しは、キーの中なのに IME（handleEvent）の外から来た（英字の配列のキーの割り当て）。その時に残っている
+    /// 変換中の文字は置き去り（入力の受け手は入力ソースを遅れて知らせるので、入力ソースでは見分けられなかった）
+    fn left_over_marked(&self) -> bool {
+        let iv = self.ivars();
+        iv.via_appkit.get() && !iv.in_ime.get()
     }
 
     /// IME の呼び返しがキーの外で届いた（後から届く確定など）時、輪を起こして待ち行列を取り出させる
@@ -633,7 +649,7 @@ impl Window {
             log::event("ime.focus", &format!("to={}", target.map_or("none".to_string(), |t| format!("{:x}", t.0))), "ok");
             self.ime_target = target;
         }
-        // 入力の受け手が今使っている入力ソース（日本語入力・英字など）。変わったら記録し、変換中の文字が残っていれば確定する
+        // 入力の受け手が今使っている入力ソース（日本語入力・英字など）。変わったら記録する
         if let Some(source) = self.view.inputContext().and_then(|ctx| ctx.selectedKeyboardInputSource()).map(|s| s.to_string())
             && self.view.note_source(&source)
         {
