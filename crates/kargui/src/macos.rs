@@ -5,12 +5,14 @@
 //! 輪は自前: NSApplication の nextEventMatchingMask で、次に起きる時刻まで待つ。届いた知らせを kargui の入力に直して
 //! から sendEvent で AppKit にも渡す（題の帯で窓を動かす・大きさを変える・閉じるボタンは AppKit がする）。キーの
 //! 知らせは AppKit に渡さない（受け手が無いと警告の音が鳴る）。別のスレッドからは ApplicationDefined の知らせを積んで
-//! 起こす。
+//! 起こす。窓の縁を引っ張って大きさを変える間は、AppKit が sendEvent の中で自分の輪を回すので、その間の描き直しは
+//! 窓の委任先の windowDidResize: から回す（窓と App は State にまとめ、輪と委任先の両方から借りる）。
 //!
 //! 確かめの道具: 環境変数 KARGUI_SHOT にファイルの場所を入れると、起動から KARGUI_SHOT_MS（既定 1500）ミリ秒の後に、
 //! 窓に出した絵を PNG で保存して終わる（CI の Mac で写真を残すため。OS の撮影の許可に左右されない）。
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
@@ -40,14 +42,37 @@ const WHEEL_STEP: f32 = 96.0;
 /// 起こす知らせの印（ApplicationDefined の subtype）
 const WAKE_SUBTYPE: i16 = 0x6b67; // "kg"
 
+/// 窓と App。kargui の輪のほかに、AppKit が自分の輪を回している間の呼び返し（引っ張って大きさを変える間の
+/// windowDidResize: など）からも使うので、Rc<RefCell<…>> で持つ。kargui の輪は sendEvent の間は借りない
+struct State {
+    w: Window,
+    app: Box<dyn App>,
+    started: Instant,
+    /// アプリが終わりを頼んだ（呼び返しの中のフレームで頼まれた時も、輪が読んで終わる）
+    quit: bool,
+}
+
 #[derive(Default)]
 struct DelegateIvars {
     /// 閉じるボタンが押された（輪が App::close_requested に聞く）
     close_asked: Cell<bool>,
     /// 窓が前面（キーを受ける窓）になった・外れた。輪が読んで記録する
     focus: Cell<Option<bool>>,
-    /// 引っ張って大きさを変えている間に、窓の大きさが変わった回数
-    live_resizes: Cell<u32>,
+    /// 引っ張って大きさを変えている間か
+    live_resize: Cell<bool>,
+    /// 引っ張って大きさを変えている間に描き直した回数
+    live_frames: Cell<u32>,
+    /// 窓と App（弱い参照。窓が委任先を持つので、強い参照にすると輪になる）
+    state: RefCell<Weak<RefCell<State>>>,
+}
+
+impl DelegateIvars {
+    /// 窓と App を借りる。kargui の輪が借りている間（kargui 自身の処理から AppKit が呼び返した時）は None
+    fn with_state(&self, f: impl FnOnce(&mut State)) {
+        let Some(state) = self.state.borrow().upgrade() else { return };
+        let Ok(mut s) = state.try_borrow_mut() else { return };
+        f(&mut s);
+    }
 }
 
 define_class!(
@@ -80,22 +105,50 @@ define_class!(
             self.ivars().focus.set(Some(false));
         }
 
-        // 引っ張って大きさを変える間は、AppKit が sendEvent の中で自分の輪を回す（kargui の輪は止まる）
+        // 引っ張って大きさを変える間は、AppKit が sendEvent の中で自分の輪を回し、kargui の輪は止まる。その間の
+        // 描き直しは windowDidResize: から回す
         #[unsafe(method(windowWillStartLiveResize:))]
         fn window_will_start_live_resize(&self, _notification: &NSNotification) {
-            self.ivars().live_resizes.set(0);
+            let iv = self.ivars();
+            iv.live_resize.set(true);
+            iv.live_frames.set(0);
             log::event("window.live_resize", "start", "ok");
+            // 窓の中身の角を押して始まった時、その押下は kargui に渡さない（放した知らせは AppKit の輪が受け取るので
+            // kargui に届かず、kargui が押したままだと思い続ける）
+            iv.with_state(|s| {
+                if s.w.left_down {
+                    if let Some(i) = s.w.events.iter().rposition(|e| matches!(e, Event::PointerDown { .. })) {
+                        s.w.events.remove(i);
+                    }
+                    s.w.left_down = false;
+                    log::event("pointer.taken_by_window", "live_resize", "ok");
+                }
+            });
         }
 
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, _notification: &NSNotification) {
-            let n = &self.ivars().live_resizes;
-            n.set(n.get() + 1);
+            let iv = self.ivars();
+            // 引っ張っている間でなければ（タイル配置の動きなど）、kargui の輪が読む
+            if !iv.live_resize.get() {
+                return;
+            }
+            iv.with_state(|s| {
+                if s.w.sync_size() {
+                    s.w.why = "live_resize";
+                    if !frame(&mut s.w, &mut *s.app, s.started) {
+                        s.quit = true;
+                    }
+                    iv.live_frames.set(iv.live_frames.get() + 1);
+                }
+            });
         }
 
         #[unsafe(method(windowDidEndLiveResize:))]
         fn window_did_end_live_resize(&self, _notification: &NSNotification) {
-            log::event("window.live_resize", "end", &format!("resizes={}", self.ivars().live_resizes.get()));
+            let iv = self.ivars();
+            iv.live_resize.set(false);
+            log::event("window.live_resize", "end", &format!("frames={}", iv.live_frames.get()));
         }
 
         #[unsafe(method(windowDidMove:))]
@@ -280,7 +333,7 @@ fn present(view: &NSView, pixels: &[u32], w: i32, h: i32) -> bool {
 }
 
 /// 主の窓を開いて、閉じるまで輪を回す
-pub(crate) fn run(options: Options, mut app: Box<dyn App>) -> Result<(), crate::Error> {
+pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Error> {
     let started = Instant::now();
     let mtm = MainThreadMarker::new().ok_or_else(|| crate::Error("kargui must run on the main thread on macOS".into()))?;
     let ns_app = NSApplication::sharedApplication(mtm);
@@ -348,62 +401,73 @@ pub(crate) fn run(options: Options, mut app: Box<dyn App>) -> Result<(), crate::
         log::event("app.activate", "ignoring_other_apps=true", &format!("active_now={}", ns_app.isActive()));
     }
 
+    let state = Rc::new(RefCell::new(State { w, app, started, quit: false }));
+    state.borrow().w.delegate.ivars().state.replace(Rc::downgrade(&state));
+
     let shot = std::env::var("KARGUI_SHOT").ok().filter(|s| !s.is_empty());
     let shot_at = started + Duration::from_millis(std::env::var("KARGUI_SHOT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500));
     let mut last_press: Option<(Instant, f32, f32, u8)> = None;
-    let mut running = true;
-    while running {
-        if w.sync_size() {
-            w.need_frame = true;
-            w.why = "resize";
-        }
-        if w.wake_at.is_some_and(|t| t <= Instant::now()) {
-            w.wake_at = None;
-            w.need_frame = true;
-            w.why = "timer";
-        }
-        if w.rt.cx.waker.take_woken() {
-            w.need_frame = true;
-            w.why = "wake";
-        }
-        if w.need_frame {
-            running &= frame(&mut w, &mut *app, started);
-        }
-        if let Some(path) = shot.as_ref().filter(|_| Instant::now() >= shot_at) {
-            save_shot(&w, path);
-            break;
-        }
-        if let Some(focused) = w.delegate.ivars().focus.take() {
-            log::event("window.focus", &format!("focused={focused}"), &format!("app_active={}", ns_app.isActive()));
-        }
-        if w.delegate.ivars().close_asked.replace(false) {
-            let ok = app.close_requested();
-            log::event("window.close_requested", "", &format!("allowed={ok}"));
-            if ok {
+    loop {
+        let date = {
+            let mut guard = state.borrow_mut();
+            let s = &mut *guard;
+            let w = &mut s.w;
+            if w.sync_size() {
+                w.need_frame = true;
+                w.why = "resize";
+            }
+            if w.wake_at.is_some_and(|t| t <= Instant::now()) {
+                w.wake_at = None;
+                w.need_frame = true;
+                w.why = "timer";
+            }
+            if w.rt.cx.waker.take_woken() {
+                w.need_frame = true;
+                w.why = "wake";
+            }
+            if w.need_frame && !frame(w, &mut *s.app, s.started) {
+                s.quit = true;
+            }
+            if s.quit {
                 break;
             }
-            w.need_frame = true;
-            w.why = "close_asked";
-        }
-        // 次に起きる時刻まで知らせを待つ（描く物が残っていれば待たない）
-        let until = if w.need_frame {
-            Some(Instant::now())
-        } else {
-            let mut t = w.wake_at;
-            if shot.is_some() {
-                t = Some(t.map_or(shot_at, |x| x.min(shot_at)));
+            if let Some(path) = shot.as_ref().filter(|_| Instant::now() >= shot_at) {
+                save_shot(w, path);
+                break;
             }
-            t
-        };
-        let date = match until {
-            Some(t) => NSDate::dateWithTimeIntervalSinceNow(t.saturating_duration_since(Instant::now()).as_secs_f64()),
-            None => NSDate::distantFuture(),
+            if let Some(focused) = w.delegate.ivars().focus.take() {
+                log::event("window.focus", &format!("focused={focused}"), &format!("app_active={}", ns_app.isActive()));
+            }
+            if w.delegate.ivars().close_asked.replace(false) {
+                let ok = s.app.close_requested();
+                log::event("window.close_requested", "", &format!("allowed={ok}"));
+                if ok {
+                    break;
+                }
+                w.need_frame = true;
+                w.why = "close_asked";
+            }
+            // 次に起きる時刻まで知らせを待つ（描く物が残っていれば待たない）
+            let until = if w.need_frame {
+                Some(Instant::now())
+            } else {
+                let mut t = w.wake_at;
+                if shot.is_some() {
+                    t = Some(t.map_or(shot_at, |x| x.min(shot_at)));
+                }
+                t
+            };
+            match until {
+                Some(t) => NSDate::dateWithTimeIntervalSinceNow(t.saturating_duration_since(Instant::now()).as_secs_f64()),
+                None => NSDate::distantFuture(),
+            }
         };
         // SAFETY: NSDefaultRunLoopMode は Foundation の定数
         let ev = ns_app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, Some(&date), unsafe { NSDefaultRunLoopMode }, true);
         let Some(ev) = ev else { continue };
-        let pass = handle(&mut w, &ev, &mut last_press);
+        let pass = handle(&mut state.borrow_mut().w, &ev, &mut last_press);
         if pass {
+            // 借りずに渡す（AppKit が中で自分の輪を回し、委任先が State を借りることがある）
             ns_app.sendEvent(&ev);
         }
     }
