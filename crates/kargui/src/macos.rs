@@ -26,7 +26,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSView,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSPasteboard, NSPasteboardTypeString, NSResponder, NSTextInputClient, NSTextInputContext, NSView,
     NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFData;
@@ -193,6 +193,8 @@ struct ViewIvars {
     reached: Cell<bool>,
     /// 候補の窓を出す場所（窓の中身の座標。論理ピクセル、左下が原点）
     ime_rect: Cell<NSRect>,
+    /// IME が setMarkedText で選んだ範囲（変換中の文字の中の UTF-16 の位置と長さ）
+    selected: Cell<NSRange>,
 }
 
 define_class!(
@@ -230,25 +232,34 @@ define_class!(
     unsafe impl NSTextInputClient for KarguiView {
         #[unsafe(method(hasMarkedText))]
         fn has_marked_text(&self) -> bool {
-            !self.ivars().marked.borrow().is_empty()
+            let has = !self.ivars().marked.borrow().is_empty();
+            log::event("ime.query", "hasMarkedText", &format!("{has}"));
+            has
         }
 
         #[unsafe(method(markedRange))]
         fn marked_range(&self) -> NSRange {
             let n = self.ivars().marked.borrow().encode_utf16().count();
+            log::event("ime.query", "markedRange", &format!("0+{n}"));
             if n > 0 { NSRange::new(0, n) } else { NSRange::new(NSNotFound as NSUInteger, 0) }
         }
 
-        // 入力欄の中の位置は IME に知らせない（前後の文字を渡さない。Wayland の版と同じ）
+        // IME から見た文書は変換中の文字だけにする（入力欄の前後の文字は渡さない。Wayland の版と同じ）。キャレットは
+        // 長さ 0 の選択なので、「選択が無い」（NSNotFound）ではなく位置を答える（NSNotFound と答えると、テキスト
+        // エディットでは変換できる同じ手順で、日本語入力が変換せずに英字をそのまま確定した）
         #[unsafe(method(selectedRange))]
         fn selected_range(&self) -> NSRange {
-            NSRange::new(NSNotFound as NSUInteger, 0)
+            let iv = self.ivars();
+            let r = if iv.marked.borrow().is_empty() { NSRange::new(0, 0) } else { iv.selected.get() };
+            log::event("ime.query", "selectedRange", &format!("{}+{}", r.location, r.length));
+            r
         }
 
         #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
         fn set_marked_text(&self, string: &AnyObject, selected: NSRange, _replacement: NSRange) {
             let (text, starts) = marked_parts(string);
             let iv = self.ivars();
+            iv.selected.set(selected);
             let shown = iv.marked.replace(text.clone());
             let clauses = crate::ime::mac_clauses(&text, &starts, (selected.location, selected.length));
             log::event(
@@ -355,6 +366,16 @@ impl KarguiView {
     /// このキーを IME に通す用意をする（輪は続けて sendEvent でキーを AppKit に渡し、keyDown: が IME に通す）
     fn begin_key(&self, key: Option<(Key, Mods)>) {
         let iv = self.ivars();
+        // AppKit の今の入力の受け手が、この NSView の物か（違えば受け手にする）
+        let ours = self.inputContext();
+        let current = NSTextInputContext::currentInputContext(MainThreadMarker::from(self));
+        let same = matches!((&ours, &current), (Some(a), Some(b)) if std::ptr::eq::<NSTextInputContext>(&**a, &**b));
+        if !same {
+            log::event("ime.context", &format!("current_is_ours=false current={}", current.is_some()), "activate");
+            if let Some(ctx) = &ours {
+                ctx.activate();
+            }
+        }
         iv.key.set(key);
         iv.answered.set(false);
         iv.reached.set(false);
