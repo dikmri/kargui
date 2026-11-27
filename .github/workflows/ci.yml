@@ -1,7 +1,8 @@
 # 送るたびに、Windows・Linux・macOS で試験を走らせる。
 # - Windows: 全部の試験と検査（説明と例の割合・部品の写真・AI 向けの索引・ガイドの古さ）、Windows 以外の文字の道の試験
 # - Linux・macOS: kargui の試験（部品・並べ方・描き方・試験台・文字）
-# - macOS の窓: 見本を本物の窓で開き、窓に出した絵を写真に残す（作者は Mac を持たないので、macOS の窓はここで確かめる）
+# - macOS の窓: 見本を本物の窓で開き、窓に出した絵を写真に残す。外から本物のマウスとキーの入力も送る（作者は Mac を
+#   持たないので、macOS の窓と入力はここで確かめる）
 # macos ブランチは macOS の作りかけの作業用（作者の許可で、毎回聞かずに送る）
 name: ci
 
@@ -86,6 +87,28 @@ jobs:
           shot gallery-dark ./target/release/gallery-kargui --dark
           GALLERY_PAGE=13 shot gallery-dates ./target/release/gallery-kargui --light
           shot expenses ./target/release/expenses-kargui
+          ls -la shots
+      # 本物のマウスとキーの入力（CGEvent）を外から送り、kargui が受け取って描き直すかを確かめる（道具は tools/ci/mac-drive.swift）。
+      # 座標は窓の中の左上からの論理ピクセル（見本の配置。Windows と同じ）
+      - name: Build the input driver
+        run: xcrun swiftc -O tools/ci/mac-drive.swift -o target/mac-drive
+      - name: Drive the examples with a real mouse and keyboard
+        run: |
+          drive() {
+            name="$1"; height="$2"; app="$3"; shift 3
+            KARGUI_SHOT="shots/$name.png" KARGUI_SHOT_MS=12000 "$app" --log "shots/$name.log" &
+            pid=$!
+            ( sleep 40; kill "$pid" 2>/dev/null && echo "$name: killed after 40 s" ) &
+            sleep 2
+            ./target/mac-drive "$pid" "$height" "$@" > "shots/$name-drive.txt" 2>&1 || echo "$name: driver exit=$?"
+            sleep 1
+            screencapture -x "shots/$name-screen.png" || echo "$name: screencapture failed"
+            wait "$pid"; echo "$name: exit=$?"
+          }
+          # 暗い色のボタンを押す（中身と題の帯が暗くなる）・左の一覧をホイールで下へ送る・一覧の行に乗る
+          drive input-gallery 620 ./target/release/gallery-kargui click:129,28 wait:300 wheel:120,400,-5 wait:300 move:120,300
+          # 金額の欄で全部を選んで 1234 を打ち Enter・上の矢印で 100 足す・メモに tesx と打って 1 字消して t と あ・日付が無いまま追加を押す
+          drive input-expenses 600 ./target/release/expenses-kargui click:90,72 key:cmd+a type:1234 key:enter click:149,72 click:500,72 type:tesx key:backspace type:t type:あ click:43,116 wait:300
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()

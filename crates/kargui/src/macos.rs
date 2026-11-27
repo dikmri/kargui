@@ -17,11 +17,11 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeString, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeString, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo};
-use objc2_foundation::{MainThreadMarker, NSArray, NSDate, NSDefaultRunLoopMode, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSArray, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::{App, Frame, Options};
 use crate::cpu_frame;
@@ -44,6 +44,8 @@ const WAKE_SUBTYPE: i16 = 0x6b67; // "kg"
 struct DelegateIvars {
     /// 閉じるボタンが押された（輪が App::close_requested に聞く）
     close_asked: Cell<bool>,
+    /// 窓が前面（キーを受ける窓）になった・外れた。輪が読んで記録する
+    focus: Cell<Option<bool>>,
 }
 
 define_class!(
@@ -64,6 +66,16 @@ define_class!(
             // 閉じるかはアプリが決める（App::close_requested）。ここでは閉じずに、輪に知らせる
             self.ivars().close_asked.set(true);
             false
+        }
+
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            self.ivars().focus.set(Some(true));
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            self.ivars().focus.set(Some(false));
         }
     }
 );
@@ -149,9 +161,26 @@ struct Window {
     shown: bool,
     created: Instant,
     left_down: bool,
+    /// 題の帯に頼んだ明暗（None はまだ頼んでいない）
+    dark_title: Option<bool>,
 }
 
 impl Window {
+    /// 題の帯の明暗を kargui の明暗に合わせる（アプリが OS と違う明暗を選んでも、題の帯が中身と同じになる）
+    fn sync_title_appearance(&mut self) {
+        let want = self.rt.cx.dark;
+        if self.dark_title == Some(want) {
+            return;
+        }
+        self.dark_title = Some(want);
+        // SAFETY: 外観の名前は AppKit の定数
+        let name = if want { unsafe { NSAppearanceNameDarkAqua } } else { unsafe { NSAppearanceNameAqua } };
+        let appearance = NSAppearance::appearanceNamed(name);
+        let ok = appearance.is_some();
+        self.ns.setAppearance(appearance.as_deref());
+        log::event("window.dark_title", &format!("dark={want}"), &format!("ok={ok}"));
+    }
+
     fn push(&mut self, e: Event) {
         self.events.push(e);
         self.need_frame = true;
@@ -279,12 +308,19 @@ pub(crate) fn run(options: Options, mut app: Box<dyn App>) -> Result<(), crate::
         shown: false,
         created: Instant::now(),
         left_down: false,
+        dark_title: None,
     };
     w.sync_size();
+    w.sync_title_appearance();
     log::event("window.create", &format!("title={:?} size={lw:.0}x{lh:.0}", options.title), &format!("physical={}x{} scale={}", w.size.0, w.size.1, w.scale));
     ns.makeKeyAndOrderFront(None);
     if options.activate {
-        ns_app.activate();
+        // 端末などから起動したアプリは、前面のアプリが譲らないと activate（macOS 14 からの穏やかな頼み方）では前面に
+        // ならない（CI の Mac では Finder が前面のまま、窓は灰色の題の帯だった）。winit と同じく、ほかのアプリより先に
+        // 前面にする古い頼み方を使う
+        #[allow(deprecated)]
+        ns_app.activateIgnoringOtherApps(true);
+        log::event("app.activate", "ignoring_other_apps=true", &format!("active_now={}", ns_app.isActive()));
     }
 
     let shot = std::env::var("KARGUI_SHOT").ok().filter(|s| !s.is_empty());
@@ -311,6 +347,9 @@ pub(crate) fn run(options: Options, mut app: Box<dyn App>) -> Result<(), crate::
         if let Some(path) = shot.as_ref().filter(|_| Instant::now() >= shot_at) {
             save_shot(&w, path);
             break;
+        }
+        if let Some(focused) = w.delegate.ivars().focus.take() {
+            log::event("window.focus", &format!("focused={focused}"), &format!("app_active={}", ns_app.isActive()));
         }
         if w.delegate.ivars().close_asked.replace(false) {
             let ok = app.close_requested();
@@ -367,6 +406,7 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
         log::event("notify.request", &format!("key={key}"), "not on macOS yet (M4)");
     }
     w.draw_and_present(why);
+    w.sync_title_appearance();
     let first = !w.shown;
     w.shown = true;
     if first {

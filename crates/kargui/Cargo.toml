@@ -59,7 +59,7 @@ x11rb = { version = "=0.14.0", default-features = false, features = ["allow-unsa
 # 既定の機能（全部の型）は切り、使う型だけを選ぶ。どれも MIT か Apache-2.0
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSDate", "NSGeometry", "NSObject", "NSThread", "NSRunLoop", "NSArray"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSDate", "NSGeometry", "NSObject", "NSThread", "NSRunLoop", "NSArray", "NSNotification"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication", "NSWindow", "NSView", "NSEvent", "NSGraphics", "NSPasteboard", "NSAppearance", "NSScreen", "NSGraphicsContext", "objc2-core-foundation", "objc2-quartz-core"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGImage", "CGColorSpace", "CGDataProvider"] }
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFData"] }
