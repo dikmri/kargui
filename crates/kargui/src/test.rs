@@ -3329,6 +3329,40 @@ mod tests {
         assert_eq!(focused_name(&h).as_deref(), Some("Open"));
     }
 
+    /// 折り返す文のあるダイアログ（アプリの「このデータについて」で、閉じるボタンが窓の外へ押し出された）
+    struct WrapDialog {
+        open: bool,
+    }
+
+    const WRAP_TEXT: &str = "A long paragraph that does not fit on one line is wrapped to the width of the dialog, so it takes a few lines and no more.";
+
+    impl App for WrapDialog {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.label("Behind");
+            let mut close = false;
+            ui.dialog(&mut self.open, "About", |ui| {
+                ui.label(WRAP_TEXT).wrap();
+                ui.label("Short").wrap();
+                close = ui.button("Close").clicked();
+            });
+            if close {
+                self.open = false;
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_text_in_a_dialog_takes_only_its_lines() {
+        let mut h = Harness::with_size(WrapDialog { open: true }, 600.0, 400.0, 1.0);
+        let text = h.find(WRAP_TEXT).expect("文がある");
+        let close = h.find("Close").expect("閉じるボタンがある");
+        // 文は窓に収まる幅で数行に折り返し、その下に閉じるボタンが窓の中に出る
+        assert!(text.w <= 600.0 && text.h < 120.0, "折り返した文の大きさ: {text:?}");
+        assert!(close.y >= text.bottom() && close.bottom() <= 400.0, "閉じるボタンが窓の中: {close:?}");
+        h.click("Close");
+        assert!(!h.app().open);
+    }
+
     #[test]
     fn tooltip_shows_after_the_pointer_rests_and_on_keyboard_focus() {
         let mut h = Harness::new(Layers::default());
@@ -7344,3 +7378,4 @@ second line".into() })
         assert!(underline, "{link:?}");
     }
 }
+

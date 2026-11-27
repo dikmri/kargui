@@ -232,8 +232,19 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
     }
     let window = Rect::new(0.0, 0.0, cx.width, cx.height);
     layout::layout(&mut tree.layout, 0, window);
+    // 重ねて出す物（ダイアログ・ポップアップ）の中はまだ置かれていない（幅 0）ので、ここでは測り直さない。
+    // place_overlays が、置いてから測り直す
+    let mut in_overlay = vec![false; tree.info.len()];
+    for o in &tree.overlays {
+        for i in subtree(tree, o.idx) {
+            in_overlay[i] = true;
+        }
+    }
     let mut again = false;
     for i in 0..tree.info.len() {
+        if in_overlay[i] {
+            continue;
+        }
         if let Kind::Label { wrap: true, .. } | Kind::RichText { .. } = tree.info[i].kind {
             let w = tree.layout[i].rect.w;
             if let Some(size) = intrinsic(cx, &tree.info[i].kind, Some(w))
@@ -282,27 +293,85 @@ pub(crate) fn layout(tree: &mut Tree, cx: &mut Context) {
     super::rich::place_spans(tree, cx);
 }
 
+/// 重ねて出す物の中で折り返す文の、望む幅の上限（論理ピクセル。読みやすい長さの 1 行）
+const OVERLAY_TEXT_W: f32 = 480.0;
+
 /// 重ねて出す物を置く（ふつうの配置の後。出す元の部品の場所が決まってから）
-fn place_overlays(tree: &mut Tree, cx: &Context, window: Rect) {
+fn place_overlays(tree: &mut Tree, cx: &mut Context, window: Rect) {
     let (margin, gap) = (px(cx, 8.0), px(cx, 4.0));
     // ダイアログは、kargui が描く題の帯の下の真ん中に出す
     let body = tree.info.iter().position(|n| matches!(n.kind, Kind::TitleBar { .. })).map_or(window, |i| {
         let top = tree.layout[i].rect.bottom();
         Rect::new(window.x, top, window.w, (window.bottom() - top).max(0.0))
     });
+    let max_text = px(cx, OVERLAY_TEXT_W).min((window.w - 2.0 * margin).max(0.0));
     for o in tree.overlays.clone() {
-        let (w, h) = layout::measure(&mut tree.layout, o.idx);
-        let w = w.min((window.w - 2.0 * margin).max(0.0));
-        let h = h.min((window.h - 2.0 * margin).max(0.0));
-        let anchor = o.anchor.and_then(|a| tree.info.iter().position(|n| n.id == a)).map(|i| tree.layout[i].rect);
-        let rect = match (o.kind, o.place, anchor) {
-            (OverlayKind::Dialog, ..) => layout::place_center(w, h.min((body.h - 2.0 * margin).max(0.0)), body),
-            (_, Place::At(x, y), _) => layout::place_near(Rect::new(x, y, 0.0, 0.0), w, h, window, margin, 0.0),
-            (_, Place::Beside, Some(a)) => layout::place_beside(a, w, h, window, margin, px(cx, 4.0)),
-            (_, _, Some(a)) => layout::place_near(a, w, h, window, margin, gap),
-            _ => layout::place_center(w, h, window),
-        };
-        layout::arrange(&mut tree.layout, o.idx, rect);
+        // 重ねて出す物の幅は中身で決まる。折り返す文は幅 0 と数えると 1 語ずつ折り返して縦に長くなるので、
+        // 1 行の幅（max_text まで）を望む幅にし、その幅での高さで測る
+        let wrapped: Vec<usize> = subtree(tree, o.idx).into_iter().filter(|&i| matches!(tree.info[i].kind, Kind::Label { wrap: true, .. } | Kind::RichText { .. })).collect();
+        for &i in &wrapped {
+            let w = one_line_width(cx, &tree.info[i].kind).min(max_text);
+            if let Some((_, h)) = intrinsic(cx, &tree.info[i].kind, Some(w)) {
+                tree.layout[i].intrinsic = (w, h);
+            }
+        }
+        place_overlay(tree, &o, window, body, margin, gap);
+        // 置いた幅が望む幅と違えば（入れ物の幅が決まっている時など）、その幅で高さを測り直して置き直す
+        let mut again = false;
+        for &i in &wrapped {
+            let w = tree.layout[i].rect.w;
+            if let Some((_, h)) = intrinsic(cx, &tree.info[i].kind, Some(w))
+                && (h - tree.layout[i].intrinsic.1).abs() > 0.5 {
+                    tree.layout[i].intrinsic.1 = h;
+                    again = true;
+                }
+        }
+        if again {
+            place_overlay(tree, &o, window, body, margin, gap);
+        }
+    }
+}
+
+/// 重ねて出す物 1 つの大きさを測り、場所を決めて中を並べる
+fn place_overlay(tree: &mut Tree, o: &Overlay, window: Rect, body: Rect, margin: f32, gap: f32) {
+    let (w, h) = layout::measure(&mut tree.layout, o.idx);
+    let w = w.min((window.w - 2.0 * margin).max(0.0));
+    let h = h.min((window.h - 2.0 * margin).max(0.0));
+    let anchor = o.anchor.and_then(|a| tree.info.iter().position(|n| n.id == a)).map(|i| tree.layout[i].rect);
+    let rect = match (o.kind, o.place, anchor) {
+        (OverlayKind::Dialog, ..) => layout::place_center(w, h.min((body.h - 2.0 * margin).max(0.0)), body),
+        (_, Place::At(x, y), _) => layout::place_near(Rect::new(x, y, 0.0, 0.0), w, h, window, margin, 0.0),
+        (_, Place::Beside, Some(a)) => layout::place_beside(a, w, h, window, margin, gap),
+        (_, _, Some(a)) => layout::place_near(a, w, h, window, margin, gap),
+        _ => layout::place_center(w, h, window),
+    };
+    layout::arrange(&mut tree.layout, o.idx, rect);
+}
+
+/// 部品 i とその下の部品
+fn subtree(tree: &Tree, i: usize) -> Vec<usize> {
+    let mut out = vec![i];
+    let mut k = 0;
+    while k < out.len() {
+        out.extend(tree.layout[out[k]].children.iter().copied());
+        k += 1;
+    }
+    out
+}
+
+/// 折り返す文を 1 行に並べた時の幅
+fn one_line_width(cx: &mut Context, kind: &Kind) -> f32 {
+    match kind {
+        Kind::Label { text, size, bold, font, .. } => {
+            let st = styled(cx, *size, *bold, *font);
+            cx.text.layout(text, st, None).width.ceil()
+        }
+        Kind::RichText { text, spans } => {
+            let base = super::rich::base_style(cx);
+            let runs = super::rich::runs(spans, base, cx.scale);
+            cx.text.layout_runs(text, base, &runs, None).width.ceil()
+        }
+        _ => 0.0,
     }
 }
 
