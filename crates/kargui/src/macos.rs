@@ -75,6 +75,8 @@ struct DelegateIvars {
     live_frames: Cell<u32>,
     /// 窓と App（弱い参照。窓が委任先を持つので、強い参照にすると輪になる）
     state: RefCell<Weak<RefCell<State>>>,
+    /// OS の明暗かハイコントラストの設定が変わった（輪が読み直す）
+    system_changed: Cell<bool>,
 }
 
 impl DelegateIvars {
@@ -93,6 +95,17 @@ define_class!(
     #[name = "KarguiWindowDelegate"]
     #[ivars = DelegateIvars]
     struct WindowDelegate;
+
+    impl WindowDelegate {
+        // OS の明暗（AppleInterfaceThemeChangedNotification）とハイコントラスト（NSWorkspace の
+        // AccessibilityDisplayOptionsDidChange）が変わった。輪が読み直す
+        #[unsafe(method(systemSettingsChanged:))]
+        fn system_settings_changed(&self, notification: &NSNotification) {
+            log::event("system.changed", &format!("name={}", notification.name()), "reread on the next loop");
+            self.ivars().system_changed.set(true);
+            post_wake();
+        }
+    }
 
     // SAFETY: NSObjectProtocol に決まりは無い
     unsafe impl NSObjectProtocol for WindowDelegate {}
@@ -565,6 +578,44 @@ impl Clipboard for MacClipboard {
     }
 }
 
+/// 好みの言語の並び（システム設定の言語と地域。「ja-JP」「en-US」など）。locale.rs が OS の言語を決めるのに使う
+pub(crate) fn preferred_languages() -> Vec<String> {
+    objc2_foundation::NSLocale::preferredLanguages().iter().map(|s| s.to_string()).collect()
+}
+
+/// 知らせの時に OS が暗いテーマか（ユーザーの設定 AppleInterfaceStyle。知らせの直後は NSApp の effectiveAppearance が
+/// まだ変わっていないことがあるので、設定を直接読む）
+fn system_dark_setting() -> bool {
+    objc2_foundation::NSUserDefaults::standardUserDefaults().stringForKey(&NSString::from_str("AppleInterfaceStyle")).is_some_and(|s| s.to_string() == "Dark")
+}
+
+/// OS のハイコントラスト（システム設定 > アクセシビリティ > ディスプレイ > コントラストを上げる）
+fn system_high_contrast() -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast()
+}
+
+/// アプリのメニュー（隠す ⌘H・終了 ⌘Q）。終了は主の窓を閉じる（閉じる前の確認 App::close_requested を通る）
+fn install_menu(mtm: MainThreadMarker, app: &NSApplication, window: &NSWindow, japanese: bool) {
+    let name = objc2_app_kit::NSRunningApplication::currentApplication().localizedName().map_or_else(|| "kargui".to_string(), |s| s.to_string());
+    let item = |title: String, action: Sel, key: &str| {
+        // SAFETY: NSMenuItem の init の形（題・動き・キー）
+        unsafe { objc2_app_kit::NSMenuItem::initWithTitle_action_keyEquivalent(objc2_app_kit::NSMenuItem::alloc(mtm), &NSString::from_str(&title), Some(action), &NSString::from_str(key)) }
+    };
+    let (hide, quit) = if japanese { (format!("{name}を隠す"), format!("{name}を終了")) } else { (format!("Hide {name}"), format!("Quit {name}")) };
+    let menu = objc2_app_kit::NSMenu::new(mtm);
+    menu.addItem(&item(hide, objc2::sel!(hide:), "h"));
+    let quit = item(quit, objc2::sel!(performClose:), "q");
+    // SAFETY: 窓は輪が終わるまで生きる
+    unsafe { quit.setTarget(Some(window)) };
+    menu.addItem(&quit);
+    let app_item = objc2_app_kit::NSMenuItem::new(mtm);
+    app_item.setSubmenu(Some(&menu));
+    let bar = objc2_app_kit::NSMenu::new(mtm);
+    bar.addItem(&app_item);
+    app.setMainMenu(Some(&bar));
+    log::event("menu.install", &format!("name={name:?} japanese={japanese}"), "hide, quit");
+}
+
 /// OS が暗いテーマか（システム設定 > 外観）
 fn system_dark(app: &NSApplication) -> bool {
     let appearance = app.effectiveAppearance();
@@ -626,6 +677,8 @@ struct Window {
     /// 読み上げの橋渡し（KarguiView を動的に派生させて NSAccessibility の関数を足す）と、読み上げからの頼み
     a11y: accesskit_macos::SubclassingAdapter,
     a11y_actions: Rc<RefCell<Vec<accesskit::ActionRequest>>>,
+    /// OS の明暗に従う（アプリが Options::dark で決めていない）
+    follow_dark: bool,
 }
 
 impl Window {
@@ -812,6 +865,28 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     rt.cx.text.load_fonts(&options.fonts);
     rt.cx.font = rt.cx.text.fonts.id(&options.font);
     crate::locale::apply_to(&mut rt.cx, &options.title);
+    // OS のハイコントラスト（アプリの Options::high_contrast が先。kargui の配色を使う）
+    let hc = system_high_contrast();
+    rt.cx.set_system_high_contrast(hc, None);
+    log::event("theme.contrast", &format!("high={hc}"), &format!("system forced={:?}", crate::theme::option()));
+    // OS の明暗とハイコントラストの変化を聞く
+    // SAFETY: 委任先は窓（Window）が輪の終わりまで持つ。知らせの名前は Apple の物
+    unsafe {
+        let observer: &AnyObject = delegate.as_ref();
+        objc2_foundation::NSDistributedNotificationCenter::defaultCenter().addObserver_selector_name_object(
+            observer,
+            objc2::sel!(systemSettingsChanged:),
+            Some(&NSString::from_str("AppleInterfaceThemeChangedNotification")),
+            None,
+        );
+        objc2_app_kit::NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
+            observer,
+            objc2::sel!(systemSettingsChanged:),
+            Some(objc2_app_kit::NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+            None,
+        );
+    }
+    install_menu(mtm, &ns_app, &ns, matches!(rt.cx.locale, crate::Locale::Japanese));
     let mut w = Window {
         ns: ns.clone(),
         view: view.clone(),
@@ -835,6 +910,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         pending_dialog: None,
         a11y,
         a11y_actions,
+        follow_dark: options.dark.is_none(),
     };
     w.sync_size();
     w.sync_title_appearance();
@@ -891,6 +967,20 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 w.push(e);
             }
             w.apply_a11y_actions();
+            // OS の明暗・ハイコントラストが変わった
+            if w.delegate.ivars().system_changed.replace(false) {
+                let dark = system_dark_setting();
+                if w.follow_dark {
+                    w.rt.cx.set_dark(dark);
+                }
+                log::event("theme.system", &format!("dark={dark}"), if w.follow_dark { "changed" } else { "ignored (the app chose)" });
+                let hc = system_high_contrast();
+                if w.rt.cx.set_system_high_contrast(hc, None) {
+                    log::event("theme.contrast", &format!("high={hc}"), &format!("changed forced={:?}", crate::theme::option()));
+                }
+                w.need_frame = true;
+                w.why = "theme";
+            }
             if let Some(focused) = w.delegate.ivars().focus.take() {
                 log::event("window.focus", &format!("focused={focused}"), &format!("app_active={}", ns_app.isActive()));
                 if let Some(ev) = w.a11y.update_view_focus_state(focused) {
@@ -1062,6 +1152,13 @@ fn handle(w: &mut Window, ev: &NSEvent, last_press: &mut Option<(Instant, f32, f
         NSEventType::KeyDown => {
             let code = ev.keyCode();
             let repeat = ev.isARepeat();
+            // Command の近道は、先にアプリのメニュー（隠す ⌘H・終了 ⌘Q）に聞く。メニューに無ければ Ctrl としてアプリへ
+            if ev.modifierFlags().contains(NSEventModifierFlags::Command)
+                && NSApplication::sharedApplication(MainThreadMarker::from(&*w.ns)).mainMenu().is_some_and(|m| m.performKeyEquivalent(ev))
+            {
+                log::event("menu.key", &format!("code={code}"), "handled by the menu");
+                return false;
+            }
             // 入力欄に焦点があり、近道（Command・Control）でなければ、AppKit に渡して IME に通す（KarguiView の keyDown:）
             if !mods.ctrl && w.rt.cx.ime_target().is_some() {
                 w.view.begin_key(key_of(code).map(|k| (k, mods)));

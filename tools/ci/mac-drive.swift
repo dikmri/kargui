@@ -14,6 +14,8 @@
 //   type:文字     英小文字・数字・空白は本物のキーで、ほかは Unicode の文字として送る
 //   screen:場所   画面を撮る（screencapture）
 //   bounds        窓の外枠を書き出し、窓の中の左上を読み直す（窓を動かした後の手順の座標が合う）
+//   theme:dark|light  OS の明暗の切り替えを真似る（ユーザーの設定 AppleInterfaceStyle を書き換え、
+//                 AppleInterfaceThemeChangedNotification を送る。本物の外観は変わらない）
 //   ax            アプリの読み上げの木（AXUIElement）を、役割・題・値で書き出す（VoiceOver と同じ問い方）
 //   axpress:X,Y   その点の部品を、読み上げの操作（AXPress）で押す
 //   inputsource:ID  入力ソースを入れて切り替える（例: com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese は日本語の
@@ -272,6 +274,20 @@ for step in args.dropFirst(3) {
         }
     case "inputsource":
         say("step \(step) \(selectSource(rest))")
+        continue
+    case "theme":
+        let d = Process()
+        d.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        d.arguments = rest == "dark" ? ["write", "-g", "AppleInterfaceStyle", "Dark"] : ["delete", "-g", "AppleInterfaceStyle"]
+        do {
+            try d.run()
+            d.waitUntilExit()
+        } catch {
+            say("step \(step) failed: \(error)")
+            continue
+        }
+        DistributedNotificationCenter.default().postNotificationName(NSNotification.Name("AppleInterfaceThemeChangedNotification"), object: nil, userInfo: nil, deliverImmediately: true)
+        say("step \(step) defaults=\(d.terminationStatus) posted")
         continue
     case "ax":
         say("step \(step) trusted=\(AXIsProcessTrusted())")

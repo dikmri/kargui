@@ -151,6 +151,10 @@ jobs:
           drive input-ime 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-preedit.png key:space wait:800 screen:shots/input-ime-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
           # 結果の例を増やすため、もう 1 回（別のアプリとして開き直す）
           drive input-ime-2 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-2-preedit.png key:space wait:800 screen:shots/input-ime-2-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
+          # OS の明暗の切り替え（真似る）とアプリのメニュー: 見本（OS の明暗に従う）で暗くして撮り、明るく戻し、
+          # 読み上げの木でメニューの項目を見て、⌘Q で終わる（閉じる前の確認を通る）
+          SHOT_MS=30000 drive input-system 620 ./target/release/gallery-kargui wait:800 theme:dark wait:1000 screen:shots/input-system-dark.png theme:light wait:1000 screen:shots/input-system-light.png ax key:cmd+q wait:1000
+          defaults delete -g AppleInterfaceStyle 2>/dev/null || true
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()
