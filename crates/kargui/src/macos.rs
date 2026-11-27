@@ -26,7 +26,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSModalResponseOK, NSOpenPanel, NSPasteboard, NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSPasteboardTypeString, NSResponder, NSSavePanel, NSTextInputClient, NSTextInputContext, NSView,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSModalResponseOK, NSOpenPanel, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSPasteboard, NSPasteboardTypeFileURL, NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSPasteboardTypeString, NSResponder, NSSavePanel, NSTextInputClient, NSTextInputContext, NSView,
     NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFData;
@@ -279,6 +279,48 @@ define_class!(
     // SAFETY: NSObjectProtocol に決まりは無い
     unsafe impl NSObjectProtocol for KarguiView {}
 
+    // ほかのアプリ（Finder など）からファイルを引っ張って落とす。届け出る（registerForDraggedTypes）のは、ファイルを
+    // 受け取る部品が初めて現れた時（Windows の版と同じ）。知らせは待ち行列に積み、輪を起こす（State は借りない）
+    // SAFETY: 名前と引数の形は AppKit の NSDraggingDestination と同じ
+    unsafe impl NSDraggingDestination for KarguiView {
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            let (x, y) = self.drag_point(sender);
+            let paths = dragged_paths(sender);
+            log::event("drag.enter", &format!("x={x:.0} y={y:.0}"), &format!("files={}", paths.len()));
+            if paths.is_empty() {
+                return NSDragOperation::None;
+            }
+            self.ivars().queue.borrow_mut().push(Event::FileDragEnter { x, y, paths });
+            self.wake_if_outside_key();
+            NSDragOperation::Copy
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            let (x, y) = self.drag_point(sender);
+            self.ivars().queue.borrow_mut().push(Event::FileDragOver { x, y });
+            self.wake_if_outside_key();
+            NSDragOperation::Copy
+        }
+
+        #[unsafe(method(draggingExited:))]
+        fn dragging_exited(&self, _sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+            log::event("drag.leave", "", "ok");
+            self.ivars().queue.borrow_mut().push(Event::FileDragLeave);
+            self.wake_if_outside_key();
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            let (x, y) = self.drag_point(sender);
+            log::event("drag.drop", &format!("x={x:.0} y={y:.0}"), "ok");
+            self.ivars().queue.borrow_mut().push(Event::FileDrop { x, y });
+            self.wake_if_outside_key();
+            true
+        }
+    }
+
     // SAFETY: 名前と引数の形は AppKit の NSTextInputClient と同じ（位置と長さは UTF-16 の単位）
     unsafe impl NSTextInputClient for KarguiView {
         #[unsafe(method(hasMarkedText))]
@@ -523,6 +565,27 @@ impl KarguiView {
         }
         log::event("ime.discard", "focus moved", "ok");
     }
+
+    /// 引っ張っている所（窓の座標、左下が原点）→ kargui の座標（左上が原点、物理ピクセル）
+    fn drag_point(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> (f32, f32) {
+        let v = self.convertPoint_fromView(sender.draggingLocation(), None);
+        let h = self.bounds().size.height;
+        let scale = self.window().map_or(1.0, |w| w.backingScaleFactor());
+        ((v.x * scale) as f32, ((h - v.y) * scale) as f32)
+    }
+}
+
+/// 引っ張りの板（pasteboard）の項目のうち、ファイルの URL を場所にする
+fn dragged_paths(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<std::path::PathBuf> {
+    let Some(items) = sender.draggingPasteboard().pasteboardItems() else { return Vec::new() };
+    items
+        .iter()
+        // SAFETY: NSPasteboardTypeFileURL は AppKit の定数
+        .filter_map(|item| item.stringForType(unsafe { NSPasteboardTypeFileURL }))
+        .filter_map(|s| NSURL::URLWithString(&s))
+        .filter_map(|u| u.path())
+        .map(|p| std::path::PathBuf::from(p.to_string()))
+        .collect()
 }
 
 /// IME が渡す文字（NSString か NSAttributedString）から、文字と、文節の区切りの始まり（UTF-16 の位置）を取り出す
@@ -694,6 +757,8 @@ struct Window {
     /// 読み上げの橋渡し（KarguiView を動的に派生させて NSAccessibility の関数を足す）と、読み上げからの頼み
     a11y: accesskit_macos::SubclassingAdapter,
     a11y_actions: Rc<RefCell<Vec<accesskit::ActionRequest>>>,
+    /// ファイルを落とせる窓だと OS に届け出た
+    files_registered: bool,
     /// OS の明暗に従う（アプリが Options::dark で決めていない）
     follow_dark: bool,
 }
@@ -931,6 +996,7 @@ fn new_window(mtm: MainThreadMarker, key: Option<String>, title: &str, size: (f3
         a11y,
         a11y_actions,
         follow_dark,
+        files_registered: false,
     };
     w.sync_size();
     w.sync_title_appearance();
@@ -1202,6 +1268,13 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
     w.draw_and_present(why);
     w.sync_title_appearance();
     w.sync_ime();
+    // ファイルを受け取る部品が初めて現れたら、OS にファイルを落とせる窓だと届け出る（1 回だけ。Windows の版と同じ）
+    if w.rt.cx.wants_files && !w.files_registered {
+        w.files_registered = true;
+        // SAFETY: NSPasteboardTypeFileURL は AppKit の定数
+        w.view.registerForDraggedTypes(&NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]));
+        log::event("drag.register", &format!("file URLs{}", w.tag()), "ok");
+    }
     // 読み上げの木（読み上げが使われ始めてから。初めの木は request_initial_tree の後のこのフレームで渡す）
     let rt = &mut w.rt;
     if let Some(ev) = w.a11y.update_if_active(|| rt.a11y().0) {

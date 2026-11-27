@@ -67,7 +67,7 @@ jobs:
       - name: Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Build the examples
-        run: cargo build --locked --release -p gallery-kargui -p expenses-kargui -p files-kargui
+        run: cargo build --locked --release -p gallery-kargui -p expenses-kargui -p files-kargui -p notepad-kargui
       - name: Open the examples and save what they drew
         run: |
           mkdir -p shots
@@ -94,6 +94,7 @@ jobs:
         run: |
           xcrun swiftc -O tools/ci/mac-drive.swift -o target/mac-drive
           xcrun swiftc -O tools/ci/mac-ime-ref.swift -o target/mac-ime-ref
+          xcrun swiftc -O tools/ci/mac-drag-source.swift -o target/mac-drag-source
       - name: Drive the examples with a real mouse and keyboard
         run: |
           drive() {
@@ -158,6 +159,15 @@ jobs:
           # 複数の窓（Ui::window）: files の表の行を右クリックしてプロパティを選ぶと別の窓が開く。撮ってから、その窓の
           # 閉じるボタン（主の窓から 30 ずつ右下にずらして置く）を押す（アプリが閉じたと知り、別の窓が閉じる）
           SHOT_MS=25000 drive input-windows 520 ./target/release/files-kargui wait:500 screen:shots/input-windows-main.png rclick:500,118 wait:400 key:down key:enter wait:1200 screen:shots/input-windows-props.png ax click:46,14 wait:1200 screen:shots/input-windows-closed.png
+          # 引っ張って落とす: メモ帳（640 × 480、真ん中に置く）の本文へ、ほかのアプリ（tools/ci/mac-drag-source.swift）から
+          # ファイルを引っ張って落とす（メモ帳がそのファイルを開く）
+          echo "引っ張って落とした中身" > /tmp/kargui-drop.txt
+          KARGUI_SHOT=shots/input-drop.png KARGUI_SHOT_MS=14000 ./target/release/notepad-kargui --log shots/input-drop.log &
+          npid=$!
+          sleep 3
+          ./target/mac-drag-source /tmp/kargui-drop.txt 512 400 > shots/input-drop-source.txt 2>&1 || echo "drag source exit=$?"
+          screencapture -x shots/input-drop-screen.png || true
+          wait "$npid"; echo "notepad: exit=$?"
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()
