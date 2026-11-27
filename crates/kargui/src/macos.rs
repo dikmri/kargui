@@ -38,7 +38,7 @@ use objc2_foundation::{
 use crate::app::{App, Frame, Options};
 use crate::cpu_frame;
 use crate::damage::Summary;
-use crate::input::{Event, Key, Mods};
+use crate::input::{A11yAction, Event, Key, Mods};
 use crate::log;
 use crate::mac_keys::{key_of, mods_of, typed};
 use crate::runtime::Runtime;
@@ -498,6 +498,30 @@ fn marked_parts(string: &AnyObject) -> (String, Vec<usize>) {
     }
 }
 
+/// 読み上げ（VoiceOver）からの頼みの受け手。呼ばれるのは主のスレッドで、AppKit の呼び返しの中なので State は借りず、
+/// 待ち行列に積んで輪を起こす（X11 の版の A11ySink と同じ形）
+#[derive(Clone, Default)]
+struct MacA11ySink {
+    actions: Rc<RefCell<Vec<accesskit::ActionRequest>>>,
+}
+
+impl accesskit::ActivationHandler for MacA11ySink {
+    fn request_initial_tree(&mut self) -> Option<accesskit::TreeUpdate> {
+        // 木は次のフレームで渡す（update_if_active に全部の木を渡す）
+        log::event("a11y.activate", "", "pending (tree on next frame)");
+        post_wake();
+        None
+    }
+}
+
+impl accesskit::ActionHandler for MacA11ySink {
+    fn do_action(&mut self, request: accesskit::ActionRequest) {
+        log::event("a11y.action", &format!("action={:?} node={:?}", request.action, request.target_node), "queued");
+        self.actions.borrow_mut().push(request);
+        post_wake();
+    }
+}
+
 /// OS のクリップボード（文字だけ）
 struct MacClipboard;
 
@@ -577,9 +601,30 @@ struct Window {
     ime_target: Option<Id>,
     /// 出すのを待っているファイルのダイアログ（頼んだ時の鍵と中身）
     pending_dialog: Option<(String, crate::file_dialog::FileDialog)>,
+    /// 読み上げの橋渡し（KarguiView を動的に派生させて NSAccessibility の関数を足す）と、読み上げからの頼み
+    a11y: accesskit_macos::SubclassingAdapter,
+    a11y_actions: Rc<RefCell<Vec<accesskit::ActionRequest>>>,
 }
 
 impl Window {
+    /// 読み上げからの頼み（押す・焦点・増減）を kargui の入力にする
+    fn apply_a11y_actions(&mut self) {
+        let requests = std::mem::take(&mut *self.a11y_actions.borrow_mut());
+        for r in requests {
+            let action = match r.action {
+                accesskit::Action::Click => A11yAction::Click,
+                accesskit::Action::Focus => A11yAction::Focus,
+                accesskit::Action::Increment => A11yAction::Increment,
+                accesskit::Action::Decrement => A11yAction::Decrement,
+                other => {
+                    log::event("a11y.action", &format!("action={other:?}"), "ignored");
+                    continue;
+                }
+            };
+            self.push(Event::A11y { target: Id(r.target_node.0), action });
+        }
+    }
+
     /// フレームの後に、IME を向ける入力欄と、候補の窓を出す場所を KarguiView に写す
     fn sync_ime(&mut self) {
         let target = self.rt.cx.ime_target();
@@ -728,6 +773,12 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     view.setWantsLayer(true);
     let first_responder = ns.makeFirstResponder(Some(view.as_super().as_super()));
     log::event("view.first_responder", "KarguiView", &format!("ok={first_responder}"));
+    // 読み上げの橋渡し。窓を出す前に付ける（accesskit_macos の決まり）
+    let sink = MacA11ySink::default();
+    let a11y_actions = sink.actions.clone();
+    // SAFETY: view は生きている NSView（Window が持ち続ける）。窓を出す前で、まだ誰も KVO で見ていない
+    let a11y = unsafe { accesskit_macos::SubclassingAdapter::new(Retained::as_ptr(&view) as *mut std::ffi::c_void, sink.clone(), sink) };
+    log::event("a11y.adapter", "SubclassingAdapter on KarguiView", "ok");
     match options.position {
         // 画面の座標は左下が原点。kargui の位置は左上なので、ここでは真ん中に置く（位置の対応は後で）
         Some(_) | None => ns.center(),
@@ -760,6 +811,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         dark_title: None,
         ime_target: None,
         pending_dialog: None,
+        a11y,
+        a11y_actions,
     };
     w.sync_size();
     w.sync_title_appearance();
@@ -811,9 +864,16 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 w.need_frame = true;
                 w.why = "wake";
             }
-            // キーの外で届いた IME の入力（後から届く確定など）
+            // キーの外で届いた IME の入力（後から届く確定など）と、読み上げからの頼み
             for e in w.view.ivars().queue.take() {
                 w.push(e);
+            }
+            w.apply_a11y_actions();
+            if let Some(focused) = w.delegate.ivars().focus.take() {
+                log::event("window.focus", &format!("focused={focused}"), &format!("app_active={}", ns_app.isActive()));
+                if let Some(ev) = w.a11y.update_view_focus_state(focused) {
+                    ev.raise();
+                }
             }
             if w.need_frame && !frame(w, &mut *s.app, s.started) {
                 s.quit = true;
@@ -824,9 +884,6 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
             if let Some(path) = shot.as_ref().filter(|_| Instant::now() >= shot_at) {
                 save_shot(w, path);
                 break;
-            }
-            if let Some(focused) = w.delegate.ivars().focus.take() {
-                log::event("window.focus", &format!("focused={focused}"), &format!("app_active={}", ns_app.isActive()));
             }
             if w.delegate.ivars().close_asked.replace(false) {
                 let ok = s.app.close_requested();
@@ -895,6 +952,11 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
     w.draw_and_present(why);
     w.sync_title_appearance();
     w.sync_ime();
+    // 読み上げの木（読み上げが使われ始めてから。初めの木は request_initial_tree の後のこのフレームで渡す）
+    let rt = &mut w.rt;
+    if let Some(ev) = w.a11y.update_if_active(|| rt.a11y().0) {
+        ev.raise();
+    }
     let first = !w.shown;
     w.shown = true;
     if first {

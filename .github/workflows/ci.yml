@@ -120,6 +120,9 @@ jobs:
           # Command+Shift+G で場所を打って /tmp/kargui-open.txt を選ぶ（答えは 1 つ。見本が選んだ場所を表示する）
           echo hello > /tmp/kargui-open.txt
           GALLERY_PAGE=19 SHOT_MS=25000 drive input-file-dialog 620 ./target/release/gallery-kargui click:300,154 wait:1500 screen:shots/input-file-dialog-open.png key:escape wait:800 click:300,154 wait:1500 key:cmd+shift+g wait:1000 type:/tmp/kargui-open.txt wait:800 screen:shots/input-file-dialog-goto.png key:enter wait:1000 key:enter wait:1500
+          # 読み上げ（accesskit_macos）: 木を書き出す（これで読み上げが使われ始め、次のフレームで木を渡す）。少し待って
+          # もう一度書き出し、「ふつう」のボタンを読み上げの操作（AXPress）で 2 回押す（見本の「押した回数」が 2 になる）
+          SHOT_MS=15000 drive input-a11y 620 ./target/release/gallery-kargui wait:1000 ax wait:1000 ax axpress:283,154 wait:500 axpress:283,154 wait:800 screen:shots/input-a11y-screen.png
           # 日本語入力を 4 つの相手で比べる。この仮想の Mac で最初に日本語入力を使ったアプリは、45 秒待っても英字が
           # そのまま入った。2 番目に使ったテキストエディットは変換できた（1 回）。
           # (1) テキストエディットで一度使って終わらせる (2) 新しく開いたテキストエディット (3) 最小の参考のアプリ

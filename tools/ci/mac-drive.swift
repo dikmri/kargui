@@ -14,6 +14,8 @@
 //   type:文字     英小文字・数字・空白は本物のキーで、ほかは Unicode の文字として送る
 //   screen:場所   画面を撮る（screencapture）
 //   bounds        窓の外枠を書き出し、窓の中の左上を読み直す（窓を動かした後の手順の座標が合う）
+//   ax            アプリの読み上げの木（AXUIElement）を、役割・題・値で書き出す（VoiceOver と同じ問い方）
+//   axpress:X,Y   その点の部品を、読み上げの操作（AXPress）で押す
 //   inputsource:ID  入力ソースを入れて切り替える（例: com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese は日本語の
 //                 ローマ字入力、com.apple.keylayout.ABC は英字）。入力モードの時は、親の入力ソースも入れる
 //   wait:ミリ秒   待つ
@@ -156,6 +158,38 @@ func selectSource(_ id: String) -> String {
     return log.joined(separator: " ")
 }
 
+/// 読み上げの部品の文字の属性
+func axString(_ e: AXUIElement, _ attr: String) -> String? {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(e, attr as CFString, &v) == .success else { return nil }
+    if let s = v as? String { return s }
+    if let n = v as? NSNumber { return n.stringValue }
+    return nil
+}
+
+func axChildren(_ e: AXUIElement) -> [AXUIElement] {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &v) == .success, let a = v as? [AXUIElement] else { return [] }
+    return a
+}
+
+func axLine(_ e: AXUIElement) -> String {
+    let role = axString(e, kAXRoleAttribute) ?? "?"
+    let title = axString(e, kAXTitleAttribute) ?? ""
+    let desc = axString(e, kAXDescriptionAttribute) ?? ""
+    let value = axString(e, kAXValueAttribute) ?? ""
+    return "\(role) title=\(title) desc=\(desc) value=\(value)"
+}
+
+func axDump(_ e: AXUIElement, _ depth: Int, _ budget: inout Int) {
+    if budget <= 0 { return }
+    budget -= 1
+    say("  " + String(repeating: "  ", count: depth) + axLine(e))
+    for c in axChildren(e) {
+        axDump(c, depth + 1, &budget)
+    }
+}
+
 /// 押したままの間の、今のポインターの場所
 var pointer = origin
 
@@ -238,6 +272,21 @@ for step in args.dropFirst(3) {
         }
     case "inputsource":
         say("step \(step) \(selectSource(rest))")
+        continue
+    case "ax":
+        say("step \(step) trusted=\(AXIsProcessTrusted())")
+        var budget = 150
+        axDump(AXUIElementCreateApplication(pid_t(pid)), 0, &budget)
+        continue
+    case "axpress":
+        var el: AXUIElement?
+        let r = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(p.x), Float(p.y), &el)
+        guard r == .success, let e = el else {
+            say("step \(step) no element (\(r.rawValue))")
+            continue
+        }
+        let pr = AXUIElementPerformAction(e, kAXPressAction as CFString)
+        say("step \(step) element=\(axLine(e)) press=\(pr.rawValue)")
         continue
     case "bounds":
         guard let r = windowRect() else {
