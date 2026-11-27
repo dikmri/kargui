@@ -18,6 +18,7 @@
 //                 AppleInterfaceThemeChangedNotification を送る。本物の外観は変わらない）
 //   ax            アプリの読み上げの木（AXUIElement）を、役割・題・値で書き出す（VoiceOver と同じ問い方）
 //   axpress:X,Y   その点の部品を、読み上げの操作（AXPress）で押す
+//   axtray        アプリのトレイ（メニューバーの右の項目。AXExtrasMenuBar）を書き出し、最初の項目を AXPress で押す
 //   inputsource:ID  入力ソースを入れて切り替える（例: com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese は日本語の
 //                 ローマ字入力、com.apple.keylayout.ABC は英字）。入力モードの時は、親の入力ソースも入れる
 //   wait:ミリ秒   待つ
@@ -293,6 +294,20 @@ for step in args.dropFirst(3) {
         say("step \(step) trusted=\(AXIsProcessTrusted())")
         var budget = 150
         axDump(AXUIElementCreateApplication(pid_t(pid)), 0, &budget)
+        continue
+    case "axtray":
+        var bar: CFTypeRef?
+        let r = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid_t(pid)), "AXExtrasMenuBar" as CFString, &bar)
+        guard r == .success, let b = bar else {
+            say("step \(step) no extras menu bar (\(r.rawValue))")
+            continue
+        }
+        let items = axChildren(b as! AXUIElement)
+        say("step \(step) items=\(items.count) \(items.map(axLine))")
+        if let first = items.first {
+            let pr = AXUIElementPerformAction(first, kAXPressAction as CFString)
+            say("step \(step) press=\(pr.rawValue)")
+        }
         continue
     case "axpress":
         var el: AXUIElement?

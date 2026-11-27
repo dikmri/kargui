@@ -168,6 +168,9 @@ jobs:
           ./target/mac-drag-source /tmp/kargui-drop.txt 512 400 > shots/input-drop-source.txt 2>&1 || echo "drag source exit=$?"
           screencapture -x shots/input-drop-screen.png || true
           wait "$npid"; echo "notepad: exit=$?"
+          # トレイ（NSStatusItem）: 見本の 24 ページ目で「通知領域にアイコンを出す」を入れ、トレイの項目を押してメニューを
+          # 開いて撮り、↓↓Enter で「暗い色」を選ぶ（見本が暗くなる）
+          GALLERY_PAGE=23 SHOT_MS=20000 drive input-tray 620 ./target/release/gallery-kargui click:300,154 wait:1000 axtray wait:800 screen:shots/input-tray-menu.png key:down key:down key:enter wait:1000 screen:shots/input-tray-dark.png
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()

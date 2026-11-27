@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
-use objc2::{ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
+use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSModalResponseOK, NSOpenPanel, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSPasteboard, NSPasteboardTypeFileURL, NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSPasteboardTypeString, NSResponder, NSSavePanel, NSTextInputClient, NSTextInputContext, NSView,
     NSWindow, NSWindowDelegate, NSWindowStyleMask,
@@ -64,6 +64,9 @@ struct State {
     quit: bool,
     /// アプリが渡した書体のファイル（別の窓の Runtime にも読ませる）
     fonts: Vec<std::borrow::Cow<'static, [u8]>>,
+    /// トレイ（主の窓のビューが作る）と、アプリがアイコンを渡さない時のアイコン
+    tray: Option<MacTray>,
+    tray_fallback: crate::Image,
 }
 
 impl State {
@@ -573,6 +576,141 @@ impl KarguiView {
         let scale = self.window().map_or(1.0, |w| w.backingScaleFactor());
         ((v.x * scale) as f32, ((h - v.y) * scale) as f32)
     }
+}
+
+#[derive(Default)]
+struct TrayIvars {
+    /// トレイの知らせ（押した・選んだ）。輪が主の窓の入力にする
+    queue: RefCell<Vec<crate::ui::tray::TrayInput>>,
+}
+
+define_class!(
+    // SAFETY: NSObject には派生の決まりが無く、Drop も持たない
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "KarguiTrayTarget"]
+    #[ivars = TrayIvars]
+    struct TrayTarget;
+
+    impl TrayTarget {
+        // メニューの項目を選んだ（項目の番号は tag）
+        #[unsafe(method(itemChosen:))]
+        fn item_chosen(&self, sender: &objc2_app_kit::NSMenuItem) {
+            let id = sender.tag() as u32;
+            log::event("tray.choose", &format!("id={id}"), "queued");
+            self.ivars().queue.borrow_mut().push(crate::ui::tray::TrayInput::Choose(id));
+            post_wake();
+        }
+
+        // メニューの無いトレイのアイコンを押した
+        #[unsafe(method(iconClicked:))]
+        fn icon_clicked(&self, _sender: Option<&AnyObject>) {
+            log::event("tray.click", "", "queued");
+            self.ivars().queue.borrow_mut().push(crate::ui::tray::TrayInput::Click);
+            post_wake();
+        }
+    }
+
+    // SAFETY: NSObjectProtocol に決まりは無い
+    unsafe impl NSObjectProtocol for TrayTarget {}
+);
+
+impl TrayTarget {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(TrayIvars::default());
+        // SAFETY: NSObject の init の形
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// トレイ（メニューバーの右の NSStatusItem）。メニューがあれば押すとメニューが開き（macOS の決まり）、項目を選ぶと
+/// Choose。メニューが無ければ、押すと Click
+struct MacTray {
+    item: Retained<objc2_app_kit::NSStatusItem>,
+    target: Retained<TrayTarget>,
+    desc: Option<crate::ui::tray::TrayDesc>,
+}
+
+impl MacTray {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let item = objc2_app_kit::NSStatusBar::systemStatusBar().statusItemWithLength(objc2_app_kit::NSVariableStatusItemLength);
+        Self { item, target: TrayTarget::new(mtm), desc: None }
+    }
+
+    /// 変わった物（アイコン・説明・メニュー）だけを OS に送る
+    fn set(&mut self, mtm: MainThreadMarker, d: &crate::ui::tray::TrayDesc, fallback: &crate::Image) {
+        let old = self.desc.as_ref();
+        let Some(button) = self.item.button(mtm) else { return };
+        if old.is_none_or(|o| !o.same_icon(d))
+            && let Some(img) = ns_image(d.icon.as_ref().unwrap_or(fallback), 18.0)
+        {
+            button.setImage(Some(&img));
+        }
+        if old.is_none_or(|o| o.tooltip != d.tooltip) {
+            button.setToolTip(Some(&NSString::from_str(&d.tooltip)));
+        }
+        if old.is_none_or(|o| o.menu != d.menu) {
+            if d.menu.is_empty() {
+                self.item.setMenu(None);
+                // SAFETY: 受け手は MacTray が持ち続ける
+                unsafe {
+                    button.setTarget(Some(&self.target));
+                    button.setAction(Some(objc2::sel!(iconClicked:)));
+                }
+            } else {
+                self.item.setMenu(Some(&tray_menu(mtm, &d.menu, &self.target)));
+            }
+            log::event("tray.set", &format!("tip={:?} items={}", d.tooltip, d.menu.len()), "ok");
+        }
+        self.desc = Some(d.clone());
+    }
+}
+
+impl Drop for MacTray {
+    fn drop(&mut self) {
+        objc2_app_kit::NSStatusBar::systemStatusBar().removeStatusItem(&self.item);
+    }
+}
+
+/// トレイのメニューの木を NSMenu にする（項目の番号は tag、印は state、入れ子は submenu）
+fn tray_menu(mtm: MainThreadMarker, nodes: &[crate::ui::tray::TrayNode], target: &TrayTarget) -> Retained<objc2_app_kit::NSMenu> {
+    use crate::ui::tray::TrayNode;
+    let menu = objc2_app_kit::NSMenu::new(mtm);
+    menu.setAutoenablesItems(false);
+    for n in nodes {
+        match n {
+            TrayNode::Separator { .. } => menu.addItem(&objc2_app_kit::NSMenuItem::separatorItem(mtm)),
+            TrayNode::Item { id, text, enabled, checked, children } => {
+                let action = children.is_empty().then_some(objc2::sel!(itemChosen:));
+                // SAFETY: NSMenuItem の init の形（題・動き・キー）
+                let item = unsafe { objc2_app_kit::NSMenuItem::initWithTitle_action_keyEquivalent(objc2_app_kit::NSMenuItem::alloc(mtm), &NSString::from_str(text), action, &NSString::from_str("")) };
+                // SAFETY: 受け手は MacTray が持ち続ける
+                unsafe { item.setTarget(Some(target)) };
+                item.setTag(*id as isize);
+                item.setEnabled(*enabled);
+                if let Some(c) = checked {
+                    item.setState(if *c { objc2_app_kit::NSControlStateValueOn } else { objc2_app_kit::NSControlStateValueOff });
+                }
+                if !children.is_empty() {
+                    item.setSubmenu(Some(&tray_menu(mtm, children, target)));
+                }
+                menu.addItem(&item);
+            }
+        }
+    }
+    menu
+}
+
+/// kargui の絵（RGBA、乗算していない）を、論理ピクセルの大きさ size の NSImage にする
+fn ns_image(img: &crate::Image, size: f64) -> Option<Retained<objc2_app_kit::NSImage>> {
+    let d = &img.0;
+    let data = CFData::from_bytes(&d.pixels);
+    let provider = CGDataProvider::with_cf_data(Some(&data))?;
+    let space = CGColorSpace::new_device_rgb()?;
+    let info = CGBitmapInfo(CGImageAlphaInfo::Last.0 | CGImageByteOrderInfo::OrderDefault.0);
+    // SAFETY: 大きさと行の長さは pixels と合っている（1 画素 4 バイト）
+    let cg = unsafe { CGImage::new(d.width as usize, d.height as usize, 8, 32, d.width as usize * 4, Some(&space), info, Some(&provider), std::ptr::null(), false, CGColorRenderingIntent::RenderingIntentDefault) }?;
+    Some(objc2_app_kit::NSImage::initWithCGImage_size(objc2_app_kit::NSImage::alloc(), &cg, NSSize::new(size, size)))
 }
 
 /// 引っ張りの板（pasteboard）の項目のうち、ファイルの URL を場所にする
@@ -1106,7 +1244,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let bundle = objc2_foundation::NSBundle::mainBundle();
     log::event("app.bundle", &format!("path={:?}", bundle.bundlePath().to_string()), &format!("identifier={:?}", bundle.bundleIdentifier().map(|s| s.to_string())));
 
-    let state = Rc::new(RefCell::new(State { windows: vec![w], app, started, quit: false, fonts: options.fonts.clone() }));
+    let state = Rc::new(RefCell::new(State { windows: vec![w], app, started, quit: false, fonts: options.fonts.clone(), tray: None, tray_fallback: options.icon.clone().unwrap_or_else(|| crate::logo::icon(36)) }));
 
     let shot = std::env::var("KARGUI_SHOT").ok().filter(|s| !s.is_empty());
     let shot_at = started + Duration::from_millis(std::env::var("KARGUI_SHOT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500));
@@ -1151,6 +1289,11 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                     w.why = "theme";
                 }
             }
+            // トレイの知らせは主の窓の入力にする
+            let tray_inputs = s.tray.as_ref().map(|t| t.target.ivars().queue.take()).unwrap_or_default();
+            for input in tray_inputs {
+                s.windows[0].push(Event::Tray(input));
+            }
             let active = ns_app.isActive();
             for w in &mut s.windows {
                 w.before_frame(active);
@@ -1192,6 +1335,21 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 break;
             }
             sync_windows(s, mtm);
+            // トレイ（主の窓のビューが作る。無くなったら消す）
+            match s.windows[0].rt.cx.tray.clone() {
+                Some(d) => {
+                    let tray = s.tray.get_or_insert_with(|| {
+                        log::event("tray.start", &format!("tip={:?}", d.tooltip), "NSStatusItem");
+                        MacTray::new(mtm)
+                    });
+                    tray.set(mtm, &d, &s.tray_fallback);
+                }
+                None => {
+                    if s.tray.take().is_some() {
+                        log::event("tray.stop", "", "the view stopped making the tray");
+                    }
+                }
+            }
             if let Some(path) = shot.as_ref().filter(|_| Instant::now() >= shot_at) {
                 save_shot(&s.windows[0], path);
                 break;
@@ -1260,6 +1418,17 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
     if let Some((key, d)) = w.rt.cx.file_dialog_request.take() {
         log::event("file_dialog.request", &format!("key={key} save={} multiple={}", d.save, d.multiple), "show at the top of the loop");
         w.pending_dialog = Some((key, d));
+    }
+    // 窓を隠す・出す（Ui::hide_window・show_window。トレイに隠れるアプリなど）
+    if let Some(show) = w.rt.cx.show_request.take() {
+        if show {
+            w.ns.makeKeyAndOrderFront(None);
+            #[allow(deprecated)]
+            NSApplication::sharedApplication(MainThreadMarker::from(&*w.ns)).activateIgnoringOtherApps(true);
+        } else {
+            w.ns.orderOut(None);
+        }
+        log::event(if show { "window.show" } else { "window.hide" }, &w.tag(), "ok");
     }
     // まだ作っていない仕組みの頼みは、記録して捨てる
     for (key, _) in std::mem::take(&mut w.rt.cx.notify_requests) {
