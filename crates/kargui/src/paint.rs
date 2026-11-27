@@ -43,6 +43,8 @@ pub(crate) struct Scroll {
     pub id: u64,
     /// スクロールの位置（画素、整数）。中身は窓の座標に -offset して入っている
     pub offset: i32,
+    /// 入れ子の切り取りとは別に、スクロール部品自体の見える範囲を覚える
+    pub viewport: IRect,
 }
 
 /// 同じ切り取り範囲で続けて描く物のまとまり
@@ -90,13 +92,22 @@ impl DrawList {
         }
     }
 
-    /// 切り取り範囲を狭める。scroll を渡すと、その範囲の中身はスクロールする層になる。
-    /// 渡さなければ外側のスクロールを受け継ぐ
-    pub fn push_clip(&mut self, clip: IRect, scroll: Option<Scroll>) {
+    /// 切り取り範囲を狭め、外側のスクロールを受け継ぐ
+    pub fn push_clip(&mut self, clip: IRect) {
+        self.push(clip, None);
+    }
+
+    /// 切り取り範囲を狭め、その範囲を新しいスクロールの見える範囲にする
+    pub fn push_scroll(&mut self, clip: IRect, id: u64, offset: i32) {
+        self.push(clip, Some((id, offset)));
+    }
+
+    fn push(&mut self, clip: IRect, scroll: Option<(u64, i32)>) {
         self.close();
         let (parent, parent_scroll) = *self.stack.last().expect("begin が先");
         let clip = clip.intersect(&parent).unwrap_or(IRect::new(clip.x, clip.y, 0, 0));
-        self.stack.push((clip, scroll.or(parent_scroll)));
+        let scroll = scroll.map(|(id, offset)| Scroll { id, offset, viewport: clip }).or(parent_scroll);
+        self.stack.push((clip, scroll));
         self.open();
     }
 
@@ -158,14 +169,14 @@ mod tests {
         let mut d = DrawList::default();
         d.begin(IRect::new(0, 0, 100, 100));
         d.fill(Rect::new(0.0, 0.0, 10.0, 10.0), rgb(0), 0.0);
-        d.push_clip(IRect::new(0, 20, 100, 50), Some(Scroll { id: 7, offset: 30 }));
+        d.push_scroll(IRect::new(0, 20, 100, 50), 7, 30);
         d.fill(Rect::new(0.0, 25.0, 10.0, 10.0), rgb(0), 0.0);
         // 入れ子の切り取りはスクロールを受け継ぐ
-        d.push_clip(IRect::new(0, 0, 50, 200), None);
+        d.push_clip(IRect::new(0, 0, 50, 200));
         d.fill(Rect::new(0.0, 30.0, 10.0, 10.0), rgb(0), 0.0);
         d.pop_clip();
         d.pop_clip();
-        d.push_clip(IRect::new(0, 0, 1, 1), None);
+        d.push_clip(IRect::new(0, 0, 1, 1));
         d.pop_clip();
         d.fill(Rect::new(0.0, 90.0, 10.0, 10.0), rgb(0), 0.0);
         d.finish();

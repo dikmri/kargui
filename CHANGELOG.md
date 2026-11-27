@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed: scrolling could leave stale or missing pixels beside or below a clipped first child
+  (such as a canvas). The CPU renderer now tracks the scroll viewport separately from child clips.
 - Fixed: screen readers did not hear the names of the minimize, maximize and close buttons in
   the title bar kargui draws on Windows (`Options::custom_title_bar`); they were buttons with no
   name. They still are not Tab stops, as in the system's title bar.
