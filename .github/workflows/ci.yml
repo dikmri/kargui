@@ -109,6 +109,9 @@ jobs:
           drive input-gallery 620 ./target/release/gallery-kargui click:129,28 wait:300 wheel:120,400,-5 wait:300 move:120,300
           # 金額の欄で全部を選んで 1234 を打ち Enter・上の矢印で 100 足す・メモに tesx と打って 1 字消して t と あ・日付が無いまま追加を押す
           drive input-expenses 600 ./target/release/expenses-kargui click:90,72 key:cmd+a type:1234 key:enter click:149,72 click:500,72 type:tesx key:backspace type:t type:あ click:43,116 wait:300
+          # 窓の仕組み: 表の行の右クリックのメニュー（キーで選ぶ）・クリップボード（Command+C・V）・ダブルクリック・
+          # 右下を引っ張って大きさを変える（途中と後を撮る）・閉じるボタン（アプリが閉じてよいと答えて終わる）
+          drive input-window 600 ./target/release/expenses-kargui rclick:250,311 wait:300 screen:shots/input-window-menu.png key:down key:enter wait:300 click:500,72 type:ab key:cmd+a key:cmd+c key:right key:cmd+v dclick:325,72 wait:300 down:722,602 dragto:822,662 wait:300 screen:shots/input-window-resizing.png up:822,662 wait:500 screen:shots/input-window-resized.png click:16,-16 wait:500
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()

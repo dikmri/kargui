@@ -4,12 +4,18 @@
 // 使い方: mac-drive <pid> <窓の中の高さ（論理ピクセル）> 手順...
 //   move:X,Y      ポインターを動かす
 //   click:X,Y     左のボタンで 1 回押す
+//   dclick:X,Y    左のボタンで 2 回続けて押す
 //   rclick:X,Y    右のボタンで 1 回押す
+//   down:X,Y      左のボタンを押したままにする
+//   dragto:X,Y    押したまま、今の場所からそこまで 10 回に分けて動かす
+//   up:X,Y        左のボタンを放す
 //   wheel:X,Y,N   ホイールを N 行回す（正は上へ、負は下へ送る）
 //   key:名前      キーを 1 回押す（cmd+a・shift+tab・tab・enter・backspace・left など）
 //   type:文字     英小文字・数字・空白は本物のキーで、ほかは Unicode の文字として送る
+//   screen:場所   画面を撮る（screencapture）
 //   wait:ミリ秒   待つ
-// X,Y は窓の中の左上からの論理ピクセル。窓の場所は、CGWindowList で pid の窓を探して決める。
+// X,Y は窓の中の左上からの論理ピクセル（題の帯は負の Y）。窓の場所は、最初に CGWindowList で pid の窓を探して決める
+// （右下を引っ張って大きさを変えても、左上は動かない）。
 
 import AppKit
 import CoreGraphics
@@ -103,6 +109,9 @@ func key(_ code: CGKeyCode, _ flags: CGEventFlags = [], unicode: [UniChar]? = ni
     }
 }
 
+/// 押したままの間の、今のポインターの場所
+var pointer = origin
+
 for step in args.dropFirst(3) {
     let parts = step.split(separator: ":", maxSplits: 1)
     let kind = parts.first.map(String.init) ?? ""
@@ -117,6 +126,30 @@ for step in args.dropFirst(3) {
         usleep(80_000)
         mouse(.leftMouseDown, p, clicks: 1)
         usleep(60_000)
+        mouse(.leftMouseUp, p, clicks: 1)
+    case "dclick":
+        mouse(.mouseMoved, p)
+        usleep(80_000)
+        for n in [Int64(1), 2] {
+            mouse(.leftMouseDown, p, clicks: n)
+            usleep(40_000)
+            mouse(.leftMouseUp, p, clicks: n)
+            usleep(60_000)
+        }
+    case "down":
+        mouse(.mouseMoved, p)
+        usleep(80_000)
+        mouse(.leftMouseDown, p, clicks: 1)
+        pointer = p
+    case "dragto":
+        for i in 1...10 {
+            let t = Double(i) / 10
+            let q = CGPoint(x: pointer.x + (p.x - pointer.x) * t, y: pointer.y + (p.y - pointer.y) * t)
+            mouse(.leftMouseDragged, q)
+            usleep(30_000)
+        }
+        pointer = p
+    case "up":
         mouse(.leftMouseUp, p, clicks: 1)
     case "rclick":
         mouse(.mouseMoved, p)
@@ -155,6 +188,17 @@ for step in args.dropFirst(3) {
             } else {
                 key(unicodeKey, unicode: Array(String(c).utf16))
             }
+        }
+    case "screen":
+        let shot = Process()
+        shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        shot.arguments = ["-x", rest]
+        do {
+            try shot.run()
+            shot.waitUntilExit()
+        } catch {
+            say("step \(step) failed: \(error)")
+            continue
         }
     case "wait":
         usleep(UInt32((nums.first ?? 0) * 1000))
