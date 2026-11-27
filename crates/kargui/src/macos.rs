@@ -710,6 +710,9 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         ns_app.activateIgnoringOtherApps(true);
         log::event("app.activate", "ignoring_other_apps=true", &format!("active_now={}", ns_app.isActive()));
     }
+    // アプリの束の名前（cargo が作った裸の実行ファイルでは無い。IME がつながるかに関わるかもしれないので残す）
+    let bundle = objc2_foundation::NSBundle::mainBundle();
+    log::event("app.bundle", &format!("path={:?}", bundle.bundlePath().to_string()), &format!("identifier={:?}", bundle.bundleIdentifier().map(|s| s.to_string())));
 
     let state = Rc::new(RefCell::new(State { w, app, started, quit: false }));
     state.borrow().w.delegate.ivars().state.replace(Rc::downgrade(&state));
