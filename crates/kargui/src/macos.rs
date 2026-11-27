@@ -3,7 +3,7 @@
 //! 読み上げ・ファイルのダイアログ・複数の窓・引っ張って落とす（M3）、題の帯・トレイ・通知など（M4）はまだ。
 //!
 //! 日本語入力: 窓の中身は自前の NSView（KarguiView）で、NSTextInputClient を持つ。入力欄に焦点がある時だけ、キーを
-//! interpretKeyEvents で IME に通す。IME は setMarkedText（変換中）・insertText（確定、または IME を使わない打ち方の
+//! sendEvent で AppKit に渡し、窓を通って届いた KarguiView の keyDown: が interpretKeyEvents で IME に通す。IME は setMarkedText（変換中）・insertText（確定、または IME を使わない打ち方の
 //! 文字）・doCommandBySelector（IME が使わなかったキー。矢印・Enter など）で返すので、それを kargui の入力にして
 //! KarguiView の待ち行列に積み、輪が取り出す（呼び返しは State を借りない）。候補の窓を出す場所は、フレームの後に
 //! 変換中の範囲かキャレットの場所を KarguiView に写しておき、firstRectForCharacterRange で答える。Command・Control の
@@ -187,6 +187,10 @@ struct ViewIvars {
     key: Cell<Option<(Key, Mods)>>,
     /// IME が何か返した（変換中の文字・確定・使わなかったキー）
     answered: Cell<bool>,
+    /// 今のキーを sendEvent で AppKit に渡し、keyDown: で IME に通す
+    via_appkit: Cell<bool>,
+    /// keyDown: に届いた
+    reached: Cell<bool>,
     /// 候補の窓を出す場所（窓の中身の座標。論理ピクセル、左下が原点）
     ime_rect: Cell<NSRect>,
 }
@@ -205,9 +209,18 @@ define_class!(
             true
         }
 
-        // キーは kargui の輪が直接読む。AppKit から届いても何もしない（受け手が無いと警告の音が鳴る）
+        // 入力欄に焦点がある時のキーは、輪が sendEvent で AppKit に渡し、窓を通ってここに届く（窓を通すと、AppKit が
+        // この NSView の入力の受け手を今の受け手にする。輪から直接 interpretKeyEvents を呼ぶと、入力ソースが日本語でも
+        // IME が変換を始めず、打った英字がそのまま入った）。ほかのキーは輪が直接読み、ここでは何もしない（受け手が
+        // 無いと警告の音が鳴る）
         #[unsafe(method(keyDown:))]
-        fn key_down(&self, _event: &NSEvent) {}
+        fn key_down(&self, event: &NSEvent) {
+            let iv = self.ivars();
+            if iv.via_appkit.get() {
+                iv.reached.set(true);
+                self.interpretKeyEvents(&NSArray::from_slice(&[event]));
+            }
+        }
     }
 
     // SAFETY: NSObjectProtocol に決まりは無い
@@ -339,12 +352,24 @@ impl KarguiView {
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
-    /// キーを IME に通し、IME が返した入力を取り出す。IME が何も返さなければ、キーをそのままアプリへ渡す
-    fn interpret(&self, ev: &NSEvent, key: Option<(Key, Mods)>) -> Vec<Event> {
+    /// このキーを IME に通す用意をする（輪は続けて sendEvent でキーを AppKit に渡し、keyDown: が IME に通す）
+    fn begin_key(&self, key: Option<(Key, Mods)>) {
         let iv = self.ivars();
         iv.key.set(key);
         iv.answered.set(false);
-        self.interpretKeyEvents(&NSArray::from_slice(&[ev]));
+        iv.reached.set(false);
+        iv.via_appkit.set(true);
+    }
+
+    /// sendEvent の後に、IME が返した入力を取り出す。IME が何も返さなければ、キーをそのままアプリへ渡す
+    fn finish_key(&self) -> Vec<Event> {
+        let iv = self.ivars();
+        if !iv.via_appkit.replace(false) {
+            return Vec::new();
+        }
+        if !iv.reached.get() {
+            log::event("ime.key", "", "keyDown: was not reached (AppKit kept the key)");
+        }
         let mut out = iv.queue.take();
         if !iv.answered.get()
             && let Some((key, mods)) = iv.key.get()
@@ -733,6 +758,12 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
         if pass {
             // 借りずに渡す（AppKit が中で自分の輪を回し、委任先が State を借りることがある）
             ns_app.sendEvent(&ev);
+            // IME に通したキーの結果
+            let mut guard = state.borrow_mut();
+            let w = &mut guard.w;
+            for e in w.view.finish_key() {
+                w.push(e);
+            }
         }
     }
     log::event("window.close", "", "ok");
@@ -844,12 +875,10 @@ fn handle(w: &mut Window, ev: &NSEvent, last_press: &mut Option<(Instant, f32, f
         NSEventType::KeyDown => {
             let code = ev.keyCode();
             let repeat = ev.isARepeat();
-            // 入力欄に焦点があり、近道（Command・Control）でなければ、IME に通す
+            // 入力欄に焦点があり、近道（Command・Control）でなければ、AppKit に渡して IME に通す（KarguiView の keyDown:）
             if !mods.ctrl && w.rt.cx.ime_target().is_some() {
-                for e in w.view.interpret(ev, key_of(code).map(|k| (k, mods))) {
-                    w.push(e);
-                }
-                return false;
+                w.view.begin_key(key_of(code).map(|k| (k, mods)));
+                return true;
             }
             if let Some(key) = key_of(code) {
                 if !repeat {

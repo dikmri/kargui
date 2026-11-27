@@ -119,6 +119,13 @@ jobs:
           # 切り替えると、メニューバーの表示は変わっても前面のアプリの入力の受け手は前のままなので（1 回目は nihongo と
           # 入った）、デスクトップを押してから欄を押し直し、焦点を移して戻す
           drive input-ime 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:300 click:-100,300 wait:500 click:500,72 wait:500 type:nihongo wait:500 screen:shots/input-ime-preedit.png key:space wait:800 screen:shots/input-ime-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
+          # 比べるために、Mac のテキストエディットでも同じ手順で打つ（ここで変換できれば、CI の Mac の日本語入力は動いている）
+          : > /tmp/ime.txt
+          open -a TextEdit /tmp/ime.txt
+          sleep 4
+          tpid=$(pgrep -x TextEdit | head -1)
+          ./target/mac-drive "$tpid" 0 click:200,150 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:500 type:nihongo wait:500 screen:shots/textedit-preedit.png key:space wait:800 screen:shots/textedit-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC > shots/textedit-drive.txt 2>&1 || echo "textedit driver exit=$?"
+          osascript -e 'tell application "TextEdit" to get text of document 1' > shots/textedit-text.txt 2>&1 || true
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()

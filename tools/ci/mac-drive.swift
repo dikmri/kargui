@@ -72,8 +72,8 @@ guard let first = found else {
     say("window not found pid=\(pid)")
     exit(1)
 }
-/// 題の帯の高さ（外枠の高さ − 中の高さ）
-let titleBar = first.height - contentHeight
+/// 題の帯の高さ（外枠の高さ − 中の高さ）。中の高さに 0 を渡すと、外枠の左上から数える（中の高さを知らないアプリ）
+let titleBar = contentHeight > 0 ? first.height - contentHeight : 0
 /// 窓の中の左上（画面の座標）。bounds の手順で読み直す
 var origin = CGPoint(x: first.minX, y: first.minY + titleBar)
 say("window \(describe(first)) title_bar=\(Int(titleBar)) content_origin=\(Int(origin.x)),\(Int(origin.y)) frontmost=\(frontmost())")
