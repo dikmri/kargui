@@ -765,6 +765,7 @@ impl State {
         });
         rt.cx.text.load_fonts(&self.font_files);
         rt.cx.font = rt.cx.text.fonts.id(font);
+        crate::locale::apply_to(&mut rt.cx, title);
         Ok(rt)
     }
 

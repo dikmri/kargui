@@ -12,6 +12,7 @@
 //! --light / --dark   OS の設定に関わらず明るい方・暗い方で描く（写真を撮るときに使う。使える版だけ）
 //! --high-contrast    OS の設定に関わらずハイコントラストで描く（確かめと写真に使う。使える版だけ）
 //! --no-default-icon  アイコンを渡さない窓に、kargui のアイコンを出さない（OS の無地のアイコン。使える版だけ）
+//! --locale TAG       kargui が出す文字の言語（ja・en。無ければ OS に従う。使える版だけ）
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
@@ -30,6 +31,8 @@ pub struct Args {
     pub high_contrast: bool,
     /// kargui の既定のアイコンを出さない
     pub no_default_icon: bool,
+    /// kargui が出す文字の言語の名前（ja・en など）。None なら OS に従う
+    pub locale: Option<String>,
 }
 
 /// プログラム名を除いた引数の並びを読む。
@@ -61,6 +64,7 @@ pub fn parse<I: IntoIterator<Item = String>>(it: I) -> Args {
             "--dark" => a.dark = Some(true),
             "--high-contrast" => a.high_contrast = true,
             "--no-default-icon" => a.no_default_icon = true,
+            "--locale" => a.locale = value(&mut it),
             _ => {}
         }
     }
@@ -139,6 +143,13 @@ mod tests {
     fn reads_no_default_icon() {
         assert!(!p(&[]).no_default_icon, "無ければ kargui のアイコン");
         assert!(p(&["--no-default-icon"]).no_default_icon);
+    }
+
+    #[test]
+    fn reads_locale() {
+        assert_eq!(p(&[]).locale, None, "無ければ OS に従う");
+        assert_eq!(p(&["--locale", "ja"]).locale.as_deref(), Some("ja"));
+        assert_eq!(p(&["--locale=en"]).locale.as_deref(), Some("en"));
     }
 
     #[test]

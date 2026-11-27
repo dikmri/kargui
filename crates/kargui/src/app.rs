@@ -241,6 +241,10 @@ pub struct Options {
     /// compositor takes the window's icon from the app's desktop file, so this changes only the
     /// tray there.
     pub default_icon: bool,
+    /// The language of the words kargui shows itself (the title bar's buttons, the docking menu,
+    /// the date, time and color pickers, and the names screen readers hear for them). `None` (the
+    /// default) follows the system's display language. See [`Locale`](crate::Locale).
+    pub locale: Option<crate::Locale>,
     /// The smallest size of the inside of the window, in logical pixels, that the user can make
     /// it, or `None` for no limit.
     pub min_size: Option<(f32, f32)>,
@@ -281,6 +285,7 @@ impl std::fmt::Debug for Options {
             .field("high_contrast", &self.high_contrast)
             .field("icon", &self.icon)
             .field("default_icon", &self.default_icon)
+            .field("locale", &self.locale)
             .field("min_size", &self.min_size)
             .field("font", &self.font)
             .field("fonts", &format_args!("{} files, {bytes} bytes", self.fonts.len()))
@@ -309,6 +314,7 @@ impl Options {
             high_contrast: None,
             icon: None,
             default_icon: true,
+            locale: None,
             min_size: None,
             font: crate::Font::Ui,
             fonts: Vec::new(),
@@ -336,6 +342,7 @@ impl Options {
 pub fn run(options: Options, app: impl App) -> Result<(), crate::Error> {
     crate::theme::set_option(options.high_contrast);
     crate::logo::set_enabled(options.default_icon);
+    crate::locale::set_option(options.locale);
     #[cfg(windows)]
     {
         crate::platform::run(options, Box::new(app))

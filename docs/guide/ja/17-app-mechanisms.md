@@ -228,6 +228,35 @@ let line = if ui.high_contrast() { ui.theme().text } else { ui.theme().border };
 # });
 ```
 
+## 言語
+
+kargui が自分で出す文字は、OS の表示の言語に合わせて、英語か日本語になります。題の帯のボタン、ドッキングのメニュー、数の入力欄のボタン、日付・時刻・色の選択の文字と、読み上げソフトに伝える名前です。OS の言語は、Windows では表示の言語、Linux では環境変数（LANGUAGE・LC_ALL・LC_MESSAGES・LANG）で決まります。英語と日本語のほかの言語では、英語になります。
+
+```rust
+use kargui::{Locale, Options};
+
+let mut options = Options::new("メモ");
+// いつも日本語にする（None は OS に従う）
+options.locale = Some(Locale::Japanese);
+# let _ = options;
+```
+
+アプリ自身の文字は、`ui.locale()` を見て、同じ言語で出せます。
+
+```rust
+# kargui::test::example(|ui| {
+let save = match ui.locale() {
+    kargui::Locale::Japanese => "保存",
+    _ => "Save",
+};
+ui.button(save);
+# });
+```
+
+- 日付・時刻・色の選択の文字は、`ui.set_date_text` と `ui.set_color_text` で、アプリが決め直せます。
+- `Locale` は、これから言語を足せるように、`match` に `_` の腕が要る形にしてあります。
+- 言語は起動の時に決まります。アプリを動かしたまま OS の言語を変えても、次に起動するまで変わりません。
+
 ## 試験
 
-試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。トレイは、`h.tray_shown()`・`h.tray_tooltip()`・`h.tray_menu()`（1 行ずつの文字）で読み、`h.tray_click()` で押し、`h.tray_choose("終わる")` で項目を選びます。窓が隠れているかは `h.window_shown()` で確かめます。通知は、`h.notifications()`（1 行ずつの文字）で読み、`h.click_notification("time", Some("snooze"))` でボタンを、`None` で本文を押します。`h.set_high_contrast(true)` は、OS のハイコントラストを入れたことにします。
+試験台では、`h.file_dialog_key()` と `h.file_dialog()` で頼まれたダイアログを読み、`h.choose_files(&[..])` か `h.cancel_file_dialog()` で答えます。`h.request_close()` は閉じるボタンを押したことにし、`h.is_closed()` で閉じたかを確かめます。トレイは、`h.tray_shown()`・`h.tray_tooltip()`・`h.tray_menu()`（1 行ずつの文字）で読み、`h.tray_click()` で押し、`h.tray_choose("終わる")` で項目を選びます。窓が隠れているかは `h.window_shown()` で確かめます。通知は、`h.notifications()`（1 行ずつの文字）で読み、`h.click_notification("time", Some("snooze"))` でボタンを、`None` で本文を押します。`h.set_high_contrast(true)` は、OS のハイコントラストを入れたことにします。試験台は、PC の言語に左右されないよう英語で始まり、`h.set_locale(Locale::Japanese)` で言語を変えられます。

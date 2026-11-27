@@ -171,7 +171,7 @@ impl<'a> Ui<'a> {
                     let (p1, _) = ui.push(Id(hash_of((st.dock.0, path, "second"))), Kind::Column, Dir::Column);
                     (p0, bar, p1)
                 };
-                self.tree.info[bar].label = Some("Resize".to_string());
+                self.tree.info[bar].label = Some(self.cx.locale.words().resize.to_string());
                 let scale = self.cx.scale;
                 let bar_len = self.px(12.0);
                 let mut s = *share;
@@ -345,14 +345,15 @@ impl<'a> Ui<'a> {
                 let float_at = st.float_at;
                 // 見出しを引っ張ると、ほかのまとまりや端へ動かせる（4 画素動かしてから。押しただけなら選ぶ）
                 let payload = DockDrag { dock, panel: panel.clone() };
+                let words = row.cx.locale.words();
                 row.handle(ti, tid).drag_source(payload).context_menu(|m| {
                     if at != GroupAt::Docked {
-                        if m.item("Dock").clicked() {
+                        if m.item(words.dock).clicked() {
                             menu_dock = Some(p.clone());
                         }
                     } else {
-                        m.submenu("Move to a new group", |m| {
-                            for (text, side) in [("Left", DockSide::Left), ("Right", DockSide::Right), ("Above", DockSide::Top), ("Below", DockSide::Bottom)] {
+                        m.submenu(words.move_to_new_group, |m| {
+                            for (text, side) in [(words.left, DockSide::Left), (words.right, DockSide::Right), (words.above, DockSide::Top), (words.below, DockSide::Bottom)] {
                                 if m.item(text).clicked() {
                                     // まとまりにほかのパネルがあれば、そのまとまりの隣。1 つだけなら全体の端
                                     let to = if alone { DockTo::Edge { side, share: 0.3 } } else { DockTo::Split { of: p.clone(), side, share: 0.5 } };
@@ -362,7 +363,7 @@ impl<'a> Ui<'a> {
                         });
                     }
                     if !others.is_empty() {
-                        m.submenu("Move into group", |m| {
+                        m.submenu(words.move_into_group, |m| {
                             for (with, text) in &others {
                                 if m.item(text.clone()).clicked() {
                                     menu_moves.push((p.clone(), DockTo::Tab { with: with.clone(), index: None }));
@@ -370,24 +371,24 @@ impl<'a> Ui<'a> {
                             }
                         });
                     }
-                    if at == GroupAt::Docked && m.item("Float").clicked() {
+                    if at == GroupAt::Docked && m.item(words.float).clicked() {
                         let [x, y, w, h] = float_at;
                         menu_moves.push((p.clone(), DockTo::Float { x, y, w, h }));
                     }
                     if let Some([x, y, w, h]) = window_at
-                        && m.item("Move to a new window").clicked()
+                        && m.item(words.move_to_new_window).clicked()
                     {
                         menu_moves.push((p.clone(), DockTo::Window { x, y, w, h }));
                     }
                     if closable {
                         m.separator();
-                        if m.item("Close").clicked() {
+                        if m.item(words.close).clicked() {
                             menu_close = Some(p.clone());
                         }
                     }
                 });
                 if st.closable {
-                    let b = row.icon_button(Icon::Close, format!("Close {title}"));
+                    let b = row.icon_button(Icon::Close, words.close_named(&title.to_string()));
                     let clicked = b.clicked;
                     // 小さい形にし、Tab では止まらない（キーボードは Delete とメニューで閉じる）
                     let info = &mut b.h.tree.info[b.h.idx];

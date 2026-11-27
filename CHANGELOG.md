@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Language: the words kargui shows itself (the title bar's buttons, the docking menu, the buttons
+  of number fields, resize handles, the toolbar's More options, the date, time and color pickers,
+  and the names screen readers hear for them) are in English or Japanese, following the system's
+  display language (Windows: the user's display language; Linux: LANGUAGE, LC_ALL, LC_MESSAGES
+  and LANG). `Options::locale` chooses one, `Ui::locale` tells a view which one is used, and
+  `Locale` gives the date and color pickers' words for a language. The test harness starts in
+  English and `Harness::set_locale` changes it. Guide chapter 17, `examples/gallery`
+  (`--locale ja` or `--locale en`).
+
 ## 0.4.0 (2026-11-27)
 
 Docking panels, and the app mechanisms of a desktop app: widgets in the title bar (kargui draws the

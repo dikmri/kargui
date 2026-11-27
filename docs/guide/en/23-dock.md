@@ -1,4 +1,4 @@
-<!-- source: ja/23-dock.md fnv=fa309d0218ccb45f -->
+<!-- source: ja/23-dock.md fnv=ae6fb133e253aeb7 -->
 <!-- covers: Ui::dock DockArea::show DockArea::closable DockArea::grow Dock::new Dock::insert Dock::remove Dock::select Dock::panels Dock::selected Dock::contains Dock::is_floating Dock::save Dock::load sig=d6992f54a95c7ec7 -->
 # Docking
 
@@ -63,7 +63,7 @@ A group is named by a panel in it, not by a number, so a place stays right while
   - Over the group the dragged tab is alone in: nowhere (nothing is shaded, and dropping it changes nothing)
 - Escape cancels.
 - Drag a divider to share the space differently. Shares are kept as fractions, so they stay when the window is resized.
-- Right-click a tab (or press Shift+F10 or the context menu key) for a menu: Move to a new group (Left, Right, Above, Below), Move into group, Float, Move to a new window, and Close. A panel alone in its group moves to the outer edge of the dock.
+- Right-click a tab (or press Shift+F10 or the context menu key) for a menu: Move to a new group (Left, Right, Above, Below), Move into group, Float, Move to a new window, and Close (in Japanese when kargui's language is Japanese, see "Language" in chapter 17). A panel alone in its group moves to the outer edge of the dock.
 
 People who find dragging hard, and screen-reader users, can do the same with the menu and the keyboard.
 

@@ -1,4 +1,4 @@
-<!-- source: ja/21-color-and-time.md fnv=005cb1fcbd4eead4 -->
+<!-- source: ja/21-color-and-time.md fnv=75d87d93413bd32d -->
 <!-- covers: Ui::time_picker TimePicker::changed TimePicker::minute_step Time::new Time::now Time::parse Time::hour Time::minute Time::minutes Time::from_minutes Time::add_minutes Ui::color_picker ColorPicker::changed ColorPicker::alpha ColorPicker::swatches Ui::set_color_text ColorText::english ColorText::japanese sig=e317c6ca600891c4 -->
 # Color and time pickers
 
@@ -21,7 +21,7 @@ if ui.time_picker(&mut start).label("Start").minute_step(15).changed() {
 - Minutes go in steps of 5. `.minute_step(15)` offers 00, 15, 30 and 45, `.minute_step(1)` all 60. A time that is not on a step (such as 9:37) is kept as it is.
 - Keyboard: Enter, Space, Alt+Down or F4 on the field opens it. In the grids the arrows move and Enter or Space picks. Escape or a click outside closes without picking.
 - With no time yet, the grids open with the focus on the current hour (12 in tests).
-- The field's text ("Pick a time") and the names of the grids follow `ui.set_date_text`, as the date picker does. Screen readers hear a time input and two grids named for hours and minutes.
+- The field's text ("Pick a time") and the names of the grids follow kargui's language and `ui.set_date_text`, as the date picker does. Screen readers hear a time input and two grids named for hours and minutes.
 
 `Time` holds hours and minutes. Arithmetic goes round the 24-hour clock.
 
@@ -76,7 +76,7 @@ ui.color_picker(&mut label).swatches(&brand);
 # });
 ```
 
-The names of the square and the bars ("Hue", "Opacity" and so on) follow `ui.set_color_text`. Screen readers hear a color well, sliders for the square and the bars, a text field for the code and buttons for the ready-made colors.
+The names of the square and the bars ("Hue", "Opacity" and so on) follow kargui's language and `ui.set_color_text` (Japanese with `ColorText::japanese()`). Screen readers hear a color well, sliders for the square and the bars, a text field for the code and buttons for the ready-made colors.
 
 ```rust
 use kargui::ColorText;

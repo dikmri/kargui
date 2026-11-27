@@ -434,6 +434,37 @@ impl<A: App> Harness<A> {
         self.send(Vec::new())
     }
 
+    /// Changes the language of the words kargui shows itself, as
+    /// [`Options::locale`](crate::Options::locale) would, and draws a frame of every window. The
+    /// harness starts in English, so that tests do not depend on the computer's language.
+    ///
+    /// ```
+    /// # use kargui::{App, Locale, Ui};
+    /// # use kargui::test::Harness;
+    /// #[derive(Default)]
+    /// struct Hello {
+    ///     locale: Option<Locale>,
+    /// }
+    ///
+    /// impl App for Hello {
+    ///     fn view(&mut self, ui: &mut Ui) {
+    ///         self.locale = Some(ui.locale());
+    ///         ui.label("Hello");
+    ///     }
+    /// }
+    ///
+    /// let mut h = Harness::new(Hello::default());
+    /// assert_eq!(h.app().locale, Some(Locale::English));
+    /// h.set_locale(Locale::Japanese);
+    /// assert_eq!(h.app().locale, Some(Locale::Japanese));
+    /// ```
+    pub fn set_locale(&mut self, locale: crate::Locale) -> &mut Self {
+        for rt in std::iter::once(&mut self.rt).chain(self.windows.iter_mut().map(|(_, rt)| rt)) {
+            rt.cx.set_locale(locale);
+        }
+        self.send(Vec::new())
+    }
+
     /// Turns the system's high contrast setting on or off, as Windows' contrast themes or the
     /// desktop's contrast setting would (with kargui's high contrast palette for the current
     /// light or dark mode), and draws a frame of every window.
@@ -4039,6 +4070,54 @@ mod tests {
         h.press_with(Key::Tab, Mods { ctrl: true, ..Mods::default() });
         assert!(h.find("Notes content").is_some());
         assert_eq!(focused_name(&h).as_deref(), Some("Notes"));
+    }
+
+    #[derive(Default)]
+    struct Localized {
+        count: i32,
+        due: Option<crate::Date>,
+    }
+
+    impl App for Localized {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.number(&mut self.count, 0..=10).label("Count");
+            ui.date_picker(&mut self.due).label("Due");
+        }
+    }
+
+    #[test]
+    fn kargui_words_follow_the_locale() {
+        let mut h = Harness::new(Localized::default());
+        // 試験台は英語から始まる（試験が PC の言語に左右されない）
+        assert!(h.find("Increase").is_some());
+        h.set_locale(crate::Locale::Japanese);
+        assert!(h.find("増やす").is_some() && h.find("Increase").is_none(), "{:?}", h.names());
+        h.click("増やす");
+        assert_eq!(h.app().count, 1);
+        // 日付の部品の言葉も、その言語の物になる
+        h.click("Due");
+        assert!(h.find("前の月").is_some() && h.find("次の月").is_some(), "{:?}", h.names());
+        h.press(Key::Escape);
+        h.set_locale(crate::Locale::English);
+        h.click("Due");
+        assert!(h.find("Previous month").is_some(), "{:?}", h.names());
+    }
+
+    #[test]
+    fn title_bar_buttons_and_the_dock_menu_use_the_locale() {
+        use crate::ui::context::{Csd, CsdButton as B, CsdRequest as R};
+        let mut h = Harness::new(Titled::default());
+        h.rt.cx.csd = Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Minimize, B::Maximize, B::Close], windows: true });
+        h.set_locale(crate::Locale::Japanese);
+        for (name, want) in [("最大化", R::ToggleMaximize), ("最小化", R::Minimize), ("閉じる", R::Close)] {
+            h.click(name);
+            assert_eq!(h.rt.cx.csd_request.take(), Some(want), "{name}");
+        }
+        let mut d = ide(true);
+        d.set_locale(crate::Locale::Japanese);
+        d.right_click("Notes").click("新しいグループへ移動").click("右");
+        assert_eq!(d.app().dock.selected(), vec![&"Files", &"Editor", &"Notes"]);
+        assert!(d.find("Notes を閉じる").is_some(), "{:?}", d.names());
     }
 
     #[test]

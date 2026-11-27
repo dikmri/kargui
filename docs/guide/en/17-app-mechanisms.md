@@ -1,4 +1,4 @@
-<!-- source: ja/17-app-mechanisms.md fnv=05b19b6e1841eb71 -->
+<!-- source: ja/17-app-mechanisms.md fnv=29d94835c9aa0d8b -->
 <!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # App mechanisms
 
@@ -229,6 +229,35 @@ let line = if ui.high_contrast() { ui.theme().text } else { ui.theme().border };
 # });
 ```
 
+## Language
+
+The words kargui shows itself are in English or Japanese, following the system's display language: the title bar's buttons, the docking menu, the buttons of number fields, the date, time and color pickers, and the names screen readers hear for them. The system's language is the display language on Windows, and the environment (LANGUAGE, LC_ALL, LC_MESSAGES, LANG) on Linux. Any other language falls back to English.
+
+```rust
+use kargui::{Locale, Options};
+
+let mut options = Options::new("Notes");
+// Always Japanese (None follows the system)
+options.locale = Some(Locale::Japanese);
+# let _ = options;
+```
+
+Check `ui.locale()` to show your own words in the same language.
+
+```rust
+# kargui::test::example(|ui| {
+let save = match ui.locale() {
+    kargui::Locale::Japanese => "保存",
+    _ => "Save",
+};
+ui.button(save);
+# });
+```
+
+- An app can still choose the words of the date, time and color pickers with `ui.set_date_text` and `ui.set_color_text`.
+- `Locale` needs a `_` arm in a `match`, so that more languages can come later.
+- The language is chosen when the app starts. Changing the system's language while the app runs takes effect at the next start.
+
 ## Tests
 
-In the test harness, read the requested dialog with `h.file_dialog_key()` and `h.file_dialog()`, and answer it with `h.choose_files(&[..])` or `h.cancel_file_dialog()`. `h.request_close()` acts as if the close button was clicked, and `h.is_closed()` tells whether the app closed. Read the tray with `h.tray_shown()`, `h.tray_tooltip()` and `h.tray_menu()` (one line per item), click it with `h.tray_click()`, and choose an item with `h.tray_choose("Quit")`. `h.window_shown()` tells whether the window is hidden. Read the notifications with `h.notifications()` (one line each), and click one with `h.click_notification("time", Some("snooze"))` for a button or `None` for its body. `h.set_high_contrast(true)` acts as if the system turned high contrast on.
+In the test harness, read the requested dialog with `h.file_dialog_key()` and `h.file_dialog()`, and answer it with `h.choose_files(&[..])` or `h.cancel_file_dialog()`. `h.request_close()` acts as if the close button was clicked, and `h.is_closed()` tells whether the app closed. Read the tray with `h.tray_shown()`, `h.tray_tooltip()` and `h.tray_menu()` (one line per item), click it with `h.tray_click()`, and choose an item with `h.tray_choose("Quit")`. `h.window_shown()` tells whether the window is hidden. Read the notifications with `h.notifications()` (one line each), and click one with `h.click_notification("time", Some("snooze"))` for a button or `None` for its body. `h.set_high_contrast(true)` acts as if the system turned high contrast on. The harness starts in English, so that tests do not depend on the computer's language; `h.set_locale(Locale::Japanese)` changes it.

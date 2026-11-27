@@ -2156,6 +2156,7 @@ fn create_window(
     let (on, colors) = system_high_contrast();
     rt.cx.set_system_high_contrast(on, colors);
     log::event("theme.contrast", &format!("key={key:?}"), &format!("high={on} forced={:?}", crate::theme::option()));
+    crate::locale::apply_to(&mut rt.cx, title);
     // 書体（アプリが書体のファイルを渡さず、UI の書体のままなら何も読まない）
     rt.cx.text.load_fonts(&font_files);
     rt.cx.font = rt.cx.text.fonts.id(&font);

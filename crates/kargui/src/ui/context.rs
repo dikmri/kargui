@@ -418,6 +418,8 @@ pub(crate) struct Context {
     pub press_now: Option<(f32, f32)>,
     /// 日付の部品の言葉（Ui::set_date_text）
     pub date_text: crate::date::DateText,
+    /// kargui が自分で出す文字の言語（窓の処理が起動の時に入れる。試験台は英語）
+    pub locale: crate::Locale,
     /// 今日の日付を決めておく（試験台は 2026-11-22。None なら OS に聞く）
     pub today: Option<crate::date::Date>,
     /// 開いている暦の、焦点のある日（日付の欄 → 日付）
@@ -590,6 +592,7 @@ impl Context {
             press_at: None,
             press_now: None,
             date_text: crate::date::DateText::english(),
+            locale: crate::Locale::English,
             today: None,
             calendar_cursor: HashMap::new(),
             minute_steps: HashMap::new(),
@@ -655,6 +658,14 @@ impl Context {
             input_rect: None,
             ime_field: None,
         }
+    }
+
+    /// kargui が自分で出す文字の言語を変える。日付と色の部品の言葉も、その言語の物にする（アプリが
+    /// Ui::set_date_text・set_color_text で決めた物は、その後のビューで決め直される）
+    pub fn set_locale(&mut self, locale: crate::Locale) {
+        self.locale = locale;
+        self.date_text = locale.date_text();
+        self.color_text = locale.color_text();
     }
 
     pub fn set_dark(&mut self, dark: bool) {

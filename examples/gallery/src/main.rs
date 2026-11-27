@@ -694,6 +694,8 @@ fn main() {
         options.high_contrast = Some(true);
     }
     options.default_icon = !a.no_default_icon;
+    // --locale ja・en は、kargui が出す文字の言語を決める（無ければ OS に従う）
+    options.locale = a.locale.as_deref().and_then(kargui::Locale::from_tag);
     if matches!(a.renderer.as_deref(), Some("d3d11" | "gpu")) {
         options.renderer = kargui::Renderer::Gpu;
     }

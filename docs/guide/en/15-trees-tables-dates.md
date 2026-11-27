@@ -1,4 +1,4 @@
-<!-- source: ja/15-trees-tables-dates.md fnv=5e3df40027cae45c -->
+<!-- source: ja/15-trees-tables-dates.md fnv=a81d812411fe14e9 -->
 <!-- covers: Ui::tree TreeBuilder::leaf TreeBuilder::branch TreeView::changed Ui::table Table::sort Table::selection Table::label Table::grow Table::show Table::show_keyed TableRow::cell TableRow::text TableRow::context_menu TableColumn::new TableColumn::width TableColumn::fill TableColumn::right Ui::date_picker DatePicker::changed Ui::set_date_text Ui::today Date::new Date::today Date::year Date::month Date::day Date::weekday Date::add_days Date::add_months Date::days_in_month Date::from_unix_days Date::unix_days DateText::english DateText::japanese sig=1e24c244697ffaa8 -->
 # Trees, tables and dates
 
@@ -83,6 +83,6 @@ The date is a `kargui::Date`, or `None` while none has been picked. Clicking a d
 
 In the calendar, the arrow keys move by a day or a week, Home and End to the start and end of the week, and Page Up and Page Down by a month (by a year with Shift). With the focus on the field, Enter, Space, Alt+Down and F4 open the calendar.
 
-The field shows the date as `2026-11-22`. The names of days and months come from `ui.set_date_text(..)` (English by default, Japanese with `DateText::japanese()`). Screen readers hear a date field with its value, and a calendar grid whose days have full names (such as November 22, 2026).
+The field shows the date as `2026-11-22`. The names of days and months follow kargui's language (English or Japanese, see "Language" in chapter 17), and `ui.set_date_text(..)` can choose them (Japanese with `DateText::japanese()`). Screen readers hear a date field with its value, and a calendar grid whose days have full names (such as November 22, 2026).
 
 `Date` holds a year, a month and a day. Make one with `Date::new(year, month, day)` (`None` if there is no such day), and calculate with `add_days`, `add_months` and `weekday`. From a file's modification time and the like, `Date::from_unix_days(seconds / 86400)` gives the day in UTC (and `unix_days` goes back). `ui.today()` is today's date (always 2026-11-22 in tests).

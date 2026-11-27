@@ -536,11 +536,12 @@ impl<'a> Ui<'a> {
     /// Windows の形の題の帯のボタン（幅 46・帯の高さ）。押したら窓の処理に頼む（Ui::with_title_bar）
     fn caption_button(&mut self, b: context::CsdButton, maximized: bool, h: f32) {
         use context::{CsdButton as B, CsdRequest as R};
+        let w = self.cx.locale.words();
         let (name, request) = match b {
-            B::Minimize => ("Minimize", R::Minimize),
-            B::Maximize if maximized => ("Restore", R::ToggleMaximize),
-            B::Maximize => ("Maximize", R::ToggleMaximize),
-            B::Close => ("Close", R::Close),
+            B::Minimize => (w.minimize, R::Minimize),
+            B::Maximize if maximized => (w.restore, R::ToggleMaximize),
+            B::Maximize => (w.maximize, R::ToggleMaximize),
+            B::Close => (w.close, R::Close),
         };
         let (idx, id) = self.add(Kind::CaptionButton { button: b, maximized }, Dir::Leaf);
         self.tree.info[idx].label = Some(name.to_string());
@@ -555,11 +556,12 @@ impl<'a> Ui<'a> {
     /// 題の帯のボタン。押したら窓の処理に頼む（Ui::with_title_bar）
     fn title_button(&mut self, b: context::CsdButton, maximized: bool) {
         use context::{CsdButton as B, CsdRequest as R};
+        let w = self.cx.locale.words();
         let (icon, name, request) = match b {
-            B::Minimize => (Icon::Minus, "Minimize", R::Minimize),
-            B::Maximize if maximized => (Icon::Restore, "Restore", R::ToggleMaximize),
-            B::Maximize => (Icon::Maximize, "Maximize", R::ToggleMaximize),
-            B::Close => (Icon::Close, "Close", R::Close),
+            B::Minimize => (Icon::Minus, w.minimize, R::Minimize),
+            B::Maximize if maximized => (Icon::Restore, w.restore, R::ToggleMaximize),
+            B::Maximize => (Icon::Maximize, w.maximize, R::ToggleMaximize),
+            B::Close => (Icon::Close, w.close, R::Close),
         };
         if self.icon_button(icon, name).clicked() {
             self.cx.csd_request = Some(request);
@@ -1740,7 +1742,8 @@ impl<'a> Ui<'a> {
             ui.fill();
             let (u, uid) = ui.add(Kind::SpinButton { up: true }, Dir::Leaf);
             let (d, did) = ui.add(Kind::SpinButton { up: false }, Dir::Leaf);
-            for (k, name) in [(u, "Increase"), (d, "Decrease")] {
+            let w = ui.cx.locale.words();
+            for (k, name) in [(u, w.increase), (d, w.decrease)] {
                 ui.tree.layout[k].width = Size::Fixed(bw);
                 ui.tree.info[k].label = Some(name.to_string());
             }
@@ -2005,7 +2008,7 @@ impl<'a> Ui<'a> {
             let (p1, _) = ui.add(Kind::Column, Dir::Column);
             (p0, bar, bar_id, p1)
         };
-        self.tree.info[bar].label = Some("Resize".to_string());
+        self.tree.info[bar].label = Some(self.cx.locale.words().resize.to_string());
         let scale = self.cx.scale;
         // 仕切りの幅（つかめる幅。線は真ん中に 1 本）
         let bar_len = self.px(12.0);
@@ -3689,6 +3692,23 @@ impl<'a> Ui<'a> {
     /// ```
     pub fn high_contrast(&self) -> bool {
         self.cx.high_contrast
+    }
+
+    /// The language of the words kargui shows itself ([`Locale`](crate::Locale)): the system's
+    /// display language, or [`Options::locale`](crate::Options::locale). Use it to show your own
+    /// words in the same language.
+    ///
+    /// ```
+    /// # kargui::test::example(|ui| {
+    /// let save = match ui.locale() {
+    ///     kargui::Locale::Japanese => "保存",
+    ///     _ => "Save",
+    /// };
+    /// ui.button(save);
+    /// # });
+    /// ```
+    pub fn locale(&self) -> crate::Locale {
+        self.cx.locale
     }
 
     /// Space inside the edges of the current container (logical pixels): `x` left and right,
@@ -5888,7 +5908,7 @@ impl<'m> Toolbar<'m> {
     /// ```
     #[track_caller]
     pub fn more(&mut self, f: impl FnOnce(&mut Menu)) {
-        let name = "More options";
+        let name = self.ui.cx.locale.words().more_options;
         let (idx, id) = self.ui.add(Kind::MenuButton { text: String::new(), open: false, icon: Some(Icon::More) }, Dir::Leaf);
         self.ui.tree.info[idx].label = Some(name.to_string());
         let pop = Id(hash_of((id.0, "menu")));
@@ -6425,7 +6445,7 @@ const GRIP_W: f32 = 8.0;
 fn push_column_grip(ui: &mut Ui, gid: Id, grip_w: f32) {
     let (g, _) = ui.push(gid, Kind::ColumnGrip, Dir::Leaf);
     ui.tree.layout[g].width = Size::Fixed(grip_w);
-    ui.tree.info[g].label = Some("Resize column".to_string());
+    ui.tree.info[g].label = Some(ui.cx.locale.words().resize_column.to_string());
 }
 const MIN_COLUMN_W: f32 = 40.0;
 

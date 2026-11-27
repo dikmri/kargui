@@ -64,7 +64,7 @@ ui.dock(&mut dock).grow().show(title, |ui, p| match p {
 - 仕切りを引くと広さが変わります。広さは割合で持つので、窓の大きさを変えても比が保たれます。
 - タブを右クリックすると（Shift+F10 か、アプリのキーでも）、「新しいまとまりへ」（左・右・上・下）、「別のまとまりへ」、「浮かせる」、「新しい窓へ」、「閉じる」のメニューが出ます。まとまりに 1 つだけのパネルを「新しいまとまりへ」動かすと、全体の外側へ置きます。
 
-メニューの文字は英語です（Move to a new group、Move into group、Float、Move to a new window、Dock、Close）。
+メニューの文字は、kargui の言語（17 章の「言語」）に合わせて英語か日本語になります（英語では Move to a new group、Move into group、Float、Move to a new window、Dock、Close、日本語では「新しいグループへ移動」「グループへ移動」「フロート」「新しいウィンドウへ移動」「ドッキング」「閉じる」）。
 
 引っ張るのが難しい人と読み上げソフトの人は、メニューとキーボードで同じことができます。
 

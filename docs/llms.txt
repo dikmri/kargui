@@ -1127,6 +1127,20 @@ shades, no colors of your own, and lines instead of shadows.
 let line = if ui.high_contrast() { ui.theme().text } else { ui.theme().border };
 ```
 
+### `pub fn locale(&self) -> crate::Locale`
+
+The language of the words kargui shows itself ([`Locale`](crate::Locale)): the system's
+display language, or [`Options::locale`](crate::Options::locale). Use it to show your own
+words in the same language.
+
+```
+let save = match ui.locale() {
+    kargui::Locale::Japanese => "保存",
+    _ => "Save",
+};
+ui.button(save);
+```
+
 ### `pub fn set_padding(&mut self, x: f32, y: f32)`
 
 Space inside the edges of the current container (logical pixels): `x` left and right,

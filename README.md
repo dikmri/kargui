@@ -145,8 +145,8 @@ same tools to keep kargui light.
 Not there yet:
 
 - **Widgets:** editing rich text (showing it, `ui.rich_text`, is there).
-- **App mechanisms:** support for translating an app (the text kargui shows itself is in English
-  for now).
+- **App mechanisms:** support for translating an app's own words (the words kargui shows itself
+  are in English or Japanese, following the system).
 - **Platforms:** macOS (`kargui::run` returns an `Err` saying the system is not supported). On
   Linux, X11 has been checked under XWayland but not on an Xorg server. The Direct3D 11 renderer
   (not the default) occasionally stalls for a long frame. Screen reading has been checked with
