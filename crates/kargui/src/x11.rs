@@ -308,6 +308,8 @@ struct Win {
     background: Color,
     /// 物理の大きさ
     size: (i32, i32),
+    /// 論理の最小の大きさ（倍率が変わった時に、物理の画素で OS に伝え直す）
+    min_size: Option<(f32, f32)>,
     shm: Option<ShmBuf>,
     /// サーバーが共有メモリを読み終えていない（ShmCompletion を待つ）
     shm_busy: bool,
@@ -465,7 +467,7 @@ impl State {
         // ほかのアプリから落とされる物を受け取れる（XDND の版 5）
         let _ = conn.change_property32(PropMode::REPLACE, id, a.XdndAware, AtomEnum::ATOM, &[5]);
         let mut hints = x11rb::properties::WmSizeHints::new();
-        hints.min_size = min_size.map(|(mw, mh)| (self.physical(mw) as i32, self.physical(mh) as i32));
+        hints.min_size = min_size.map(|m| min_physical(m, self.scale));
         if position.is_some() {
             hints.position = Some((x11rb::properties::WmSizeHintsSpecification::UserSpecified, x as i32, y as i32));
         }
@@ -488,6 +490,7 @@ impl State {
             summary: Summary::default(),
             background: [0.0; 4],
             size: (w as i32, h as i32),
+            min_size,
             shm: None,
             shm_busy: false,
             mapped: false,
@@ -1140,10 +1143,44 @@ impl State {
         log::event("clipboard.request", &format!("target={} requestor=0x{:x}", e.target, e.requestor), if answered { "sent" } else { "refused" });
     }
 
+    /// Xft.dpi を読み直し、倍率が変わったら、各窓の論理の大きさを保ったまま物理の大きさを作り直す
+    fn reread_dpi(&mut self) {
+        let db = x11rb::resource_manager::new_from_default(&*self.conn).ok();
+        let dpi = db.as_ref().and_then(|d| d.get_value::<f32>("Xft.dpi", "").ok().flatten());
+        let new = scale_from_dpi(dpi);
+        let old = self.scale;
+        if (new - old).abs() < 0.001 {
+            return;
+        }
+        log::event("x11.dpi", &format!("dpi={dpi:?}"), &format!("scale {old:.3} -> {new:.3}"));
+        self.scale = new;
+        for w in &mut self.windows {
+            let (pw, ph) = rescaled(w.size, old, new);
+            w.size = (pw as i32, ph as i32);
+            // 大きさを OS に頼み（ConfigureNotify が後から来る）、Runtime には先に新しい倍率を入れる
+            let _ = self.conn.configure_window(w.id, &xproto::ConfigureWindowAux::new().width(pw as u32).height(ph as u32));
+            // 最小の大きさも新しい倍率の画素で伝え直す（古い倍率のままだと、小さくできない・小さくなりすぎる）
+            if let Some((mw, mh)) = w.min_size {
+                let mut hints = x11rb::properties::WmSizeHints::new();
+                hints.min_size = Some(min_physical((mw, mh), new));
+                let _ = hints.set_normal_hints(&*self.conn, w.id);
+            }
+            w.rt.resize(pw as f32, ph as f32, new);
+            w.summary = Summary::default();
+            w.full = true;
+            w.need_frame = true;
+            w.why = "dpi";
+            log::event("window.size", &format!("physical={pw}x{ph} scale={new:.3}{}", w.tag()), "dpi");
+        }
+        let _ = self.conn.flush();
+    }
+
     /// X の知らせを 1 つ処理する
     fn handle(&mut self, ev: XEvent) {
         let focus_in = matches!(ev, XEvent::FocusIn(_));
         match ev {
+            // X のリソース（Xft.dpi が入る）が変わった。GNOME などの X11 では、表示の倍率を変えると開いたまま変わる
+            XEvent::PropertyNotify(p) if p.window == self.root && p.atom == u32::from(AtomEnum::RESOURCE_MANAGER) => self.reread_dpi(),
             XEvent::Expose(e) if e.count == 0 => {
                 if let Some(w) = self.win(e.window) {
                     w.exposed = true;
@@ -1532,6 +1569,18 @@ fn clip_rect(r: IRect, w: i32, h: i32) -> Option<IRect> {
     (x1 > x0 && y1 > y0).then_some(IRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
 }
 
+/// 倍率が変わった時の、窓の中の物理の大きさ（論理の大きさを保つ。1 画素より小さくしない）
+fn rescaled(physical: (i32, i32), old: f32, new: f32) -> (u16, u16) {
+    let f = |p: i32| ((p as f32 / old) * new).round().clamp(1.0, 32767.0) as u16;
+    (f(physical.0), f(physical.1))
+}
+
+/// 論理の最小の大きさを、その倍率の物理の画素にする（WM_NORMAL_HINTS の min_size）
+fn min_physical(logical: (f32, f32), scale: f32) -> (i32, i32) {
+    let f = |v: f32| (v * scale).round().clamp(1.0, 32767.0) as i32;
+    (f(logical.0), f(logical.1))
+}
+
 /// Xft.dpi（X のリソース）から倍率を決める。無い・読めない時は 1
 fn scale_from_dpi(dpi: Option<f32>) -> f32 {
     match dpi {
@@ -1615,6 +1664,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     if depth != 24 && depth != 32 || bpp != 32 {
         return Err(error("visual", format!("depth {depth} with {bpp} bits per pixel is not supported (24 or 32 bits with 32 bits per pixel)")));
     }
+    // 根の窓の属性の変化（X のリソースの Xft.dpi が開いたまま変わるのを聞く）
+    let _ = conn.change_window_attributes(root, &xproto::ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE));
     let settings_rx = crate::linux::spawn_settings(options.dark.is_none(), options.high_contrast.is_none(), false, wake_fd.clone());
     let clip = Rc::new(RefCell::new(Clip { conn: conn.clone(), atoms, owner, ours: None, time: x11rb::CURRENT_TIME, stash: VecDeque::new() }));
     let (dialog_tx, dialog_rx) = channel();
@@ -1776,6 +1827,22 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_scale_keeps_the_logical_size() {
+        assert_eq!(rescaled((1350, 930), 1.5, 1.0), (900, 620));
+        assert_eq!(rescaled((900, 620), 1.0, 2.0), (1800, 1240));
+        assert_eq!(rescaled((1350, 930), 1.5, 1.25), (1125, 775));
+        // 1 画素より小さくしない
+        assert_eq!(rescaled((1, 1), 2.0, 1.0), (1, 1));
+    }
+
+    #[test]
+    fn the_minimum_size_follows_the_scale() {
+        assert_eq!(min_physical((480.0, 320.0), 1.5), (720, 480));
+        assert_eq!(min_physical((480.0, 320.0), 2.0), (960, 640));
+        assert_eq!(min_physical((480.0, 320.0), 1.0), (480, 320));
+    }
 
     #[test]
     fn dpi_sets_the_scale() {
