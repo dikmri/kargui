@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- macOS (Apple Silicon): kargui runs on macOS. Windows with the CPU picture, the mouse and trackpad,
+  the keyboard, the input method (composition and candidate window), the clipboard, file dialogs,
+  screen readers (accesskit_macos), more than one window, files dragged in from other apps, the
+  system language, dark mode and contrast settings, the app menu (Hide, Quit), a tray item in the
+  menu bar, notifications (only in an `.app` bundle; the first one asks for permission) and
+  `Options::custom_title_bar` (kargui draws the bar and keeps the system's window buttons). As in
+  other Mac apps, the first click on a window that is not in front only brings it to the front.
+  Checked on GitHub's Mac runners, which drive the examples with real mouse and keyboard events; not
+  tried by hand yet, and not on Retina (2x) screens.
 - Windows: with `Options::dark` left at `None`, the light or dark look now follows the system's
   app mode (Settings > Personalization > Colors) while the app runs, as on Linux. Before, it was
   read only at start. The title bar follows too.

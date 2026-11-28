@@ -1,4 +1,4 @@
-<!-- source: ja/17-app-mechanisms.md fnv=29d94835c9aa0d8b -->
+<!-- source: ja/17-app-mechanisms.md fnv=496e6c87daef2ce2 -->
 <!-- covers: Ui::file_dialog Ui::chosen_files Ui::chosen_file Ui::file_dialog_cancelled FileDialog::open FileDialog::save FileDialog::multiple FileDialog::title FileDialog::filter FileDialog::file_name FileDialog::folder FileDialog::is_save FileDialog::allows_multiple App::close_requested Ui::quit Harness::file_dialog_key Harness::file_dialog Harness::choose_files Harness::cancel_file_dialog Harness::request_close Harness::is_closed sig=7e9d34a5ac6cda9a -->
 # App mechanisms
 
@@ -31,7 +31,7 @@ if let Some(path) = ui.chosen_file("save") {
 - `.filter(name, &[extensions])` sets the kinds of files, `.title(..)` the title, `.file_name(..)` the starting name and `.folder(..)` the starting folder
 - `.multiple()` lets the user choose several files; take all of them with `ui.chosen_files(key)`
 
-On Linux, the dialog of xdg-desktop-portal opens (the desktop's own file chooser). On macOS, nothing happens yet.
+On Linux, the dialog of xdg-desktop-portal opens (the desktop's own file chooser). On macOS, the system's NSOpenPanel or NSSavePanel opens.
 
 ## Asking before closing
 
@@ -115,6 +115,7 @@ options.custom_title_bar = true;
 - When `ui.title_bar` adds nothing, the window's title is shown at the bar's left. When it adds widgets, the title is not shown; put it in yourself with `ui.label` if you want it.
 - On GNOME (Wayland where the compositor draws no title bars), kargui always draws the bar and puts the `ui.title_bar` widgets in it, whatever `custom_title_bar` says.
 - Where the system or compositor draws the bar (X11, Wayland compositors that draw bars, compositors with no bars) and on Windows with `custom_title_bar` false, the `ui.title_bar` widgets make the top row of the window. Call `ui.title_bar` first in the view so this works everywhere.
+- On macOS with `custom_title_bar`, kargui draws the bar and keeps the system's window buttons (the red, yellow and green circles) at the left; the title is in the middle. Dragging an empty part of the bar moves the window, and a double click does what the system setting says (zoom by default).
 
 ## Tray (notification area icon)
 
@@ -168,12 +169,12 @@ impl App for Notes {
 - Give the icon's picture with `t.icon(&image)`. Without one, the tray uses the window's icon (`Options::icon`), or a plain kargui icon. Keep the image in the app's state: the same image is not sent to the system again.
 - When the view stops calling `ui.tray`, the icon goes away. Only the main window's view makes the tray (`App::window` views are ignored).
 - `ui.hide_window()` takes the window off the screen and the taskbar, and `ui.show_window()` brings a hidden or minimized window back to the front. Call them when something happens (a click on the tray, a close), not every frame: calling `ui.show_window()` every frame would undo the user's minimizing.
-- On Windows the icon is in the notification area of the taskbar. On Linux it uses the StatusNotifierItem protocol, which KDE, the bars of tiling compositors (Waybar, Quickshell and others) and GNOME with the AppIndicator extension show. Plain GNOME shows nothing.
+- On Windows the icon is in the notification area of the taskbar. On Linux it uses the StatusNotifierItem protocol, which KDE, the bars of tiling compositors (Waybar, Quickshell and others) and GNOME with the AppIndicator extension show. Plain GNOME shows nothing. On macOS it is an item in the menu bar (NSStatusItem); with a menu, clicking it opens the menu.
 - Wayland has no request to bring back a minimized window. There, `ui.show_window()` brings back only a window hidden with `ui.hide_window()`.
 
 ## Notifications
 
-`ui.notify` shows a notification: on Windows a toast (it also stays in the notification center), on Linux through the desktop's notification service (org.freedesktop.Notifications). A notification has a title, a body and up to three buttons. Read what the user clicked with `ui.notification_clicked` and the same key.
+`ui.notify` shows a notification: on Windows a toast (it also stays in the notification center), on Linux through the desktop's notification service (org.freedesktop.Notifications), on macOS through the system's notification center (UNUserNotificationCenter). A notification has a title, a body and up to three buttons. Read what the user clicked with `ui.notification_clicked` and the same key.
 
 ```rust
 use kargui::{App, Notification, NotificationAction, Ui};
@@ -203,10 +204,11 @@ impl App for Timer {
 - `Notification::silent()` shows it without the sound.
 - On Windows, the first notification registers the app's name (`Options::title`) for the user in the registry (`HKEY_CURRENT_USER\Software\Classes\AppUserModelId\<program file name>`); the toast shows this name. Clicks reach the app while it runs; clicking an old notification in the notification center after the app ended does nothing.
 - On Linux, notifications show on desktops with org.freedesktop.Notifications, such as GNOME, KDE, mako and dunst. Whether buttons show depends on the notification service.
+- On macOS, notifications need an `.app` bundle (an `Info.plist` with `CFBundleIdentifier`), and the first notification asks the user for permission. Run as a plain program (such as with `cargo run`), nothing is shown and the log says `notify.unavailable`.
 
 ## High contrast
 
-When the system uses high contrast, kargui draws the widgets with a high contrast palette. The setting is Settings > Accessibility > Contrast themes on Windows, and the desktop portal's contrast setting on Linux (such as GNOME's High Contrast). On Windows kargui uses the colors of the system's theme as they are (such as cyan highlights on black, or purple highlights on white). On Linux it uses kargui's palette for light or dark mode (`Theme::high_contrast_dark`, `Theme::high_contrast_light`).
+When the system uses high contrast, kargui draws the widgets with a high contrast palette. The setting is Settings > Accessibility > Contrast themes on Windows, the desktop portal's contrast setting on Linux (such as GNOME's High Contrast), and Increase contrast on macOS (System Settings > Accessibility > Display). On Windows kargui uses the colors of the system's theme as they are (such as cyan highlights on black, or purple highlights on white). On Linux and macOS it uses kargui's palette for light or dark mode (`Theme::high_contrast_dark`, `Theme::high_contrast_light`).
 
 ```rust
 use kargui::Options;

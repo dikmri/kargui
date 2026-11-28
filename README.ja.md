@@ -117,13 +117,15 @@ cargo run -p xtask -- check                      # 説明と例の割合・部�
 
 - **部品:** 書式付きの文字の編集（表示する `ui.rich_text` はある）
 - **アプリの仕組み:** アプリ自身の文字を多言語にする仕組み（kargui が自分で出す文字は、OS に合わせて英語か日本語）
-- **環境:** macOS（`kargui::run` は、対応していないことを伝える `Err` を返す）。Linux の X11 は XWayland の上で確かめ、Xorg のサーバーでは確かめていない。GPU の道（既定ではない）では、まれに長い途切れが出る。読み上げはナレーターと Orca で確かめ、NVDA では確かめていない。アプリから再変換を始める仕組みが無い
+- **環境:** macOS は GitHub の Mac（Apple Silicon、倍率 1）で確かめただけで、手では確かめていない。Retina（2 倍）の画面でも確かめていない。GPU の道（既定ではない）では、まれに長い途切れが出る。読み上げはナレーターと Orca で確かめ、NVDA では確かめていない。アプリから再変換を始める仕組みが無い
 
 ### Linux と macOS
 
-OS に頼る所は、いくつかのファイルにまとめてある。Windows は `platform.rs`・`gdi.rs`・`gpu.rs`・`text/dwrite.rs`・`wic.rs`（画像のファイルを読む）。Linux は `wayland.rs`・`x11.rs`・`linux.rs`（両方で分け合う物）・`portal.rs`（xdg-desktop-portal）と、X11 の日本語入力の `ime_dbus.rs`・`fcitx.rs`・`ibus.rs`。それ以外（部品・並べ方・描き方・試験台）はどの OS でも同じで、Windows 以外では文字を parley と swash で並べて描く。Linux で組み立てるには fontconfig の開発用ファイルが要る（Debian と Ubuntu では `libfontconfig1-dev` と `pkg-config`）。parley の中の fontique が、OS のフォントを探すのに fontconfig を使うため。送るたびに、Windows・Linux・macOS で試験を走らせる（GitHub Actions）。
+OS に頼る所は、いくつかのファイルにまとめてある。Windows は `platform.rs`・`gdi.rs`・`gpu.rs`・`text/dwrite.rs`・`wic.rs`（画像のファイルを読む）。Linux は `wayland.rs`・`x11.rs`・`linux.rs`（両方で分け合う物）・`portal.rs`（xdg-desktop-portal）と、X11 の日本語入力の `ime_dbus.rs`・`fcitx.rs`・`ibus.rs`。macOS は `macos.rs`・`mac_keys.rs`・`mac_notify.rs`（通知）。それ以外（部品・並べ方・描き方・試験台）はどの OS でも同じで、Windows 以外では文字を parley と swash で並べて描く。Linux で組み立てるには fontconfig の開発用ファイルが要る（Debian と Ubuntu では `libfontconfig1-dev` と `pkg-config`）。parley の中の fontique が、OS のフォントを探すのに fontconfig を使うため。送るたびに、Windows・Linux・macOS で試験を走らせる（GitHub Actions）。
 
-Linux では、アプリが Wayland の窓を開く。Wayland の合成が無い時（か `KARGUI_BACKEND=x11` の時）は X11 の窓を開く。どちらも、CPU の絵を共有メモリで出し、倍率（Wayland は 1.5 倍などの中途半端な倍率、X11 は `Xft.dpi`）・マウス（2 回押し・3 回押し・ホイール・右クリック・ポインターの形）・キー（OS のキー配列を libxkbcommon で読む。動く時に読むので組み立てに開発用の部品は要らない。押し続けも）・OS のクリップボード（文字）・地元の日付と時刻・日本語入力（Wayland は text-input-v3、X11 は fcitx5 か IBus の D-Bus。変換中の文字と今変換している文節、文字の真下の候補の窓。fcitx5 と Mozc、IBus と Mozc で確かめた）・読み上げ（AT-SPI。accesskit_unix で、Windows と同じ木を渡す。Orca で確かめた）・ファイルのダイアログと OS の明暗の設定（xdg-desktop-portal）・2 つ目からの窓（`ui.window`）・ほかのアプリから引っ張ってきたファイル・合成が題の帯を描かない時（GNOME）に kargui が描く題の帯が動く。確かめたのは Hyprland・GNOME・XWayland の上。macOS で `kargui::run` を呼ぶと、今までどおり対応していないことを伝える `Err` を返す。
+Linux では、アプリが Wayland の窓を開く。Wayland の合成が無い時（か `KARGUI_BACKEND=x11` の時）は X11 の窓を開く。どちらも、CPU の絵を共有メモリで出し、倍率（Wayland は 1.5 倍などの中途半端な倍率、X11 は `Xft.dpi`）・マウス（2 回押し・3 回押し・ホイール・右クリック・ポインターの形）・キー（OS のキー配列を libxkbcommon で読む。動く時に読むので組み立てに開発用の部品は要らない。押し続けも）・OS のクリップボード（文字）・地元の日付と時刻・日本語入力（Wayland は text-input-v3、X11 は fcitx5 か IBus の D-Bus。変換中の文字と今変換している文節、文字の真下の候補の窓。fcitx5 と Mozc、IBus と Mozc で確かめた）・読み上げ（AT-SPI。accesskit_unix で、Windows と同じ木を渡す。Orca で確かめた）・ファイルのダイアログと OS の明暗の設定（xdg-desktop-portal）・2 つ目からの窓（`ui.window`）・ほかのアプリから引っ張ってきたファイル・合成が題の帯を描かない時（GNOME）に kargui が描く題の帯が動く。確かめたのは Hyprland・GNOME・XWayland の上と、Wayland の無い X11 のサーバー（Xvfb と Xorg、窓の管理役は openbox）。
+
+macOS（Apple Silicon）では、アプリが AppKit の窓を開く。CPU の絵を Core Animation で出し、マウスとトラックパッド・キー・日本語入力（NSTextInputClient。変換中の文字と候補の窓。macOS の日本語入力で確かめた）・クリップボード・ファイルのダイアログ（NSOpenPanel・NSSavePanel）・読み上げ（accesskit_macos）・2 つ目からの窓・ほかのアプリから引っ張ってきたファイル・OS の言語と明暗とコントラストの設定・アプリのメニュー（隠す・終了）・メニューバーのトレイの項目（NSStatusItem）・通知（UNUserNotificationCenter。アプリが .app の束の時だけ）・OS の窓のボタンを残して kargui が描く題の帯（`Options::custom_title_bar`）が動く。確かめたのは GitHub の Mac の上で、見本を本物のマウスとキーの知らせで操作した。
 
 0.x の間は API が変わることがある。変わった所は [CHANGELOG.md](CHANGELOG.md) に書く。
 

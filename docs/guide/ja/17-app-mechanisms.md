@@ -30,7 +30,7 @@ if let Some(path) = ui.chosen_file("save") {
 - `.filter(名前, &[拡張子])` で選べる種類、`.title(..)` で題、`.file_name(..)` で始めの名前、`.folder(..)` で始めのフォルダー
 - `.multiple()` で複数のファイルを選べるようにし、`ui.chosen_files(キー)` で全部を受け取る
 
-Linux では、xdg-desktop-portal のダイアログ（デスクトップのファイルを選ぶ画面）が開きます。macOS では、まだ何も起きません。
+Linux では、xdg-desktop-portal のダイアログ（デスクトップのファイルを選ぶ画面）が開きます。macOS では、OS の NSOpenPanel か NSSavePanel が開きます。
 
 ## 閉じる前の確認
 
@@ -114,6 +114,7 @@ options.custom_title_bar = true;
 - `ui.title_bar` に何も入れなければ、帯の左に窓の題を出します。入れた時は題を出さないので、出したい時はアプリが `ui.label` で置いてください。
 - GNOME（合成が題の帯を描かない Wayland）では、`custom_title_bar` にかかわらず kargui が帯を描き、`ui.title_bar` の部品を帯に入れます。
 - OS や合成が帯を描く所（X11、帯を描く Wayland、帯の無い合成）と、`custom_title_bar` が false の Windows では、`ui.title_bar` の部品は窓のいちばん上の行になります。どの OS でも使えるように、`ui.title_bar` はビューの最初に呼んでください。
+- macOS で `custom_title_bar` の窓は、kargui が帯を描き、左に OS の窓のボタン（赤・黄・緑の丸）を残します。題は真ん中に出ます。帯の何も無い所を引っ張ると窓が動き、2 回押すと OS の設定どおりに動きます（既定は最大化）。
 
 ## トレイ（通知領域のアイコン）
 
@@ -167,12 +168,12 @@ impl App for Notes {
 - アイコンの画像は `t.icon(&image)` で渡します。渡さなければ窓のアイコン（`Options::icon`）を使い、それも無ければ kargui の無地のアイコンを使います。画像はアプリの状態に持っておいてください。同じ画像なら OS に送り直しません。
 - `ui.tray` を呼ばなくなると、アイコンを消します。トレイを作るのは主の窓のビューだけです（`App::window` のビューで呼んでも何もしません）。
 - `ui.hide_window()` は窓を画面とタスクバーから隠し、`ui.show_window()` は隠した窓・最小化した窓を戻して前に出します。どちらも、出来事（トレイを押した・閉じた）の時だけ呼んでください。毎フレーム `ui.show_window()` を呼ぶと、利用者が最小化してもすぐ戻ります。
-- Windows は、タスクバーの通知領域に出します。Linux は StatusNotifierItem の決まりで出し、KDE、タイル型の合成の帯（Waybar・Quickshell など）、AppIndicator の拡張機能を入れた GNOME が表示します。拡張機能の無い GNOME には出ません。
+- Windows は、タスクバーの通知領域に出します。Linux は StatusNotifierItem の決まりで出し、KDE、タイル型の合成の帯（Waybar・Quickshell など）、AppIndicator の拡張機能を入れた GNOME が表示します。拡張機能の無い GNOME には出ません。macOS は、メニューバーの項目（NSStatusItem）に出します。メニューがあれば、押すとメニューが開きます。
 - Wayland には、最小化した窓を戻す頼みがありません。`ui.show_window()` が戻せるのは、`ui.hide_window()` で隠した窓だけです。
 
 ## 通知
 
-`ui.notify` で通知を出します。Windows はトースト（通知センターにも残る）、Linux はデスクトップの通知の係（org.freedesktop.Notifications）に出します。通知には、題・本文・ボタン（3 つまで）を置けます。押された答えは、同じキーで `ui.notification_clicked` から受け取ります。
+`ui.notify` で通知を出します。Windows はトースト（通知センターにも残る）、Linux はデスクトップの通知の係（org.freedesktop.Notifications）、macOS は OS の通知センター（UNUserNotificationCenter）に出します。通知には、題・本文・ボタン（3 つまで）を置けます。押された答えは、同じキーで `ui.notification_clicked` から受け取ります。
 
 ```rust
 use kargui::{App, Notification, NotificationAction, Ui};
@@ -202,10 +203,11 @@ impl App for Timer {
 - `Notification::silent()` で、音を鳴らさずに出します。
 - Windows では、最初の通知の時に、アプリの名前（`Options::title`）を利用者ごとのレジストリ（`HKEY_CURRENT_USER\Software\Classes\AppUserModelId\実行ファイルの名前`）に書いて登録します。トーストの上には、この名前が出ます。押した答えは、アプリが動いている間だけ届きます。アプリが終わった後に、通知センターに残った通知を押しても何も起きません。
 - Linux では、GNOME・KDE・mako・dunst など、org.freedesktop.Notifications を持つデスクトップに出ます。ボタンを出すかどうかは、通知の係によります。
+- macOS では、アプリが .app の束（`CFBundleIdentifier` の入った `Info.plist`）の時だけ通知を出せます。最初の通知の時に、OS が利用者に許可を聞きます。`cargo run` などで束にせずに動かすと何も出ず、記録に `notify.unavailable` が出ます。
 
 ## ハイコントラスト
 
-OS がハイコントラストの時、kargui は部品をハイコントラストの配色で描きます。OS の設定は、Windows では「設定 > アクセシビリティ > コントラスト テーマ」、Linux ではデスクトップのポータルのコントラストの設定（GNOME の「ハイコントラスト」など）です。Windows では、OS のテーマの色（黒地に水色の強調、白地に紫の強調など）をそのまま使います。Linux では、明暗に合わせて kargui の配色（`Theme::high_contrast_dark`・`Theme::high_contrast_light`）を使います。
+OS がハイコントラストの時、kargui は部品をハイコントラストの配色で描きます。OS の設定は、Windows では「設定 > アクセシビリティ > コントラスト テーマ」、Linux ではデスクトップのポータルのコントラストの設定（GNOME の「ハイコントラスト」など）、macOS では「システム設定 > アクセシビリティ > ディスプレイ」の「コントラストを上げる」です。Windows では、OS のテーマの色（黒地に水色の強調、白地に紫の強調など）をそのまま使います。Linux と macOS では、明暗に合わせて kargui の配色（`Theme::high_contrast_dark`・`Theme::high_contrast_light`）を使います。
 
 ```rust
 use kargui::Options;

@@ -147,8 +147,8 @@ Not there yet:
 - **Widgets:** editing rich text (showing it, `ui.rich_text`, is there).
 - **App mechanisms:** support for translating an app's own words (the words kargui shows itself
   are in English or Japanese, following the system).
-- **Platforms:** macOS (`kargui::run` returns an `Err` saying the system is not supported). On
-  Linux, X11 has been checked under XWayland but not on an Xorg server. The Direct3D 11 renderer
+- **Platforms:** macOS has only been checked on GitHub's Mac runners (Apple Silicon, scale 1), not
+  by hand, and not on Retina (2x) screens. The Direct3D 11 renderer
   (not the default) occasionally stalls for a long frame. Screen reading has been checked with
   Narrator and Orca but not with NVDA. Apps cannot start a reconversion themselves.
 
@@ -157,7 +157,8 @@ Not there yet:
 Everything that depends on the operating system is kept in a few files: on Windows `platform.rs`,
 `gdi.rs`, `gpu.rs`, `text/dwrite.rs` and `wic.rs` (reading image files); on Linux `wayland.rs`,
 `x11.rs`, `linux.rs` (what both share), `portal.rs` (xdg-desktop-portal), and `ime_dbus.rs`,
-`fcitx.rs` and `ibus.rs` (the input method on X11). The rest (widgets, layout, drawing, the test
+`fcitx.rs` and `ibus.rs` (the input method on X11); on macOS `macos.rs`, `mac_keys.rs` and
+`mac_notify.rs` (notifications). The rest (widgets, layout, drawing, the test
 harness) is the same everywhere, with text laid out and drawn by parley and swash outside Windows.
 On Linux, building needs the fontconfig development files (`libfontconfig1-dev` and `pkg-config` on
 Debian and Ubuntu); fontique, inside parley, uses fontconfig to find the system fonts.
@@ -173,8 +174,18 @@ the candidate window under the caret; checked with fcitx5 and Mozc, and with IBu
 readers (AT-SPI through accesskit_unix, with the same tree as on Windows; checked with Orca), file
 dialogs and the system dark mode (xdg-desktop-portal), more than one window (`ui.window`), files
 dragged in from other apps, and a title bar drawn by kargui where the compositor draws none
-(GNOME). They are checked on Hyprland, GNOME and XWayland. On macOS, `kargui::run` still returns an
-`Err` saying the system is not supported.
+(GNOME). They are checked on Hyprland, GNOME, XWayland, and on X11 servers without Wayland (Xvfb
+and Xorg, with openbox).
+
+On macOS (Apple Silicon), apps open an AppKit window with the CPU picture shown through Core
+Animation, the mouse and trackpad, the keyboard, the input method (NSTextInputClient: the
+composition and the candidate window, checked with the Japanese input of macOS), the clipboard, file
+dialogs (NSOpenPanel and NSSavePanel), screen readers (accesskit_macos), more than one window, files
+dragged in from other apps, the system language, dark mode and contrast settings, the app menu
+(Hide, Quit), a menu bar item for the tray (NSStatusItem), notifications (UNUserNotificationCenter;
+the app must be an `.app` bundle), and a title bar drawn by kargui that keeps the system's window
+buttons (`Options::custom_title_bar`). It is checked on GitHub's Mac runners, which drive the
+examples with real mouse and keyboard events.
 
 The API may change during 0.x; changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
