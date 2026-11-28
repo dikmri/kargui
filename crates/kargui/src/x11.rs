@@ -46,7 +46,7 @@ use crate::damage::Summary;
 use crate::ime_dbus;
 use crate::geom::{Color, IRect};
 use crate::ime;
-use crate::input::{A11yAction, Event, Mods};
+use crate::input::{A11yAction, Event, Key, Mods};
 use crate::linux::{A11ySink, DOUBLE_CLICK_DIST, DOUBLE_CLICK_MS, Keyboard, PortalSettings, WHEEL_STEP, app_id, key_for};
 use crate::log;
 use crate::runtime::Runtime;
@@ -247,9 +247,28 @@ struct XIme {
     moved: bool,
     /// 今見せている変換中の文字
     shown: String,
-    /// IME の答えを待っているキー（番号, 窓, キー, 繰り返しか, 離したか）
-    pending: VecDeque<(u64, WinId, u8, bool, bool)>,
+    /// IME の答えを待っているキー
+    pending: VecDeque<PendingKey>,
     next_id: u64,
+}
+
+/// アプリへ渡すキー 1 つの中身（キー・修飾キー・打つ文字）。押した時の XKB の状態で作る
+#[derive(Clone, Debug)]
+struct KeyInput {
+    key: Option<Key>,
+    mods: Mods,
+    text: String,
+}
+
+/// IME の答えを待っているキー。アプリへ渡す中身は押した時に作っておく（答えを待つ間にアプリの 1 フレームが重いと、
+/// Ctrl を離した知らせが先に処理され、答えが来た時の状態で作ると Ctrl+A が「a」になった）
+struct PendingKey {
+    id: u64,
+    win: WinId,
+    code: u8,
+    repeat: bool,
+    release: bool,
+    input: KeyInput,
 }
 
 /// MIT-SHM の共有メモリ（窓の絵と同じ大きさ）
@@ -315,6 +334,8 @@ struct Win {
     shm_busy: bool,
     /// 窓が画面に出た（MapNotify。出る前の絵は捨てられる）
     mapped: bool,
+    /// 一度出た窓が画面から外れている（UnmapNotify。最小化・隠した時）。この間はタイマーと動きの描き直しを間引く
+    unmapped: bool,
     /// 窓の一部が見えるようになった（Expose）。次は絵の全部を出す
     exposed: bool,
     events: Vec<Event>,
@@ -494,6 +515,7 @@ impl State {
             shm: None,
             shm_busy: false,
             mapped: false,
+            unmapped: false,
             exposed: false,
             events: Vec::new(),
             need_frame: true,
@@ -817,14 +839,26 @@ impl State {
     }
 
     fn key_down(&mut self, id: WinId, code: u32, repeat: bool) {
-        let Some(kb) = self.xkb.as_ref() else { return };
+        if let Some(input) = self.key_input(code) {
+            self.deliver_key(id, input, repeat, "sent");
+        }
+    }
+
+    /// 今の XKB の状態で、キー 1 つをアプリへ渡す中身にする
+    fn key_input(&self, code: u32) -> Option<KeyInput> {
+        let kb = self.xkb.as_ref()?;
         let mods = kb.mods();
         let key = key_for(kb.base_sym(code), kb.sym(code));
         let text = if mods.ctrl || mods.alt { String::new() } else { kb.utf8(code) };
+        Some(KeyInput { key, mods, text })
+    }
+
+    fn deliver_key(&mut self, id: WinId, input: KeyInput, repeat: bool, how: &str) {
         let Some(w) = self.win(id) else { return };
+        let KeyInput { key, mods, text } = input;
         if let Some(key) = key {
             if !repeat {
-                log::event("key", &format!("key={key:?} mods={mods:?}"), "sent");
+                log::event("key", &format!("key={key:?} mods={mods:?}"), how);
             }
             w.push(Event::Key { key, mods });
         }
@@ -843,10 +877,12 @@ impl State {
 
     fn send_key_to_ime(&mut self, win: WinId, code: u8, state: u16, time: u32, repeat: bool, release: bool) {
         let keyval = self.xkb.as_ref().map_or(0, |k| k.sym(code as u32));
+        // IME が使わなかった時にアプリへ渡す中身は、押した今の状態で作っておく
+        let input = self.key_input(code as u32).unwrap_or(KeyInput { key: None, mods: Mods::NONE, text: String::new() });
         let Some(m) = self.ime.as_mut() else { return };
         let id = m.next_id;
         m.next_id += 1;
-        m.pending.push_back((id, win, code, repeat, release));
+        m.pending.push_back(PendingKey { id, win, code, repeat, release, input });
         let _ = m.tx.send(ime_dbus::Cmd::Key { id, keyval, keycode: code as u32, state: state as u32, release, time });
     }
 
@@ -866,9 +902,9 @@ impl State {
                 ime_dbus::Msg::Failed(e) => {
                     log::event("ime.unavailable", "fcitx5 / ibus", &format!("error={e} (keys go straight to the app)"));
                     let pending: Vec<_> = self.ime.take().map(|mut m| m.pending.drain(..).collect()).unwrap_or_default();
-                    for (_, win, code, repeat, release) in pending {
-                        if !release {
-                            self.key_down(win, code as u32, repeat);
+                    for p in pending {
+                        if !p.release {
+                            self.deliver_key(p.win, p.input, p.repeat, "sent (no IME)");
                         }
                     }
                     return;
@@ -878,25 +914,25 @@ impl State {
                     let mut earlier = Vec::new();
                     let mut hit = None;
                     while let Some(p) = m.pending.pop_front() {
-                        if p.0 == id {
+                        if p.id == id {
                             hit = Some(p);
                             break;
                         }
                         earlier.push(p);
                     }
                     // 答えの来なかった前のキー（無いはず）は、失わないようにアプリに渡す
-                    for (_, win, code, repeat, release) in earlier {
-                        if !release {
-                            self.key_down(win, code as u32, repeat);
+                    for p in earlier {
+                        if !p.release {
+                            self.deliver_key(p.win, p.input, p.repeat, "sent (no IME answer)");
                         }
                     }
-                    if let Some((_, win, code, repeat, release)) = hit {
+                    if let Some(p) = hit {
                         if handled {
-                            if !release && !repeat {
-                                log::event("ime.key", &format!("code={code}"), "used by the IME");
+                            if !p.release && !p.repeat {
+                                log::event("ime.key", &format!("code={}", p.code), "used by the IME");
                             }
-                        } else if !release {
-                            self.key_down(win, code as u32, repeat);
+                        } else if !p.release {
+                            self.deliver_key(p.win, p.input, p.repeat, "sent after IME");
                         }
                     }
                 }
@@ -1193,7 +1229,20 @@ impl State {
                     w.mapped = true;
                     w.exposed = true;
                     w.need_frame = true;
+                    // 最小化から戻った（外れている間に止めた動きを、ここから描き直す）
+                    if w.unmapped {
+                        w.unmapped = false;
+                        w.full = true;
+                        w.why = "mapped";
+                    }
                     log::event("window.mapped", &w.tag(), "ok");
+                }
+            }
+            // 最小化・隠した（見えない窓に描いても捨てられる。タイマーと動きの描き直しを間引いて CPU を使わない）
+            XEvent::UnmapNotify(e) => {
+                if let Some(w) = self.win(e.window) {
+                    w.unmapped = true;
+                    log::event("window.unmapped", &format!("animating={}{}", w.animating, w.tag()), "ok");
                 }
             }
             XEvent::ConfigureNotify(e) => {
@@ -1410,10 +1459,14 @@ impl State {
         let tray = is_main.then(|| w.rt.cx.tray.clone());
         let show = w.rt.cx.show_request.take();
         let notes = std::mem::take(&mut w.rt.cx.notify_requests);
-        w.wake_at = out.wake_after.map(|d| Instant::now() + d);
+        let now = Instant::now();
+        w.wake_at = out.wake_after.map(|d| now + d);
         if out.want_frame {
-            w.wake_at = Some(w.wake_at.map_or(Instant::now() + ANIMATION_STEP, |t| t.min(Instant::now() + ANIMATION_STEP)));
+            w.wake_at = Some(w.wake_at.map_or(now + ANIMATION_STEP, |t| t.min(now + ANIMATION_STEP)));
         }
+        // 最小化・隠した窓は、タイマーと動きの描き直しを 1 秒に 1 回までに間引く（止めないのは、アプリの処理を
+        // タイマーで進めている時に止めないため。見本の spinner は 33 ms おきのタイマーで、見えない窓に描き続けていた）
+        w.wake_at = w.wake_at.map(|t| hidden_wake(w.unmapped, t, now));
         w.animating = out.want_frame;
         w.need_frame = false;
         if quit {
@@ -1573,6 +1626,14 @@ fn clip_rect(r: IRect, w: i32, h: i32) -> Option<IRect> {
 fn rescaled(physical: (i32, i32), old: f32, new: f32) -> (u16, u16) {
     let f = |p: i32| ((p as f32 / old) * new).round().clamp(1.0, 32767.0) as u16;
     (f(physical.0), f(physical.1))
+}
+
+/// 画面から外れている窓（最小化・隠した）が、タイマーや動きで次に描く時の、いちばん短い間
+const HIDDEN_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 次に描く時。画面から外れている間は、今から HIDDEN_FRAME_INTERVAL より早くしない（ほかの知らせ・戻った時は待たずに描く）
+fn hidden_wake(unmapped: bool, wanted: Instant, now: Instant) -> Instant {
+    if unmapped { wanted.max(now + HIDDEN_FRAME_INTERVAL) } else { wanted }
 }
 
 /// 論理の最小の大きさを、その倍率の物理の画素にする（WM_NORMAL_HINTS の min_size）
@@ -1748,8 +1809,11 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 if !w.animating {
                     log::event("timer", &w.tag(), "frame");
                 }
+                // ほかの理由で描くことになっていれば、記録にはその理由を残す
+                if !w.need_frame {
+                    w.why = if w.animating { "animation" } else { "timer" };
+                }
                 w.need_frame = true;
-                w.why = if w.animating { "animation" } else { "timer" };
             }
         }
         let ids: Vec<WinId> = st.windows.iter().map(|w| w.id).collect();
@@ -1835,6 +1899,19 @@ mod tests {
         assert_eq!(rescaled((1350, 930), 1.5, 1.25), (1125, 775));
         // 1 画素より小さくしない
         assert_eq!(rescaled((1, 1), 2.0, 1.0), (1, 1));
+    }
+
+    #[test]
+    fn a_hidden_window_wakes_at_most_once_a_second() {
+        let now = Instant::now();
+        let soon = now + std::time::Duration::from_millis(33);
+        // 見えている窓は頼まれた時のまま
+        assert_eq!(hidden_wake(false, soon, now), soon);
+        // 最小化・隠した窓は 1 秒後より早くしない
+        assert_eq!(hidden_wake(true, soon, now), now + HIDDEN_FRAME_INTERVAL);
+        // もともと 1 秒より先なら、そのまま
+        let later = now + std::time::Duration::from_secs(5);
+        assert_eq!(hidden_wake(true, later, now), later);
     }
 
     #[test]
