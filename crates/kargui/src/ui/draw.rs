@@ -452,7 +452,8 @@ pub(crate) fn paint(tree: &Tree, cx: &mut Context, d: &mut DrawList) {
     }
     p.drag_ghost();
     // kargui が題の帯を描く浮いた窓は、合成が影も縁も描かないので、窓の縁に線を引く（重なった窓の境が分かるように）
-    if p.cx.csd.as_ref().is_some_and(|c| !c.tiled && !c.windows) {
+    // （macOS の形は OS が縁と影を描く）
+    if p.cx.csd.as_ref().is_some_and(|c| !c.tiled && !c.windows) && p.cx.mac_bar.is_none() {
         let (line, color) = (p.line(), p.cx.theme.border);
         p.outline(window.to_rect(), color, line);
     }

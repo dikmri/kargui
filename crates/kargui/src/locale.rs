@@ -235,9 +235,24 @@ fn read_system() -> (Locale, String) {
 
 #[cfg(not(windows))]
 fn read_system() -> (Locale, String) {
+    // macOS は好みの言語の並び（システム設定の言語と地域。Finder から開いたアプリには LANG などが無い）。
+    // kargui が持つ言語が並びに無い時だけ、環境変数を読む
+    #[cfg(target_os = "macos")]
+    {
+        let list = crate::macos::preferred_languages();
+        if let Some(l) = from_preferred(&list) {
+            return (l, format!("preferredLanguages={list:?}"));
+        }
+    }
     let get = |k: &str| std::env::var(k).ok();
     let seen = ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"].iter().filter_map(|k| get(k).filter(|v| !v.is_empty()).map(|v| format!("{k}={v}"))).collect::<Vec<_>>().join(" ");
     (from_env(get), seen)
+}
+
+/// 好みの言語の並び（macOS の NSLocale.preferredLanguages。「ja-JP」「en-US」など）から、kargui が持つ最初の言語
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn from_preferred(list: &[String]) -> Option<Locale> {
+    list.iter().find_map(|t| Locale::from_tag(t))
 }
 
 /// Windows の言語の番号（LANGID）から。下の 10 ビットが主な言語（0x11 日本語、0x09 英語）
@@ -269,6 +284,17 @@ pub(crate) fn from_env(get: impl Fn(&str) -> Option<String>) -> Locale {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preferred_languages_pick_the_first_one_kargui_has() {
+        let list = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(from_preferred(&list(&["ja-JP", "en-US"])), Some(Locale::Japanese));
+        assert_eq!(from_preferred(&list(&["en-JP", "ja-JP"])), Some(Locale::English));
+        // 持たない言語は飛ばす（Apple のアプリと同じ選び方）
+        assert_eq!(from_preferred(&list(&["fr-FR", "ja-JP"])), Some(Locale::Japanese));
+        assert_eq!(from_preferred(&list(&["fr-FR"])), None);
+        assert_eq!(from_preferred(&[]), None);
+    }
 
     #[test]
     fn tags_name_their_language() {

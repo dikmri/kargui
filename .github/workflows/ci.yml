@@ -1,11 +1,14 @@
 # 送るたびに、Windows・Linux・macOS で試験を走らせる。
 # - Windows: 全部の試験と検査（説明と例の割合・部品の写真・AI 向けの索引・ガイドの古さ）、Windows 以外の文字の道の試験
-# - Linux・macOS: kargui の試験（部品・並べ方・描き方・試験台・文字）。窓はまだ Windows だけなので、窓を開く試験は無い
+# - Linux・macOS: kargui の試験（部品・並べ方・描き方・試験台・文字）
+# - macOS の窓: 見本を本物の窓で開き、窓に出した絵を写真に残す。外から本物のマウスとキーの入力も送る（作者は Mac を
+#   持たないので、macOS の窓と入力はここで確かめる）
+# macos ブランチは macOS の作りかけの作業用（作者の許可で、毎回聞かずに送る）
 name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, macos]
   pull_request:
 
 permissions:
@@ -53,3 +56,151 @@ jobs:
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Tests
         run: cargo test --locked -p kargui
+
+  # 見本を本物の窓で開き、kargui が窓に出した絵（KARGUI_SHOT）と、画面の写真（screencapture。許可が無いと窓が
+  # 写らないことがある）を残す。写真と記録は artifact（macos-window）で取り出す
+  macos-window:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Build the examples
+        run: cargo build --locked --release -p gallery-kargui -p expenses-kargui -p files-kargui -p notepad-kargui
+      - name: Open the examples and save what they drew
+        run: |
+          mkdir -p shots
+          sw_vers > shots/system.txt
+          uname -m >> shots/system.txt
+          system_profiler SPDisplaysDataType > shots/displays.txt 2>&1 || true
+          shot() {
+            name="$1"; shift
+            KARGUI_SHOT="shots/$name.png" KARGUI_SHOT_MS=3000 "$@" --log "shots/$name.log" &
+            pid=$!
+            ( sleep 30; kill "$pid" 2>/dev/null && echo "$name: killed after 30 s" ) &
+            sleep 2
+            screencapture -x "shots/$name-screen.png" || echo "$name: screencapture failed"
+            wait "$pid"; echo "$name: exit=$?"
+          }
+          shot gallery ./target/release/gallery-kargui
+          shot gallery-dark ./target/release/gallery-kargui --dark
+          GALLERY_PAGE=13 shot gallery-dates ./target/release/gallery-kargui --light
+          shot expenses ./target/release/expenses-kargui
+          ls -la shots
+      # 本物のマウスとキーの入力（CGEvent）を外から送り、kargui が受け取って描き直すかを確かめる（道具は tools/ci/mac-drive.swift）。
+      # 座標は窓の中の左上からの論理ピクセル（見本の配置。Windows と同じ）
+      - name: Build the input driver
+        run: |
+          xcrun swiftc -O tools/ci/mac-drive.swift -o target/mac-drive
+          xcrun swiftc -O tools/ci/mac-ime-ref.swift -o target/mac-ime-ref
+          xcrun swiftc -O tools/ci/mac-drag-source.swift -o target/mac-drag-source
+      - name: Drive the examples with a real mouse and keyboard
+        run: |
+          fails=""
+          drive() {
+            name="$1"; height="$2"; app="$3"; shift 3
+            KARGUI_SHOT="shots/$name.png" KARGUI_SHOT_MS="${SHOT_MS:-12000}" "$app" --log "shots/$name.log" &
+            pid=$!
+            ( sleep 40; kill "$pid" 2>/dev/null && echo "$name: killed after 40 s" ) &
+            sleep 2
+            ./target/mac-drive "$pid" "$height" "$@" > "shots/$name-drive.txt" 2>&1 || echo "$name: driver exit=$?"
+            sleep 1
+            screencapture -x "shots/$name-screen.png" || echo "$name: screencapture failed"
+            if wait "$pid"; then echo "$name: exit=0"; else rc=$?; echo "$name: exit=$rc"; fails="$fails $name"; fi
+          }
+          # 暗い色のボタン（kargui が描く題の帯の中）を押す（中身と題の帯が暗くなる）・左の一覧をホイールで下へ送る・一覧の行に乗る
+          drive input-gallery 0 ./target/release/gallery-kargui click:197,19 wait:300 wheel:120,400,-5 wait:300 move:120,300
+          # 金額の欄で全部を選んで 1234 を打ち Enter・上の矢印で 100 足す・メモに tesx と打って 1 字消して t と あ・日付が無いまま追加を押す
+          drive input-expenses 600 ./target/release/expenses-kargui click:90,72 key:cmd+a type:1234 key:enter click:149,72 click:500,72 type:tesx key:backspace type:t type:あ click:43,116 wait:300
+          # 窓の仕組み: 表の行の右クリックのメニュー（キーで選ぶ）・クリップボード（Command+C・V）・ダブルクリック・
+          # 中身の右下の角を引っ張って大きさを変える（引っ張っている途中も描き直すか、押下が部品に届かないかを見る。
+          # 角の外 2 ポイントの所は、AppKit が大きさを変える所に入らなかった）・題の帯を引っ張って窓を動かす・閉じる
+          # ボタン（アプリが閉じてよいと答えて終わる。写真の時刻より先に押すため、写真は 30 秒後）
+          SHOT_MS=30000 drive input-window 600 ./target/release/expenses-kargui rclick:250,311 wait:300 screen:shots/input-window-menu.png key:down key:enter wait:300 click:500,72 type:ab key:cmd+a key:cmd+c key:right key:cmd+v dclick:325,72 wait:300 bounds down:718,598 dragto:818,628 wait:300 screen:shots/input-window-resizing.png up:818,628 wait:500 bounds screen:shots/input-window-resized.png down:360,-16 dragto:260,-6 up:260,-6 wait:500 bounds screen:shots/input-window-moved.png click:16,-16 wait:800
+          # ファイルのダイアログ（見本の 19 ページ目）: 開くを出して撮り、Esc で取り消す（答えは空）。もう一度出し、
+          # Command+Shift+G で場所を打って /tmp/kargui-open.txt を選ぶ（答えは 1 つ。見本が選んだ場所を表示する）
+          echo hello > /tmp/kargui-open.txt
+          GALLERY_PAGE=19 SHOT_MS=25000 drive input-file-dialog 0 ./target/release/gallery-kargui click:300,154 wait:1500 screen:shots/input-file-dialog-open.png key:escape wait:800 click:300,154 wait:1500 key:cmd+shift+g wait:1000 type:/tmp/kargui-open.txt wait:800 screen:shots/input-file-dialog-goto.png key:enter wait:1000 key:enter wait:1500
+          # 読み上げ（accesskit_macos）: 木を書き出す（これで読み上げが使われ始め、次のフレームで木を渡す）。少し待って
+          # もう一度書き出し、「ふつう」のボタンを読み上げの操作（AXPress）で 2 回押す（見本の「押した回数」が 2 になる）
+          SHOT_MS=15000 drive input-a11y 0 ./target/release/gallery-kargui wait:1000 ax wait:1000 ax axpress:283,154 wait:500 axpress:283,154 wait:800 screen:shots/input-a11y-screen.png
+          # 日本語入力を 4 つの相手で比べる。この仮想の Mac で最初に日本語入力を使ったアプリは、45 秒待っても英字が
+          # そのまま入った。2 番目に使ったテキストエディットは変換できた（1 回）。
+          # (1) テキストエディットで一度使って終わらせる (2) 新しく開いたテキストエディット (3) 最小の参考のアプリ
+          # （tools/ci/mac-ime-ref.swift。SDL・GLFW と同じ答え方の NSTextInputClient を AppKit の標準の輪で動かす）
+          # (4) kargui のメモ欄。nihongo を本物のキーで打ち（変換中）、スペースで変換、Enter で確定する
+          J=com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese
+          : > /tmp/ime.txt
+          open -a TextEdit /tmp/ime.txt
+          sleep 4
+          tpid=$(pgrep -x TextEdit | head -1)
+          ./target/mac-drive "$tpid" 0 click:200,150 inputsource:$J wait:500 type:nihongo wait:500 screen:shots/ime-1-textedit-first.png key:escape inputsource:com.apple.keylayout.ABC > shots/ime-1-textedit-first.txt 2>&1 || true
+          osascript -e 'tell application "TextEdit" to quit saving no' || kill "$tpid" 2>/dev/null || true
+          sleep 2
+          : > /tmp/ime2.txt
+          open -a TextEdit /tmp/ime2.txt
+          sleep 4
+          tpid=$(pgrep -x TextEdit | head -1)
+          ./target/mac-drive "$tpid" 0 click:200,150 inputsource:$J wait:500 type:nihongo wait:500 screen:shots/ime-2-textedit-second.png key:space wait:800 screen:shots/ime-2-textedit-second-converted.png key:enter inputsource:com.apple.keylayout.ABC > shots/ime-2-textedit-second.txt 2>&1 || true
+          osascript -e 'tell application "TextEdit" to quit saving no' || kill "$tpid" 2>/dev/null || true
+          sleep 2
+          ./target/mac-ime-ref > shots/ime-3-ref-app.txt 2>&1 &
+          rpid=$!
+          sleep 2
+          ./target/mac-drive "$rpid" 200 click:100,100 inputsource:$J wait:500 type:nihongo wait:500 screen:shots/ime-3-ref-app.png key:space wait:800 key:enter inputsource:com.apple.keylayout.ABC > shots/ime-3-ref-app-drive.txt 2>&1 || true
+          wait "$rpid"
+          drive input-ime 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-preedit.png key:space wait:800 screen:shots/input-ime-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
+          # 結果の例を増やすため、もう 1 回（別のアプリとして開き直す）
+          drive input-ime-2 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-2-preedit.png key:space wait:800 screen:shots/input-ime-2-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
+          # OS の明暗の切り替え（真似る）とアプリのメニュー: 見本（OS の明暗に従う）で暗くして撮り、明るく戻し、
+          # 読み上げの木でメニューの項目を見て、⌘Q で終わる（閉じる前の確認を通る）
+          SHOT_MS=30000 drive input-system 0 ./target/release/gallery-kargui wait:800 theme:dark wait:1000 screen:shots/input-system-dark.png theme:light wait:1000 screen:shots/input-system-light.png ax key:cmd+q wait:1000
+          defaults delete -g AppleInterfaceStyle 2>/dev/null || true
+          # 複数の窓（Ui::window）: files の表の行を右クリックしてプロパティを選ぶと別の窓が開く。撮ってから、その窓の
+          # 閉じるボタン（主の窓から 30 ずつ右下にずらして置く）を押す（アプリが閉じたと知り、別の窓が閉じる）
+          SHOT_MS=25000 drive input-windows 520 ./target/release/files-kargui wait:500 screen:shots/input-windows-main.png rclick:500,118 wait:400 key:down key:enter wait:1200 screen:shots/input-windows-props.png ax click:46,14 wait:1200 screen:shots/input-windows-closed.png
+          # 引っ張って落とす: メモ帳（640 × 480、真ん中に置く）の本文へ、ほかのアプリ（tools/ci/mac-drag-source.swift）から
+          # ファイルを引っ張って落とす（メモ帳がそのファイルを開く）
+          echo "引っ張って落とした中身" > /tmp/kargui-drop.txt
+          KARGUI_SHOT=shots/input-drop.png KARGUI_SHOT_MS=14000 ./target/release/notepad-kargui --log shots/input-drop.log &
+          npid=$!
+          sleep 3
+          ./target/mac-drag-source /tmp/kargui-drop.txt 512 400 > shots/input-drop-source.txt 2>&1 || echo "drag source exit=$?"
+          screencapture -x shots/input-drop-screen.png || true
+          if wait "$npid"; then echo "notepad: exit=0"; else rc=$?; echo "notepad: exit=$rc"; fails="$fails input-drop"; fi
+          # トレイ（NSStatusItem）: 見本の 24 ページ目で「通知領域にアイコンを出す」を入れ、トレイの項目を押してメニューを
+          # 開いて撮り、↓↓Enter で「暗い色」を選ぶ（見本が暗くなる）
+          GALLERY_PAGE=23 SHOT_MS=20000 drive input-tray 0 ./target/release/gallery-kargui click:300,154 wait:1000 axtray wait:800 screen:shots/input-tray-menu.png key:down key:down key:enter wait:1000 screen:shots/input-tray-dark.png
+          # 前面でない窓の 1 回目の押下（Mac の決まりでは窓を前面にするだけで、部品は押されない）: 見本を開いた後に
+          # 参考のアプリを前面にし、見本の「暗い色」を 2 回押す。1 回目は click.activate だけ、2 回目で暗くなる
+          KARGUI_SHOT=shots/input-first-click.png KARGUI_SHOT_MS=14000 ./target/release/gallery-kargui --log shots/input-first-click.log &
+          gpid=$!
+          sleep 3
+          ./target/mac-ime-ref > shots/input-first-click-ref.txt 2>&1 &
+          rpid=$!
+          sleep 2
+          ./target/mac-drive "$gpid" 0 click:197,19 wait:800 screen:shots/input-first-click-1.png click:197,19 wait:800 screen:shots/input-first-click-2.png > shots/input-first-click-drive.txt 2>&1 || echo "first click driver exit=$?"
+          kill "$rpid" 2>/dev/null || true
+          if wait "$gpid"; then echo "first-click gallery: exit=0"; else rc=$?; echo "first-click gallery: exit=$rc"; fails="$fails input-first-click"; fi
+          # 通知（.app の束のアプリだけで使える）: (1) 束でない見本で「通知を出す」を押す（記録 notify.unavailable、落ちない）
+          GALLERY_PAGE=24 SHOT_MS=12000 drive input-notify-plain 0 ./target/release/gallery-kargui click:290,154 wait:1000
+          # (2) 見本を .app の束にし（Info.plist の CFBundleIdentifier、その場で ad-hoc 署名）、束の中から開いて「ボタン付きの
+          # 通知」を押す。OS が許可を聞く（CI では押せない）。記録 notify.start・notify.authorization・notify.added と写真を残す
+          mkdir -p /tmp/KarguiGallery.app/Contents/MacOS
+          cp ./target/release/gallery-kargui /tmp/KarguiGallery.app/Contents/MacOS/
+          printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0"><dict>' '<key>CFBundleIdentifier</key><string>dev.kargui.example.gallery</string>' '<key>CFBundleExecutable</key><string>gallery-kargui</string>' '<key>CFBundleName</key><string>KarguiGallery</string>' '<key>CFBundlePackageType</key><string>APPL</string>' '<key>CFBundleVersion</key><string>1</string>' '</dict></plist>' > /tmp/KarguiGallery.app/Contents/Info.plist
+          codesign --force --sign - /tmp/KarguiGallery.app || echo "codesign failed"
+          GALLERY_PAGE=24 SHOT_MS=16000 drive input-notify-bundle 0 /tmp/KarguiGallery.app/Contents/MacOS/gallery-kargui click:530,154 wait:3000 screen:shots/input-notify-bundle-asked.png wait:2000 screen:shots/input-notify-bundle-later.png
+          # kargui が描く題の帯（macOS の形。見本は custom_title_bar）: 信号の丸の見える写真、帯の何も無い所を引っ張って
+          # 窓を動かす、2 回押しで最大化（OS の既定の AppleActionOnDoubleClick）。中身を帯の下まで広げたので、座標は
+          # 窓の外枠の左上から数える（高さに 0 を渡す）
+          SHOT_MS=20000 drive input-titlebar 0 ./target/release/gallery-kargui wait:500 bounds screen:shots/input-titlebar-start.png down:600,18 dragto:500,48 up:500,48 wait:500 bounds screen:shots/input-titlebar-moved.png dclick:600,18 wait:1200 bounds screen:shots/input-titlebar-zoomed.png
+          ls -la shots
+          # どれかが止まったら、ほかの確かめを全部走らせてから、この段を失敗にする
+          if [ -n "$fails" ]; then echo "::error::stopped:$fails"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-window
+          path: shots
