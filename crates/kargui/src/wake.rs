@@ -17,6 +17,10 @@ struct Inner {
 /// sleeps while nothing changes, so a background thread that has new data calls [`Waker::wake`]
 /// after sending it (for example through a `std::sync::mpsc` channel that `view` reads).
 ///
+/// This is the way to do long work such as encoding or downloads. The thread is not slowed down
+/// while the window is minimized, and `view` runs as soon as it is woken, even when a minimized
+/// window draws [`Ui::request_frame`](crate::Ui::request_frame) frames only once a second.
+///
 /// ```
 /// use std::sync::mpsc::{Receiver, channel};
 /// use kargui::{App, Ui, Waker};

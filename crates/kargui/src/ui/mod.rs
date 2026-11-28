@@ -3743,6 +3743,11 @@ impl<'a> Ui<'a> {
     /// Asks for another frame right after this one, for animations.
     /// kargui otherwise draws only when something changes.
     ///
+    /// On Windows and X11, while the window is minimized (or hidden on X11), these frames come at
+    /// most once a second, because nothing on screen changes. Do long work (encoding, downloads,
+    /// file conversion) in another thread and tell the window with [`Waker::wake`](crate::Waker::wake):
+    /// that thread runs at full speed and a wake is never slowed down.
+    ///
     /// ```
     /// # kargui::test::example(|ui| {
     /// ui.request_frame();
@@ -3790,6 +3795,10 @@ impl<'a> Ui<'a> {
     /// Asks for a frame after `after` has passed, without drawing in between (the window sleeps
     /// until then). If it is called several times, the earliest time wins. Use it for timers,
     /// blinking or anything that changes with time but not every frame.
+    ///
+    /// On Windows and X11, while the window is minimized (or hidden on X11), the frame comes no
+    /// sooner than a second after the last one. Do not use it to poll for finished work: do the
+    /// work in another thread and call [`Waker::wake`](crate::Waker::wake) when it is done.
     ///
     /// ```
     /// use std::time::Duration;
