@@ -636,6 +636,28 @@ mod tests {
         assert!(took < std::time::Duration::from_secs(30), "{took:?}");
     }
 
+    /// 長い 1 行の終わりのキャレットの位置を、毎フレーム聞いても重くならない。parley はキャレットの x を、行の頭から
+    /// 字の幅を足して出す。200 万字の 1 行の終わりでは 1 回に約 80 ms かかり、1 行の欄は毎フレーム聞くので、何も
+    /// 変わらないフレームが 70 ms になった（2026-11-28 の X11 の記録）
+    #[test]
+    fn asking_again_for_the_caret_at_the_end_of_a_long_line_is_quick() {
+        let mut t = Text::new().unwrap();
+        let n = 100_000;
+        let laid = t.layout(&"a".repeat(n), BASE, None);
+        let first = laid.x_of(n);
+        assert!(first > laid.width * 0.99, "終わりの位置: {first} {}", laid.width);
+        let caret = laid.caret(n);
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            assert_eq!(laid.x_of(n), first);
+            assert_eq!(laid.caret(n), caret);
+        }
+        let took = started.elapsed();
+        eprintln!("100 回: {took:?}");
+        // 試験の組み立てで、覚える前は 4.4 秒、覚えた後は 0.1 ms だった（Windows の portable の道）
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+    }
+
     /// 長い文字列の並べた結果は、そのフレームで使われなければ忘れる。200 万字の欄で、打つたびに前の版の並べた結果が
     /// 残り、キー 5 つで 0.6〜1.1 GB 増えた（2026-11-28 の測定）。短い文字列は使われなくても覚えておく
     #[test]

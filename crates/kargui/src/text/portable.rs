@@ -2,6 +2,7 @@
 //! 代わりのフォント・当たり判定）、swash で形を作る。フォントは OS に入っている物を fontique（parley の中）で探す。
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -48,7 +49,12 @@ pub(crate) struct Laid {
     /// 当たり判定のために、元の文字列と parley の並べた結果を持つ
     text: String,
     layout: Option<Layout<()>>,
+    /// 聞かれた位置（UTF-16）ごとのカーソルの四角（cursor_box）
+    carets: RefCell<HashMap<usize, (f32, f32, f32)>>,
 }
+
+/// 覚えておくカーソルの四角の数の上限。超えたら全部忘れる
+const CARET_MEMO_LIMIT: usize = 4096;
 
 impl Laid {
     /// UTF-16 で index 文字目の前のカーソルの位置（x, 行の上端, 行の高さ）
@@ -58,9 +64,26 @@ impl Laid {
         if let Some(last) = self.lines.last().filter(|last| index >= last.start && last.start == last.end && self.text.ends_with('\n')) {
             return (0.0, last.top, last.height);
         }
+        self.cursor_box(l, index)
+    }
+
+    /// UTF-16 で index 文字目の前の、parley のカーソルの四角（x, 上端, 高さ）。聞かれた位置の答えは覚える。
+    /// parley はカーソルの x を、行の頭から字の幅を足して出す（Cluster::visual_offset）。200 万字の 1 行の終わりでは
+    /// 1 回に約 80 ms かかり、1 行の入力欄は毎フレーム同じ位置を聞くので、何も変わらないフレームが 70 ms になった
+    /// （2026-11-28 の X11 の記録）。並べた結果は変わらないので、同じ位置には同じ答えを返せる
+    fn cursor_box(&self, l: &Layout<()>, index: usize) -> (f32, f32, f32) {
+        if let Some(&b) = self.carets.borrow().get(&index) {
+            return b;
+        }
         let byte = byte_of_utf16(&self.text, index);
         let g = Cursor::from_byte_index(l, byte, Affinity::Downstream).geometry(l, 0.0);
-        (g.x0 as f32, g.y0 as f32, (g.y1 - g.y0) as f32)
+        let b = (g.x0 as f32, g.y0 as f32, (g.y1 - g.y0) as f32);
+        let mut carets = self.carets.borrow_mut();
+        if carets.len() >= CARET_MEMO_LIMIT {
+            carets.clear();
+        }
+        carets.insert(index, b);
+        b
     }
 
     /// 点 (x, y) に一番近い文字の境目（UTF-16 の位置）
@@ -75,8 +98,7 @@ impl Laid {
     /// UTF-16 で index 文字目の前の位置（並べた範囲の左からの x）
     pub fn x_of(&self, index: usize) -> f32 {
         let Some(l) = &self.layout else { return 0.0 };
-        let byte = byte_of_utf16(&self.text, index);
-        Cursor::from_byte_index(l, byte, Affinity::Downstream).geometry(l, 0.0).x0 as f32
+        self.cursor_box(l, index).0
     }
 
     /// 並べた範囲の左から x の位置に一番近い文字の境目（UTF-16 の位置）
@@ -237,7 +259,7 @@ impl Text {
             let probe = self.make_layout(" ", style, &[], None);
             let baseline = probe.lines[0].baseline;
             let lines = vec![Line { start: 0, end: 0, top: 0.0, height: probe.height, width: 0.0, baseline }];
-            return Laid { glyphs: Vec::new(), chunks: Vec::new(), width: 0.0, height: probe.height, lines, text: String::new(), layout: None };
+            return Laid { glyphs: Vec::new(), chunks: Vec::new(), width: 0.0, height: probe.height, lines, text: String::new(), layout: None, carets: RefCell::default() };
         }
         // 範囲の書体の名前は、借りの前に決めておく
         let run_families: Vec<Option<String>> = runs.iter().map(|r| (r.style.font != style.font).then(|| self.family(r.style.font))).collect();
@@ -326,7 +348,7 @@ impl Text {
         add_trailing_line(s, &mut lines);
         let height = lines.last().map_or(layout.height(), |l| layout.height().max(l.top + l.height));
         // 幅は行末の空白も含める（入力欄のキャレットが空白の後ろへ進むように。DirectWrite と同じ）
-        Laid { chunks: glyph_chunks(&glyphs), glyphs, width: layout.full_width(), height, lines, text: s.to_string(), layout: Some(layout) }
+        Laid { chunks: glyph_chunks(&glyphs), glyphs, width: layout.full_width(), height, lines, text: s.to_string(), layout: Some(layout), carets: RefCell::default() }
     }
 
     /// そのファミリーの並びの、1 行の書体どおりの高さ（覚えておく）。英字と日本語で測って低い方を使う
