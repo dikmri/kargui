@@ -69,6 +69,7 @@ x11rb::atom_manager! {
         _NET_WM_PID,
         _NET_WM_ICON,
         _NET_ACTIVE_WINDOW,
+        _NET_FRAME_EXTENTS,
         UTF8_STRING,
         CLIPBOARD,
         TARGETS,
@@ -473,7 +474,9 @@ impl State {
             | EventMask::POINTER_MOTION
             | EventMask::ENTER_WINDOW
             | EventMask::LEAVE_WINDOW
-            | EventMask::FOCUS_CHANGE;
+            | EventMask::FOCUS_CHANGE
+            // 窓の管理役が付ける枠の厚さ（_NET_FRAME_EXTENTS）の変化を聞く
+            | EventMask::PROPERTY_CHANGE;
         let bg = rt.cx.theme.background;
         let px = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u32;
         let aux = xproto::CreateWindowAux::new().background_pixel((px(bg[0]) << 16) | (px(bg[1]) << 8) | px(bg[2])).event_mask(mask);
@@ -1211,6 +1214,34 @@ impl State {
         let _ = self.conn.flush();
     }
 
+    /// 窓の画面の上の場所を読み直す（中の左上を画面の座標で読み、窓の管理役の枠の厚さを引いて外枠の左上にする）。ほかの窓は
+    /// 場所が変わったら描き直す（ドッキングが窓の場所を並べ方に写す）
+    fn update_place(&mut self, id: WinId) {
+        if self.win(id).is_none() {
+            return;
+        }
+        let client = self.conn.translate_coordinates(id, self.root, 0, 0).ok().and_then(|c| c.reply().ok()).map(|t| (t.dst_x as i32, t.dst_y as i32));
+        let extents = self
+            .conn
+            .get_property(false, id, self.atoms._NET_FRAME_EXTENTS, AtomEnum::CARDINAL, 0, 4)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .and_then(|r| r.value32().map(|v| v.collect::<Vec<u32>>()))
+            .and_then(|v| <[u32; 4]>::try_from(v).ok());
+        let scale = self.scale;
+        let place = client.map(|c| window_place(c, extents, scale));
+        if let Some(w) = self.win(id)
+            && place.is_some()
+            && place != w.rt.cx.place
+        {
+            w.rt.cx.place = place;
+            if w.key.is_some() {
+                w.need_frame = true;
+                w.why = "place";
+            }
+        }
+    }
+
     /// X の知らせを 1 つ処理する
     fn handle(&mut self, ev: XEvent) {
         let focus_in = matches!(ev, XEvent::FocusIn(_));
@@ -1262,25 +1293,10 @@ impl State {
                         log::event("window.size", &format!("physical={}x{} scale={scale:.3}{}", size.0, size.1, w.tag()), "configure");
                     }
                 }
-                // 画面の上の場所（中の左上を画面の座標で読み、論理の画素にする。外枠の左上も同じ所とする）。ほかの窓は
-                // 場所が変わったら描き直す（ドッキングが窓の場所を並べ方に写す）
-                if self.win(e.window).is_some() {
-                    let place = self.conn.translate_coordinates(e.window, self.root, 0, 0).ok().and_then(|c| c.reply().ok()).map(|t| {
-                        let (x, y) = (t.dst_x as f32 / scale, t.dst_y as f32 / scale);
-                        crate::ui::context::WindowPlace { outer: (x, y), client: (x, y), unit: 1.0 / scale }
-                    });
-                    if let Some(w) = self.win(e.window)
-                        && place.is_some()
-                        && place != w.rt.cx.place
-                    {
-                        w.rt.cx.place = place;
-                        if w.key.is_some() {
-                            w.need_frame = true;
-                            w.why = "place";
-                        }
-                    }
-                }
+                self.update_place(e.window);
             }
+            // 窓の管理役が枠の厚さを付けた・変えた（題の帯を外した時など）。外枠の左上を読み直す
+            XEvent::PropertyNotify(p) if p.atom == self.atoms._NET_FRAME_EXTENTS => self.update_place(p.window),
             XEvent::ClientMessage(e) if [self.atoms.XdndEnter, self.atoms.XdndPosition, self.atoms.XdndLeave, self.atoms.XdndDrop].contains(&e.type_) => self.xdnd(e),
             XEvent::ClientMessage(e) if e.type_ == self.atoms.WM_PROTOCOLS => {
                 let data = e.data.as_data32();
@@ -1628,6 +1644,15 @@ fn rescaled(physical: (i32, i32), old: f32, new: f32) -> (u16, u16) {
     (f(physical.0), f(physical.1))
 }
 
+/// 窓の画面の上の場所（論理の画素）。外枠の左上は、中身の左上から窓の管理役の枠の厚さ（_NET_FRAME_EXTENTS の左・上）を
+/// 引く。窓の管理役は Options::position の所に外枠の左上を置くので、読んだ場所をそのまま渡せば同じ所に開く（引かないと、
+/// ドッキングの別の窓を開き直すたびに、枠の厚さだけ右下へずれた）。厚さを知らせない窓の管理役では、中身の左上を使う
+fn window_place(client: (i32, i32), extents: Option<[u32; 4]>, scale: f32) -> crate::ui::context::WindowPlace {
+    let (left, top) = extents.map_or((0, 0), |e| (e[0] as i32, e[2] as i32));
+    let logical = |x: i32, y: i32| (x as f32 / scale, y as f32 / scale);
+    crate::ui::context::WindowPlace { outer: logical(client.0 - left, client.1 - top), client: logical(client.0, client.1), unit: 1.0 / scale }
+}
+
 /// 画面から外れている窓（最小化・隠した）が、タイマーや動きで次に描く時の、いちばん短い間
 const HIDDEN_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -1778,7 +1803,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let local = crate::linux::local_date().zip(crate::linux::local_time()).map_or("unknown".to_string(), |((y, m, d), (h, min))| format!("{y}-{m:02}-{d:02} {h:02}:{min:02}"));
     log::event("window.create", &format!("title={:?} size={:.0}x{:.0} class={} local={local}", options.title, options.size.0, options.size.1, app_id()), "ok");
     let icon = st.main_icon.clone();
-    st.new_window(None, &options.title, options.size, options.min_size, None, icon.as_ref(), rt)?;
+    st.new_window(None, &options.title, options.size, options.min_size, options.position, icon.as_ref(), rt)?;
     // OS の明暗の答えを、最初の絵の前に 150 ms まで待つ
     let answer = st.settings_rx.as_ref().map(|rx| rx.recv_timeout(Duration::from_millis(150)));
     match answer {
@@ -1899,6 +1924,20 @@ mod tests {
         assert_eq!(rescaled((1350, 930), 1.5, 1.25), (1125, 775));
         // 1 画素より小さくしない
         assert_eq!(rescaled((1, 1), 2.0, 1.0), (1, 1));
+    }
+
+    #[test]
+    fn the_outer_corner_leaves_out_the_window_manager_frame() {
+        // openbox の枠（左 1・右 1・上 24・下 5）。Options::position の (953, 374) に外枠を置くと、中身は (954, 398)
+        let p = window_place((954, 398), Some([1, 1, 24, 5]), 1.0);
+        assert_eq!(p.outer, (953.0, 374.0), "読んだ外枠の左上をそのまま渡せば、同じ所に開く");
+        assert_eq!(p.client, (954.0, 398.0));
+        // 倍率 1.5 は論理の画素にする
+        let p = window_place((1500, 600), Some([0, 0, 36, 0]), 1.5);
+        assert_eq!(p.outer, (1000.0, 376.0));
+        assert_eq!(p.client, (1000.0, 400.0));
+        // 枠の厚さを知らせない窓の管理役では、中身の左上を外枠の左上とする
+        assert_eq!(window_place((10, 20), None, 1.0).outer, (10.0, 20.0));
     }
 
     #[test]
