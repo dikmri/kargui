@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-28)
+
+kargui runs on macOS (Apple Silicon), the words kargui shows itself follow the system's language
+(English or Japanese), and very long text in text fields no longer slows every frame. Linux X11 was
+checked on real X servers, and several fixes came from that.
+
+Upgrading from 0.4 (nothing was removed):
+
+- `Options` has a new field, `locale`. Code that builds it by listing every field must add it, or
+  use `..Options::new(title)`.
+- The words kargui shows itself (title bar buttons, the docking menu, the date, time and color
+  pickers, ...) are now in Japanese on a Japanese system. Set `Options::locale` to keep English.
+  The test harness still starts in English.
+- On Windows and X11, frames asked with `Ui::request_frame` and `Ui::request_frame_after` come at
+  most once a second while the window is minimized. Do long work in another thread and wake the
+  window with `Waker::wake`, which is never slowed down.
+- On Windows, with `Options::dark` left at `None`, the look follows the system's light or dark mode
+  while the app runs.
 
 - macOS (Apple Silicon): kargui runs on macOS. Windows with the CPU picture, the mouse and trackpad,
   the keyboard, the input method (composition and candidate window), the clipboard, file dialogs,

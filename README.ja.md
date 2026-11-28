@@ -1,6 +1,6 @@
 # kargui
 
-Rust で書く、軽いネイティブ GUI フレームワーク（Windows 10/11 と Linux。版は 0.4）。名前は「軽い」「Rust」「GUI」から。[English README](README.md)（この文の訳）。
+Rust で書く、軽いネイティブ GUI フレームワーク（Windows 10/11・Linux・macOS。版は 0.5）。名前は「軽い」「Rust」「GUI」から。[English README](README.md)（この文の訳）。
 
 <p align="center">
   <picture>
@@ -111,7 +111,7 @@ cargo run -p xtask -- check                      # 説明と例の割合・部�
 
 ## 今の状態と今後
 
-0.1 は最初の版。0.2 で、ふつうのデスクトップアプリに要る部品と仕組みの多くを足し、0.3 で Linux でも動くようにし、0.4 でドッキングと、題の帯・トレイ・通知・ハイコントラスト・既定のアイコンを足した（変わった所と、前の版から上げる時に直す所は [CHANGELOG.md](CHANGELOG.md)）。確かめとして、メモ帳・家計簿・ファイルの閲覧の 3 本を kargui だけで書き（`examples/notepad`・`examples/expenses`・`examples/files`）、書いて見つかった不足は kargui の側で直した。`examples/gallery` は、部品を 1 つずつページに分けて見せる。足すたびに、同じ道具で軽さが保たれているかを測る。
+0.1 は最初の版。0.2 で、ふつうのデスクトップアプリに要る部品と仕組みの多くを足し、0.3 で Linux でも動くようにし、0.4 でドッキングと、題の帯・トレイ・通知・ハイコントラスト・既定のアイコンを足し、0.5 で macOS でも動くようにし、kargui が自分で出す文字を英語か日本語にし、長い文字の入力欄を速くした（変わった所と、前の版から上げる時に直す所は [CHANGELOG.md](CHANGELOG.md)）。確かめとして、メモ帳・家計簿・ファイルの閲覧の 3 本を kargui だけで書き（`examples/notepad`・`examples/expenses`・`examples/files`）、書いて見つかった不足は kargui の側で直した。`examples/gallery` は、部品を 1 つずつページに分けて見せる。足すたびに、同じ道具で軽さが保たれているかを測る。
 
 まだ無い主な物:
 

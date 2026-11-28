@@ -1,6 +1,6 @@
 # kargui
 
-A light native GUI framework for Rust (Windows 10/11 and Linux; version 0.4). The name comes from
+A light native GUI framework for Rust (Windows 10/11, Linux and macOS; version 0.5). The name comes from
 the Japanese word *karui* (light), Rust and GUI. [日本語の README](README.ja.md) (the original; this is
 a translation).
 
@@ -134,8 +134,9 @@ The input method checks type into the foreground window, so they run only while 
 ## Status and next steps
 
 0.1 was the first release. 0.2 added the widgets and mechanisms most everyday desktop apps need,
-0.3 brought apps to Linux, and 0.4 adds docking panels, the title bar, a tray icon,
-notifications, high contrast and a default app icon (changes and how to upgrade:
+0.3 brought apps to Linux, 0.4 added docking panels, the title bar, a tray icon,
+notifications, high contrast and a default app icon, and 0.5 brings apps to macOS, shows kargui's
+own words in English or Japanese, and makes long text fast (changes and how to upgrade:
 [CHANGELOG.md](CHANGELOG.md)). As a check,
 three ordinary apps were written with kargui alone: a text editor, a household budget and a file
 browser (`examples/notepad`, `examples/expenses`, `examples/files`); what they showed was fixed in

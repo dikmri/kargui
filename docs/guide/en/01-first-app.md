@@ -1,4 +1,4 @@
-<!-- source: ja/01-first-app.md fnv=83337ac724e6385c -->
+<!-- source: ja/01-first-app.md fnv=1d91396b47316ec7 -->
 <!-- covers: App Options run Ui::heading Ui::label Ui::button Ui::row sig=c5a08b17950f69d8 -->
 # Your first app
 
@@ -10,7 +10,7 @@ Add kargui to `Cargo.toml` (or run `cargo add kargui`).
 
 ```toml
 [dependencies]
-kargui = "0.4"
+kargui = "0.5"
 ```
 
 For what is newer than the crates.io release, write `kargui = { git = "https://github.com/dikmri/kargui" }`; for a kargui on your disk, write `kargui = { path = "../kargui/crates/kargui" }`. Building on Linux needs the fontconfig development files (`libfontconfig1-dev` and `pkg-config` on Debian and Ubuntu).

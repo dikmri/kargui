@@ -9,7 +9,7 @@ kargui のアプリは、状態を持つ自分の構造体と、その画面を�
 
 ```toml
 [dependencies]
-kargui = "0.4"
+kargui = "0.5"
 ```
 
 crates.io に出す前の新しい物を使う時は `kargui = { git = "https://github.com/dikmri/kargui" }`、手元の kargui を使う時は `kargui = { path = "../kargui/crates/kargui" }` と書きます。Linux で組み立てるには、fontconfig の開発用ファイルが要ります（Debian と Ubuntu では `libfontconfig1-dev` と `pkg-config`）。
