@@ -149,8 +149,12 @@ pub(crate) struct Text {
     scale: ScaleContext,
     glyphs: HashMap<GlyphKey, Option<Slot>>,
     layouts: LayoutCache<Laid>,
+    /// 入力欄の文字のかたまりに分けて並べた結果（block.rs）
+    pub(super) blocks: LayoutCache<super::Block>,
     pub atlas: Atlas,
     pub layouts_made: u64,
+    /// 並べた文字のバイト数の合計（試験で、打った時に並べ直した量を見る）
+    pub bytes_laid: u64,
     pub glyphs_made: u64,
 }
 
@@ -165,8 +169,10 @@ impl Text {
             scale: ScaleContext::new(),
             glyphs: HashMap::new(),
             layouts: LayoutCache::new(),
+            blocks: LayoutCache::new(),
             atlas: Atlas::new(ATLAS_SIZE),
             layouts_made: 0,
+            bytes_laid: 0,
             glyphs_made: 0,
         })
     }
@@ -174,12 +180,14 @@ impl Text {
     /// フレームの終わり。このフレームで使わなかった長い文字列の並べた結果を忘れる
     pub fn end_frame(&mut self) {
         self.layouts.end_frame();
+        self.blocks.end_frame();
     }
 
     /// 拡大率が変わったときなどに、作った物を全部忘れる
     pub fn reset(&mut self) {
         self.glyphs.clear();
         self.layouts.clear();
+        self.blocks.clear();
         self.atlas = self.atlas.renewed();
     }
 
@@ -193,6 +201,7 @@ impl Text {
         if !files.is_empty() {
             self.families.clear();
             self.layouts.clear();
+        self.blocks.clear();
             let bytes: usize = files.iter().map(|f| f.len()).sum();
             log::event("font.load", &format!("files={} bytes={bytes}", files.len()), &format!("families={families}"));
         }
@@ -253,6 +262,11 @@ impl Text {
         laid
     }
 
+    /// 並べるが、結果を覚えない（入力欄の文字のかたまり。かたまりは Block が持つ）
+    pub(super) fn shape(&mut self, s: &str, style: TextStyle, max_width: Option<f32>) -> Laid {
+        self.make_layout(s, style, &[], max_width)
+    }
+
     fn make_layout(&mut self, s: &str, style: TextStyle, runs: &[Run], max_width: Option<f32>) -> Laid {
         // 空の文字列は行が無く高さ 0 になるので、1 行分の高さだけを持つ（DirectWrite と同じ）
         if s.is_empty() {
@@ -264,6 +278,7 @@ impl Text {
         // 範囲の書体の名前は、借りの前に決めておく
         let run_families: Vec<Option<String>> = runs.iter().map(|r| (r.style.font != style.font).then(|| self.family(r.style.font))).collect();
         self.layouts_made += 1;
+        self.bytes_laid += s.len() as u64;
         let family = self.family(style.font);
         // 行の間が UI の書体より狭い書体（BIZ UD ゴシックなど）は、UI の書体の行の高さに広げる（字は行の真ん中に来る）
         let line = if style.font != FontId(0) {

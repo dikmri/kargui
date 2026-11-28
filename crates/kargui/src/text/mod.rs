@@ -19,6 +19,9 @@ mod portable;
 #[cfg(any(not(windows), feature = "portable-text"))]
 pub(crate) use portable::{Laid, Text};
 
+mod block;
+pub(crate) use block::Block;
+
 /// 文字の形の表の一辺（画素）
 pub(crate) const ATLAS_SIZE: u32 = 1024;
 
@@ -300,6 +303,16 @@ impl<L> LayoutCache<L> {
 
     fn clear(&mut self) {
         self.map.clear();
+    }
+
+    /// key と同じ書式・幅で、長い文字列の結果（打つ前の版を探すため。block.rs）
+    fn similar<'a>(&'a self, key: &'a LayoutKey) -> impl Iterator<Item = &'a std::rc::Rc<L>> {
+        self.map
+            .iter()
+            .filter(move |(k, _)| {
+                k.text.len() >= LONG_TEXT && (k.size, k.bold, k.font, k.max_width) == (key.size, key.bold, key.font, key.max_width) && k.runs == key.runs
+            })
+            .map(|(_, (laid, _))| laid)
     }
 
     /// フレームの終わり。長い文字列の並べた結果のうち、このフレームで使わなかった物を忘れる。入力欄に長い文字列を

@@ -203,10 +203,14 @@ pub(crate) struct Text {
     /// 形の鍵にフォントのポインタを使うので、使ったフォントを持ち続ける
     faces: Vec<IDWriteFontFace>,
     layouts: LayoutCache<Laid>,
+    /// 入力欄の文字のかたまりに分けて並べた結果（block.rs）
+    pub(super) blocks: LayoutCache<super::Block>,
     pub atlas: Atlas,
     collector: ComObject<Collector>,
     renderer: IDWriteTextRenderer,
     pub layouts_made: u64,
+    /// 並べた文字のバイト数の合計（試験で、打った時に並べ直した量を見る）
+    pub bytes_laid: u64,
     pub glyphs_made: u64,
 }
 
@@ -237,10 +241,12 @@ impl Text {
             glyphs: HashMap::new(),
             faces: Vec::new(),
             layouts: LayoutCache::new(),
+            blocks: LayoutCache::new(),
             atlas: Atlas::new(ATLAS_SIZE),
             collector,
             renderer,
             layouts_made: 0,
+            bytes_laid: 0,
             glyphs_made: 0,
         })
     }
@@ -248,6 +254,7 @@ impl Text {
     /// フレームの終わり。このフレームで使わなかった長い文字列の並べた結果を忘れる
     pub fn end_frame(&mut self) {
         self.layouts.end_frame();
+        self.blocks.end_frame();
     }
 
     /// 拡大率が変わったときなどに、作った物を全部忘れる
@@ -256,6 +263,7 @@ impl Text {
         self.glyphs.clear();
         self.faces.clear();
         self.layouts.clear();
+        self.blocks.clear();
         self.atlas = self.atlas.renewed();
     }
 
@@ -272,6 +280,7 @@ impl Text {
                 self.families.clear();
                 self.formats.clear();
                 self.layouts.clear();
+        self.blocks.clear();
                 log::event("font.load", &format!("files={} bytes={bytes}", files.len()), &format!("families={families}"));
                 families
             }
@@ -451,8 +460,17 @@ impl Text {
         Ok(())
     }
 
+    /// 並べるが、結果を覚えない（入力欄の文字のかたまり。かたまりは Block が持つ）
+    pub(super) fn shape(&mut self, s: &str, style: TextStyle, max_width: Option<f32>) -> Laid {
+        self.make_layout(s, style, &[], max_width).unwrap_or_else(|e| {
+            log::event("text.layout", &format!("chars={} size={}", s.chars().count(), style.size), &format!("error={e:?}"));
+            Laid::empty(style.size * 1.4)
+        })
+    }
+
     fn make_layout(&mut self, s: &str, style: TextStyle, runs: &[Run], max_width: Option<f32>) -> Result<Laid> {
         self.layouts_made += 1;
+        self.bytes_laid += s.len() as u64;
         let format = self.format(style.size, style.bold, style.font)?;
         let wide: Vec<u16> = s.encode_utf16().collect();
         let layout = unsafe { self.factory.CreateTextLayout(&wide, &format, max_width.unwrap_or(1.0e6).max(1.0), 1.0e6)? };
