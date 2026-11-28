@@ -454,14 +454,17 @@ impl<'a> Ui<'a> {
             view(self);
             return;
         };
+        // macOS の形: 信号の丸は OS が描く。左右に同じ幅の空きを取り、題を窓の真ん中に置く
+        let mac = self.cx.mac_bar;
         let (pad, gap) = (self.tree.layout[0].pad, self.tree.layout[0].gap);
         self.tree.layout[0].pad = (0.0, 0.0);
         self.tree.layout[0].gap = 0.0;
         let (bar, _) = self.add(Kind::TitleBar { focused: csd.focused }, Dir::Row);
-        let (h, side, between) = (self.px(TITLE_BAR_H), self.px(6.0), self.px(4.0));
+        let (h, side, between) = (self.px(mac.map_or(TITLE_BAR_H, |m| m.height)), self.px(6.0), self.px(4.0));
+        let mac_inset = mac.map(|m| self.px(m.inset));
         let l = &mut self.tree.layout[bar];
         l.height = Size::Fixed(h);
-        l.pad = (if csd.windows { 0.0 } else { side }, 0.0);
+        l.pad = (if csd.windows || mac.is_some() { 0.0 } else { side }, 0.0);
         // 帯の子の間は 0 にし、すき間は題を入れる所の余白で作る（空の入れ物があっても題が真ん中からずれないように。
         // 空の入れ物を子の並びから外すと、読み上げの木に親の無い節が入り、accesskit が止める）
         l.gap = 0.0;
@@ -492,6 +495,11 @@ impl<'a> Ui<'a> {
                 }
             }
         }
+        if let Some(inset) = mac_inset {
+            // 左は信号の丸の分、右は同じ幅（題を窓の真ん中に置くため）
+            self.tree.layout[left].width = Size::Fixed(inset);
+            self.tree.layout[right].width = Size::Fixed(inset);
+        }
         let (body, _) = self.add(Kind::Column, Dir::Column);
         let l = &mut self.tree.layout[body];
         l.pad = pad;
@@ -505,9 +513,18 @@ impl<'a> Ui<'a> {
         let empty = self.tree.layout[slot].children.is_empty();
         if empty {
             let mut t = self.child(title);
+            // macOS は題を真ん中に置く（並べ方に主の向きの寄せ方は無いので、左右に同じ伸びる空きを置く）
+            if mac.is_some() {
+                let (s, _) = t.add(Kind::Row, Dir::Row);
+                t.tree.layout[s].width = Size::Fill(1.0);
+            }
             let label = t.label(&csd.title).bold();
             if !csd.focused {
                 label.weak();
+            }
+            if mac.is_some() {
+                let (s, _) = t.add(Kind::Row, Dir::Row);
+                t.tree.layout[s].width = Size::Fill(1.0);
             }
         }
         // すき間: GNOME は題の左右とアプリの部品の左に間を 1 つずつ（ボタンとの間）
@@ -520,7 +537,7 @@ impl<'a> Ui<'a> {
         // GNOME で題を出す時は、左右のボタンの入れ物を同じ幅にして題を窓の真ん中に置く。それ以外は題の所が残りを取る
         // （何も無い所は窓をつかむ所）
         let fill = Size::Fill(1.0);
-        if empty && !csd.windows {
+        if empty && !csd.windows && mac.is_none() {
             self.tree.layout[left].width = fill;
             self.tree.layout[right].width = fill;
         } else {

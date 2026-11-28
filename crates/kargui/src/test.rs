@@ -4968,6 +4968,35 @@ mod tests {
     }
 
     #[test]
+    fn mac_style_title_bar_leaves_room_for_the_traffic_lights_and_centers_the_title() {
+        use crate::ui::context::{Csd, MacBar};
+        let mac = || Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![], windows: false });
+        let bar = Some(MacBar { inset: 80.0, height: 38.0 });
+        // 帯に何も入れないアプリ: 題は窓の真ん中で、帯（高さ 38）の中。kargui のボタンは出さない（信号の丸は OS）
+        let mut h = Harness::new(Titled::default());
+        h.rt.cx.csd = mac();
+        h.rt.cx.mac_bar = bar;
+        h.frame();
+        let t = h.find("Notes").unwrap();
+        let width = h.rt.cx.width / h.rt.cx.scale;
+        assert!((t.x + t.w / 2.0 - width / 2.0).abs() < 2.0, "{t:?} width={width}");
+        assert!(t.y > 0.0 && t.y + t.h <= 38.0, "{t:?}");
+        assert!(h.find("Close").is_none() && h.find("Minimize").is_none());
+        assert!(h.find("Count").unwrap().y >= 38.0);
+        // 帯に部品を入れるアプリ: 部品は信号の丸の分の空き（80）の右から並ぶ。本文は帯の下
+        let mut h = Harness::new(Tooled::default());
+        h.rt.cx.csd = mac();
+        h.rt.cx.mac_bar = bar;
+        h.frame();
+        let (new, draft) = (h.find("New").unwrap(), h.find("Draft").unwrap());
+        assert!(new.x >= 80.0 && new.x < 100.0 && new.x < draft.x, "{new:?} {draft:?}");
+        assert!(new.y > 0.0 && new.y + new.h <= 38.0, "{new:?}");
+        assert!(h.find("Count").unwrap().y >= 38.0);
+        h.click("New");
+        assert_eq!(h.app().news, 1);
+    }
+
+    #[test]
     fn windows_style_title_bar_puts_square_buttons_at_the_right_end() {
         use crate::ui::context::{Csd, CsdButton as B, CsdRequest as R};
         let windows = || Some(Csd { title: "Notes".into(), focused: true, maximized: false, tiled: false, left: vec![], right: vec![B::Minimize, B::Maximize, B::Close], windows: true });

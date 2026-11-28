@@ -27,12 +27,12 @@ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMarkedClauseSegmentAttributeName, NSModalResponseOK, NSOpenPanel, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSPasteboard, NSPasteboardTypeFileURL, NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSPasteboardTypeString, NSResponder, NSSavePanel, NSTextInputClient, NSTextInputContext, NSView,
-    NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSToolbar, NSWindow, NSWindowButton, NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo};
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate, NSDefaultRunLoopMode, NSNotFound, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger, NSURL,
+    MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSDate, NSDefaultRunLoopMode, NSNotFound, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger, NSURL, NSUserDefaults,
 };
 
 use crate::app::{App, Frame, Options};
@@ -44,7 +44,7 @@ use crate::mac_keys::{key_of, mods_of, typed};
 use crate::runtime::Runtime;
 use crate::text::Text;
 use crate::ui::Id;
-use crate::ui::context::Clipboard;
+use crate::ui::context::{Clipboard, Csd, MacBar};
 
 /// アニメーションの 1 コマの間（60 Hz）
 const ANIMATION_STEP: Duration = Duration::from_millis(16);
@@ -897,6 +897,10 @@ struct Window {
     a11y_actions: Rc<RefCell<Vec<accesskit::ActionRequest>>>,
     /// ファイルを落とせる窓だと OS に届け出た
     files_registered: bool,
+    /// kargui が題の帯を描く窓（Options::custom_title_bar）。信号の丸は OS が描き、帯の中身は kargui が描く
+    custom_title_bar: bool,
+    /// 窓の題（kargui が描く帯に出す）
+    title: String,
     /// OS の明暗に従う（アプリが Options::dark で決めていない）
     follow_dark: bool,
 }
@@ -913,6 +917,7 @@ impl Window {
             self.need_frame = true;
             self.why = "resize";
         }
+        self.sync_title_bar();
         if self.wake_at.is_some_and(|t| t <= Instant::now()) {
             self.wake_at = None;
             self.need_frame = true;
@@ -980,6 +985,35 @@ impl Window {
             if let Some(ctx) = self.view.inputContext() {
                 ctx.invalidateCharacterCoordinates();
             }
+        }
+    }
+
+    /// kargui が描く題の帯の様子（前面か・最大化か・全画面か、信号の丸の分の空き、帯の高さ）を Runtime に渡す
+    /// （Options::custom_title_bar の窓だけ。変わった時だけ描き直す）
+    fn sync_title_bar(&mut self) {
+        if !self.custom_title_bar {
+            return;
+        }
+        let full_screen = self.ns.styleMask().contains(NSWindowStyleMask::FullScreen);
+        // 信号の丸の右端（題の帯の中の座標。帯は窓の左端から始まる）から 12 空ける。全画面では信号の丸を隠すので空けない
+        let lights = self.ns.standardWindowButton(NSWindowButton::ZoomButton).map(|b| {
+            let f = b.frame();
+            (f.origin.x + f.size.width) as f32
+        });
+        let inset = if full_screen { 12.0 } else { lights.map_or(78.0, |r| r + 12.0) };
+        // 帯の高さ = 窓の高さ − 中身を置ける所（contentLayoutRect）の高さ。全画面で 0 になる時は道具の帯の高さ
+        let frame = self.ns.frame();
+        let layout = self.ns.contentLayoutRect();
+        let bar = (frame.size.height - layout.size.height) as f32;
+        let height = if bar >= 20.0 { bar } else { 38.0 };
+        let csd = Csd { title: self.title.clone(), focused: self.ns.isKeyWindow(), maximized: self.ns.isZoomed(), tiled: full_screen, left: vec![], right: vec![], windows: false };
+        let mac = MacBar { inset, height };
+        if self.rt.cx.csd.as_ref() != Some(&csd) || self.rt.cx.mac_bar != Some(mac) {
+            log::event("title_bar.state", &format!("focused={} maximized={} full_screen={full_screen}{}", csd.focused, csd.maximized, self.tag()), &format!("inset={inset:.0} height={height:.0}"));
+            self.rt.cx.csd = Some(csd);
+            self.rt.cx.mac_bar = Some(mac);
+            self.need_frame = true;
+            self.why = "title_bar";
         }
     }
 
@@ -1085,14 +1119,27 @@ fn new_runtime(title: &str, dark: bool, font: &crate::Font, fonts: &[std::borrow
 }
 
 /// NSWindow・委任先・中身の NSView・読み上げの橋渡しを作り、Window にする（まだ出さない）
-fn new_window(mtm: MainThreadMarker, key: Option<String>, title: &str, size: (f32, f32), min_size: Option<(f32, f32)>, rt: Runtime, follow_dark: bool) -> Window {
+#[allow(clippy::too_many_arguments)]
+fn new_window(mtm: MainThreadMarker, key: Option<String>, title: &str, size: (f32, f32), min_size: Option<(f32, f32)>, custom_title_bar: bool, rt: Runtime, follow_dark: bool) -> Window {
     let (lw, lh) = (size.0 as f64, size.1 as f64);
-    let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable;
+    let mut style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable;
+    if custom_title_bar {
+        // 中身を題の帯の下まで広げ、帯の中身を kargui が描く（信号の丸は OS が中身の上に描く）
+        style |= NSWindowStyleMask::FullSizeContentView;
+    }
     // SAFETY: 窓を作る AppKit の関数。閉じた時に放さない（下の setReleasedWhenClosed）ので、Retained の持ち方と合う
     let ns = unsafe { NSWindow::initWithContentRect_styleMask_backing_defer(NSWindow::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(lw, lh)), style, NSBackingStoreType::Buffered, false) };
     // SAFETY: Retained で持つので、閉じた時に AppKit に放させない
     unsafe { ns.setReleasedWhenClosed(false) };
     ns.setTitle(&NSString::from_str(title));
+    if custom_title_bar {
+        // 帯を透明にして題の文字を隠す。空の道具の帯（unifiedCompact）を付けて帯を高くし、信号の丸を帯の縦の真ん中に置く
+        ns.setTitlebarAppearsTransparent(true);
+        ns.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+        let toolbar = NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), &NSString::from_str("kargui.titlebar"));
+        ns.setToolbar(Some(&toolbar));
+        ns.setToolbarStyle(NSWindowToolbarStyle::UnifiedCompact);
+    }
     if let Some((mw, mh)) = min_size {
         ns.setContentMinSize(NSSize::new(mw as f64, mh as f64));
     }
@@ -1135,6 +1182,8 @@ fn new_window(mtm: MainThreadMarker, key: Option<String>, title: &str, size: (f3
         a11y_actions,
         follow_dark,
         files_registered: false,
+        custom_title_bar,
+        title: title.to_string(),
     };
     w.sync_size();
     w.sync_title_appearance();
@@ -1161,7 +1210,7 @@ fn sync_windows(s: &mut State, mtm: MainThreadMarker) {
                 continue;
             }
         };
-        let w = new_window(mtm, Some(r.key.clone()), &r.title, r.size, r.min_size, rt, follow);
+        let w = new_window(mtm, Some(r.key.clone()), &r.title, r.size, r.min_size, r.custom_title_bar, rt, follow);
         // 置く場所: 頼まれた場所（画面の左上から。macOS の画面の座標は左下が原点）か、主の窓から右下へずらす
         match (r.position, w.ns.screen()) {
             (Some((x, y)), Some(screen)) => {
@@ -1208,7 +1257,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let rt = new_runtime(&options.title, dark, &options.font, &options.fonts)?;
     log::event("theme.contrast", &format!("high={}", rt.cx.os_high_contrast), &format!("system forced={:?}", crate::theme::option()));
     let japanese = matches!(rt.cx.locale, crate::Locale::Japanese);
-    let w = new_window(mtm, None, &options.title, options.size, options.min_size, rt, options.dark.is_none());
+    let w = new_window(mtm, None, &options.title, options.size, options.min_size, options.custom_title_bar, rt, options.dark.is_none());
     match options.position {
         // 画面の座標は左下が原点。kargui の位置は左上なので、ここでは真ん中に置く（位置の対応は後で）
         Some(_) | None => w.ns.center(),
@@ -1469,6 +1518,38 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
 }
 
 /// 知らせを kargui の入力に直す。AppKit にも渡す時は true
+/// kargui が描く題の帯の押下（macOS の形）。信号の丸の所は AppKit に任せる（Some(true)）。帯の何も無い所は窓を動かすか、
+/// 2 回押しなら OS の設定（AppleActionOnDoubleClick）どおりにし、AppKit にも部品にも渡さない（Some(false)）。帯の中の部品の
+/// 上と帯の外は None（ふつうの押下）
+fn title_bar_press(w: &mut Window, ev: &NSEvent, x: f32, y: f32) -> Option<bool> {
+    let bar = w.rt.cx.mac_bar.filter(|_| w.custom_title_bar)?;
+    let s = w.scale as f32;
+    if y >= bar.height * s {
+        return None;
+    }
+    if x < bar.inset * s {
+        log::event("title_bar.lights", &format!("x={x:.0} y={y:.0}{}", w.tag()), "to AppKit");
+        return Some(true);
+    }
+    let empty = w.rt.cx.prev.title_bar.is_some_and(|r| r.contains(x, y)) && w.rt.cx.hit(x, y).filter(|h| h.enabled).is_none();
+    if !empty {
+        return None;
+    }
+    if ev.clickCount() >= 2 {
+        let action = NSUserDefaults::standardUserDefaults().stringForKey(&NSString::from_str("AppleActionOnDoubleClick")).map(|a| a.to_string());
+        match action.as_deref() {
+            Some("Minimize") => w.ns.miniaturize(None),
+            Some("None") => {}
+            _ => w.ns.zoom(None),
+        }
+        log::event("title_bar.double_click", &format!("x={x:.0} y={y:.0}{}", w.tag()), &format!("action={action:?} zoomed={}", w.ns.isZoomed()));
+    } else {
+        log::event("title_bar.drag", &format!("x={x:.0} y={y:.0}{}", w.tag()), "performWindowDragWithEvent");
+        w.ns.performWindowDragWithEvent(ev);
+    }
+    Some(false)
+}
+
 fn handle(w: &mut Window, ev: &NSEvent, last_press: &mut Option<(Instant, f32, f32, u8)>) -> bool {
     let ty = ev.r#type();
     let mods = mods_of(ev.modifierFlags().0);
@@ -1485,6 +1566,9 @@ fn handle(w: &mut Window, ev: &NSEvent, last_press: &mut Option<(Instant, f32, f
                 // acceptsFirstMouse: の既定と同じ）。前面にするのは AppKit（sendEvent）。離した時の知らせも渡さない
                 log::event("click.activate", &format!("x={x:.0} y={y:.0}"), "window was not key; not sent to widgets");
             } else if inside(w, x, y) {
+                if let Some(pass) = title_bar_press(w, ev, x, y) {
+                    return pass;
+                }
                 let count = (ev.clickCount().clamp(1, 3)) as u8;
                 let target = w.rt.cx.hit(x, y).map(|h| h.id);
                 log::event("click", &format!("x={x:.0} y={y:.0} count={count}"), &format!("target={target:?}"));

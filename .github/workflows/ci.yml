@@ -110,7 +110,7 @@ jobs:
             if wait "$pid"; then echo "$name: exit=0"; else rc=$?; echo "$name: exit=$rc"; fails="$fails $name"; fi
           }
           # 暗い色のボタンを押す（中身と題の帯が暗くなる）・左の一覧をホイールで下へ送る・一覧の行に乗る
-          drive input-gallery 620 ./target/release/gallery-kargui click:129,28 wait:300 wheel:120,400,-5 wait:300 move:120,300
+          drive input-gallery 0 ./target/release/gallery-kargui click:129,28 wait:300 wheel:120,400,-5 wait:300 move:120,300
           # 金額の欄で全部を選んで 1234 を打ち Enter・上の矢印で 100 足す・メモに tesx と打って 1 字消して t と あ・日付が無いまま追加を押す
           drive input-expenses 600 ./target/release/expenses-kargui click:90,72 key:cmd+a type:1234 key:enter click:149,72 click:500,72 type:tesx key:backspace type:t type:あ click:43,116 wait:300
           # 窓の仕組み: 表の行の右クリックのメニュー（キーで選ぶ）・クリップボード（Command+C・V）・ダブルクリック・
@@ -121,10 +121,10 @@ jobs:
           # ファイルのダイアログ（見本の 19 ページ目）: 開くを出して撮り、Esc で取り消す（答えは空）。もう一度出し、
           # Command+Shift+G で場所を打って /tmp/kargui-open.txt を選ぶ（答えは 1 つ。見本が選んだ場所を表示する）
           echo hello > /tmp/kargui-open.txt
-          GALLERY_PAGE=19 SHOT_MS=25000 drive input-file-dialog 620 ./target/release/gallery-kargui click:300,154 wait:1500 screen:shots/input-file-dialog-open.png key:escape wait:800 click:300,154 wait:1500 key:cmd+shift+g wait:1000 type:/tmp/kargui-open.txt wait:800 screen:shots/input-file-dialog-goto.png key:enter wait:1000 key:enter wait:1500
+          GALLERY_PAGE=19 SHOT_MS=25000 drive input-file-dialog 0 ./target/release/gallery-kargui click:300,154 wait:1500 screen:shots/input-file-dialog-open.png key:escape wait:800 click:300,154 wait:1500 key:cmd+shift+g wait:1000 type:/tmp/kargui-open.txt wait:800 screen:shots/input-file-dialog-goto.png key:enter wait:1000 key:enter wait:1500
           # 読み上げ（accesskit_macos）: 木を書き出す（これで読み上げが使われ始め、次のフレームで木を渡す）。少し待って
           # もう一度書き出し、「ふつう」のボタンを読み上げの操作（AXPress）で 2 回押す（見本の「押した回数」が 2 になる）
-          SHOT_MS=15000 drive input-a11y 620 ./target/release/gallery-kargui wait:1000 ax wait:1000 ax axpress:283,154 wait:500 axpress:283,154 wait:800 screen:shots/input-a11y-screen.png
+          SHOT_MS=15000 drive input-a11y 0 ./target/release/gallery-kargui wait:1000 ax wait:1000 ax axpress:283,154 wait:500 axpress:283,154 wait:800 screen:shots/input-a11y-screen.png
           # 日本語入力を 4 つの相手で比べる。この仮想の Mac で最初に日本語入力を使ったアプリは、45 秒待っても英字が
           # そのまま入った。2 番目に使ったテキストエディットは変換できた（1 回）。
           # (1) テキストエディットで一度使って終わらせる (2) 新しく開いたテキストエディット (3) 最小の参考のアプリ
@@ -155,7 +155,7 @@ jobs:
           drive input-ime-2 600 ./target/release/expenses-kargui click:500,72 inputsource:com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese wait:800 type:nihongo wait:500 screen:shots/input-ime-2-preedit.png key:space wait:800 screen:shots/input-ime-2-converted.png key:enter wait:500 inputsource:com.apple.keylayout.ABC type:ok wait:300
           # OS の明暗の切り替え（真似る）とアプリのメニュー: 見本（OS の明暗に従う）で暗くして撮り、明るく戻し、
           # 読み上げの木でメニューの項目を見て、⌘Q で終わる（閉じる前の確認を通る）
-          SHOT_MS=30000 drive input-system 620 ./target/release/gallery-kargui wait:800 theme:dark wait:1000 screen:shots/input-system-dark.png theme:light wait:1000 screen:shots/input-system-light.png ax key:cmd+q wait:1000
+          SHOT_MS=30000 drive input-system 0 ./target/release/gallery-kargui wait:800 theme:dark wait:1000 screen:shots/input-system-dark.png theme:light wait:1000 screen:shots/input-system-light.png ax key:cmd+q wait:1000
           defaults delete -g AppleInterfaceStyle 2>/dev/null || true
           # 複数の窓（Ui::window）: files の表の行を右クリックしてプロパティを選ぶと別の窓が開く。撮ってから、その窓の
           # 閉じるボタン（主の窓から 30 ずつ右下にずらして置く）を押す（アプリが閉じたと知り、別の窓が閉じる）
@@ -171,7 +171,7 @@ jobs:
           if wait "$npid"; then echo "notepad: exit=0"; else rc=$?; echo "notepad: exit=$rc"; fails="$fails input-drop"; fi
           # トレイ（NSStatusItem）: 見本の 24 ページ目で「通知領域にアイコンを出す」を入れ、トレイの項目を押してメニューを
           # 開いて撮り、↓↓Enter で「暗い色」を選ぶ（見本が暗くなる）
-          GALLERY_PAGE=23 SHOT_MS=20000 drive input-tray 620 ./target/release/gallery-kargui click:300,154 wait:1000 axtray wait:800 screen:shots/input-tray-menu.png key:down key:down key:enter wait:1000 screen:shots/input-tray-dark.png
+          GALLERY_PAGE=23 SHOT_MS=20000 drive input-tray 0 ./target/release/gallery-kargui click:300,154 wait:1000 axtray wait:800 screen:shots/input-tray-menu.png key:down key:down key:enter wait:1000 screen:shots/input-tray-dark.png
           # 前面でない窓の 1 回目の押下（Mac の決まりでは窓を前面にするだけで、部品は押されない）: 見本を開いた後に
           # 参考のアプリを前面にし、見本の「暗い色」を 2 回押す。1 回目は click.activate だけ、2 回目で暗くなる
           KARGUI_SHOT=shots/input-first-click.png KARGUI_SHOT_MS=14000 ./target/release/gallery-kargui --log shots/input-first-click.log &
@@ -180,9 +180,13 @@ jobs:
           ./target/mac-ime-ref > shots/input-first-click-ref.txt 2>&1 &
           rpid=$!
           sleep 2
-          ./target/mac-drive "$gpid" 620 click:129,28 wait:800 screen:shots/input-first-click-1.png click:129,28 wait:800 screen:shots/input-first-click-2.png > shots/input-first-click-drive.txt 2>&1 || echo "first click driver exit=$?"
+          ./target/mac-drive "$gpid" 0 click:129,28 wait:800 screen:shots/input-first-click-1.png click:129,28 wait:800 screen:shots/input-first-click-2.png > shots/input-first-click-drive.txt 2>&1 || echo "first click driver exit=$?"
           kill "$rpid" 2>/dev/null || true
           if wait "$gpid"; then echo "first-click gallery: exit=0"; else rc=$?; echo "first-click gallery: exit=$rc"; fails="$fails input-first-click"; fi
+          # kargui が描く題の帯（macOS の形。見本は custom_title_bar）: 信号の丸の見える写真、帯の何も無い所を引っ張って
+          # 窓を動かす、2 回押しで最大化（OS の既定の AppleActionOnDoubleClick）。中身を帯の下まで広げたので、座標は
+          # 窓の外枠の左上から数える（高さに 0 を渡す）
+          SHOT_MS=20000 drive input-titlebar 0 ./target/release/gallery-kargui wait:500 bounds screen:shots/input-titlebar.png down:600,18 dragto:500,48 up:500,48 wait:500 bounds screen:shots/input-titlebar-moved.png dclick:600,18 wait:1200 bounds screen:shots/input-titlebar-zoomed.png
           ls -la shots
           # どれかが止まったら、ほかの確かめを全部走らせてから、この段を失敗にする
           if [ -n "$fails" ]; then echo "::error::stopped:$fails"; exit 1; fi

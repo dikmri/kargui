@@ -69,6 +69,16 @@ pub(crate) struct OverlayInfo {
     pub focus: Vec<Id>,
 }
 
+/// macOS の形の題の帯（Options::custom_title_bar）。信号の丸（閉じる・最小化・全画面）は OS が描くので、kargui は
+/// 左に信号の丸の分の空きを取り、ボタンを描かずに題を真ん中に置く。窓の縁と影も OS が描く
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MacBar {
+    /// 左の空き（論理ピクセル。信号の丸の右端から少し空けた所まで）
+    pub inset: f32,
+    /// 帯の高さ（論理ピクセル。OS の題の帯と道具の帯の高さ）
+    pub height: f32,
+}
+
 /// アプリが描く題の帯の様子。合成が題の帯を描かない時（Wayland の GNOME など）に、窓の処理が入れる
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Csd {
@@ -463,6 +473,8 @@ pub(crate) struct Context {
     pub notification_results: HashMap<String, crate::ui::notify::NotificationAction>,
     /// アプリが描く題の帯（合成が描かない時。Linux の GNOME など。窓の処理が毎フレーム入れる）
     pub csd: Option<Csd>,
+    /// macOS の形の題の帯（csd と一緒に、macOS の窓の処理が毎フレーム入れる。ほかの OS はいつも None）
+    pub mac_bar: Option<MacBar>,
     /// 題の帯の操作で、窓の処理に頼む事（動かす・最大化など。窓の処理がフレームの後で取り出す）
     pub csd_request: Option<CsdRequest>,
     /// 題の帯の空いた所を押した位置（動かしたら「窓を動かす」を頼む）
@@ -614,6 +626,7 @@ impl Context {
             notify_requests: Vec::new(),
             notification_results: HashMap::new(),
             csd: None,
+            mac_bar: None,
             csd_request: None,
             title_press: None,
             clicked_by_key: false,
