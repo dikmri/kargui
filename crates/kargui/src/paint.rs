@@ -111,6 +111,11 @@ impl DrawList {
         self.open();
     }
 
+    /// 今の切り取り範囲（これから入れる物はこの外に描かれない）
+    pub fn clip(&self) -> IRect {
+        self.stack.last().map_or(IRect::new(0, 0, 0, 0), |s| s.0)
+    }
+
     pub fn pop_clip(&mut self) {
         self.close();
         if self.stack.len() > 1 {

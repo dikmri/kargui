@@ -10,12 +10,14 @@ use std::rc::Rc;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::{BOOL, ComObject, HSTRING, IUnknown, Interface, Ref, Result, implement, w};
 
-use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Run, Slot, TextStyle, add_trailing_line};
+use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Run, Slot, TextStyle, add_trailing_line, glyph_chunks};
 use crate::log;
 
 /// 並べ終えた文字列
 pub(crate) struct Laid {
     pub glyphs: Vec<Placed>,
+    /// 字のまとまりごとの範囲（glyph_chunks）
+    pub chunks: Vec<[f32; 4]>,
     pub width: f32,
     pub height: f32,
     /// 行（1 行の文字列も 1 行。改行で終わる文字列は最後に空の行）
@@ -27,7 +29,7 @@ pub(crate) struct Laid {
 impl Laid {
     fn empty(height: f32) -> Self {
         let lines = vec![Line { start: 0, end: 0, top: 0.0, height, width: 0.0, baseline: height * 0.8 }];
-        Self { glyphs: Vec::new(), width: 0.0, height, lines, layout: None }
+        Self { glyphs: Vec::new(), chunks: Vec::new(), width: 0.0, height, lines, layout: None }
     }
 
     /// UTF-16 で index 文字目の前のカーソルの位置（x, 行の上端, 行の高さ）
@@ -241,6 +243,11 @@ impl Text {
             layouts_made: 0,
             glyphs_made: 0,
         })
+    }
+
+    /// フレームの終わり。このフレームで使わなかった長い文字列の並べた結果を忘れる
+    pub fn end_frame(&mut self) {
+        self.layouts.end_frame();
     }
 
     /// 拡大率が変わったときなどに、作った物を全部忘れる
@@ -465,7 +472,7 @@ impl Text {
             }
         }
         let lines = line_metrics(&layout, s)?;
-        Ok(Laid { glyphs, width: m.widthIncludingTrailingWhitespace, height: m.height, lines, layout: Some(layout) })
+        Ok(Laid { chunks: glyph_chunks(&glyphs), glyphs, width: m.widthIncludingTrailingWhitespace, height: m.height, lines, layout: Some(layout) })
     }
 
     fn glyph(&mut self, face: &IDWriteFontFace, index: u16, size: f32) -> Option<Slot> {

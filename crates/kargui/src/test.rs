@@ -3853,6 +3853,41 @@ mod tests {
         assert_eq!(focused_name(&h).as_deref(), Some("After"));
     }
 
+    /// 長い文字の入った入力欄は、見えている字だけを描く。家計簿のメモに 200 万字を貼ると、全部の字を毎フレーム
+    /// 描く物に入れ、何も変わらないフレームでも 160 ms かかった（2026-11-28 の X11 の記録）
+    #[test]
+    fn long_text_fields_draw_only_the_glyphs_that_can_be_seen() {
+        struct Long {
+            memo: String,
+            body: String,
+        }
+        impl App for Long {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.text_input(&mut self.memo).label("Memo");
+                ui.text_area(&mut self.body).label("Body").rows(5);
+            }
+        }
+        let memo = "a".repeat(5000);
+        let body: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        let total = memo.len() + body.len();
+        let mut h = Harness::new(Long { memo, body });
+        // 字の四角のうち、部品の中にある数
+        let inside = |h: &mut Harness<Long>, name: &str| {
+            let r = h.find(name).unwrap();
+            h.glyph_boxes().iter().filter(|b| (b[0] as f32) < r.right() && (b[0] + b[2]) as f32 > r.x && (b[1] as f32) < r.bottom() && (b[1] + b[3]) as f32 > r.y).count()
+        };
+        let all = h.glyph_boxes().len();
+        assert!(all < 400, "見えている字だけ: {all}（全部で {total} 字）");
+        assert!(inside(&mut h, "Memo") > 10 && inside(&mut h, "Body") > 20, "見えている字は描く");
+        // 1 行の欄の終わりへ（横にずれる）と、複数行の欄の終わりへ（縦にずれる）
+        h.click("Memo").press(Key::End);
+        h.click("Body").press_with(Key::End, Mods::CTRL);
+        let all = h.glyph_boxes().len();
+        assert!(all < 400, "終わりへずらしても見えている字だけ: {all}");
+        assert!(inside(&mut h, "Memo") > 10 && inside(&mut h, "Body") > 20, "終わりの字を描く");
+        assert!(h.rt.cx.edit_scroll.get(&id_named(&h, "Memo")).copied().unwrap_or(0.0) > 1000.0, "1 行の欄は横にずれている");
+    }
+
     #[derive(Default)]
     struct TextFields {
         name: String,

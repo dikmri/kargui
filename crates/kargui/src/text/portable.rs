@@ -15,7 +15,7 @@ use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
 use swash::zeno::{Angle, Format, Transform};
 
-use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Run, Slot, TextStyle, add_trailing_line};
+use super::{ATLAS_SIZE, Atlas, Font, FontId, FontTable, LayoutCache, LayoutKey, Line, Placed, Run, Slot, TextStyle, add_trailing_line, glyph_chunks};
 use crate::log;
 
 /// UI の文字に使うフォント（CSS の font-family の形）。先にある物から使い、無い文字は代わりのフォントで出す
@@ -39,6 +39,8 @@ const MONOSPACE: &str =
 /// 並べ終えた文字列
 pub(crate) struct Laid {
     pub glyphs: Vec<Placed>,
+    /// 字のまとまりごとの範囲（glyph_chunks）
+    pub chunks: Vec<[f32; 4]>,
     pub width: f32,
     pub height: f32,
     /// 行（1 行の文字列も 1 行。改行で終わる文字列は最後に空の行）
@@ -147,6 +149,11 @@ impl Text {
         })
     }
 
+    /// フレームの終わり。このフレームで使わなかった長い文字列の並べた結果を忘れる
+    pub fn end_frame(&mut self) {
+        self.layouts.end_frame();
+    }
+
     /// 拡大率が変わったときなどに、作った物を全部忘れる
     pub fn reset(&mut self) {
         self.glyphs.clear();
@@ -230,7 +237,7 @@ impl Text {
             let probe = self.make_layout(" ", style, &[], None);
             let baseline = probe.lines[0].baseline;
             let lines = vec![Line { start: 0, end: 0, top: 0.0, height: probe.height, width: 0.0, baseline }];
-            return Laid { glyphs: Vec::new(), width: 0.0, height: probe.height, lines, text: String::new(), layout: None };
+            return Laid { glyphs: Vec::new(), chunks: Vec::new(), width: 0.0, height: probe.height, lines, text: String::new(), layout: None };
         }
         // 範囲の書体の名前は、借りの前に決めておく
         let run_families: Vec<Option<String>> = runs.iter().map(|r| (r.style.font != style.font).then(|| self.family(r.style.font))).collect();
@@ -306,19 +313,20 @@ impl Text {
                 }
             }
         }
-        // 行の一覧（改行は行の終わりに入れない）
+        // 行の一覧（改行は行の終わりに入れない）。UTF-16 の位置は先に作った表から引く（行ごとに文字列の頭から
+        // 数えると、行の多い文字列で時間が字数の 2 乗になった。2 MB・4 万行で 66 秒）
         let mut lines = Vec::new();
         for line in layout.lines() {
             let r = line.text_range();
             let m = line.metrics();
             let end = if s[r.start..r.end].ends_with('\n') { r.end - 1 } else { r.end };
             let (top, height) = (m.block_min_coord, m.block_max_coord - m.block_min_coord);
-            lines.push(Line { start: utf16_of_byte(s, r.start), end: utf16_of_byte(s, end), top, height, width: m.advance, baseline: m.baseline });
+            lines.push(Line { start: utf16[r.start] as usize, end: utf16[end] as usize, top, height, width: m.advance, baseline: m.baseline });
         }
         add_trailing_line(s, &mut lines);
         let height = lines.last().map_or(layout.height(), |l| layout.height().max(l.top + l.height));
         // 幅は行末の空白も含める（入力欄のキャレットが空白の後ろへ進むように。DirectWrite と同じ）
-        Laid { glyphs, width: layout.full_width(), height, lines, text: s.to_string(), layout: Some(layout) }
+        Laid { chunks: glyph_chunks(&glyphs), glyphs, width: layout.full_width(), height, lines, text: s.to_string(), layout: Some(layout) }
     }
 
     /// そのファミリーの並びの、1 行の書体どおりの高さ（覚えておく）。英字と日本語で測って低い方を使う
