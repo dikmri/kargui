@@ -1269,6 +1269,10 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 w.rt.cx.file_results.insert(key, files);
                 w.need_frame = true;
                 w.why = "file_dialog";
+                // 閉じたダイアログ（runModal の窓）が key のまま外れ、頼んだ窓は key に戻らなかった。前面でない窓の
+                // 1 回目の押下は部品へ渡さないので、ダイアログの後の 1 回目の押下が効かなかった。頼んだ窓を key に戻す
+                w.ns.makeKeyAndOrderFront(None);
+                log::event("file_dialog.restore_key", &format!("key={:?}", w.key), &format!("key_now={}", w.ns.isKeyWindow()));
             }
         }
         let date = {

@@ -97,6 +97,7 @@ jobs:
           xcrun swiftc -O tools/ci/mac-drag-source.swift -o target/mac-drag-source
       - name: Drive the examples with a real mouse and keyboard
         run: |
+          fails=""
           drive() {
             name="$1"; height="$2"; app="$3"; shift 3
             KARGUI_SHOT="shots/$name.png" KARGUI_SHOT_MS="${SHOT_MS:-12000}" "$app" --log "shots/$name.log" &
@@ -106,7 +107,7 @@ jobs:
             ./target/mac-drive "$pid" "$height" "$@" > "shots/$name-drive.txt" 2>&1 || echo "$name: driver exit=$?"
             sleep 1
             screencapture -x "shots/$name-screen.png" || echo "$name: screencapture failed"
-            wait "$pid"; echo "$name: exit=$?"
+            if wait "$pid"; then echo "$name: exit=0"; else rc=$?; echo "$name: exit=$rc"; fails="$fails $name"; fi
           }
           # 暗い色のボタンを押す（中身と題の帯が暗くなる）・左の一覧をホイールで下へ送る・一覧の行に乗る
           drive input-gallery 620 ./target/release/gallery-kargui click:129,28 wait:300 wheel:120,400,-5 wait:300 move:120,300
@@ -167,7 +168,7 @@ jobs:
           sleep 3
           ./target/mac-drag-source /tmp/kargui-drop.txt 512 400 > shots/input-drop-source.txt 2>&1 || echo "drag source exit=$?"
           screencapture -x shots/input-drop-screen.png || true
-          wait "$npid"; echo "notepad: exit=$?"
+          if wait "$npid"; then echo "notepad: exit=0"; else rc=$?; echo "notepad: exit=$rc"; fails="$fails input-drop"; fi
           # トレイ（NSStatusItem）: 見本の 24 ページ目で「通知領域にアイコンを出す」を入れ、トレイの項目を押してメニューを
           # 開いて撮り、↓↓Enter で「暗い色」を選ぶ（見本が暗くなる）
           GALLERY_PAGE=23 SHOT_MS=20000 drive input-tray 620 ./target/release/gallery-kargui click:300,154 wait:1000 axtray wait:800 screen:shots/input-tray-menu.png key:down key:down key:enter wait:1000 screen:shots/input-tray-dark.png
@@ -181,8 +182,10 @@ jobs:
           sleep 2
           ./target/mac-drive "$gpid" 620 click:129,28 wait:800 screen:shots/input-first-click-1.png click:129,28 wait:800 screen:shots/input-first-click-2.png > shots/input-first-click-drive.txt 2>&1 || echo "first click driver exit=$?"
           kill "$rpid" 2>/dev/null || true
-          wait "$gpid"; echo "first-click gallery: exit=$?"
+          if wait "$gpid"; then echo "first-click gallery: exit=0"; else rc=$?; echo "first-click gallery: exit=$rc"; fails="$fails input-first-click"; fi
           ls -la shots
+          # どれかが止まったら、ほかの確かめを全部走らせてから、この段を失敗にする
+          if [ -n "$fails" ]; then echo "::error::stopped:$fails"; exit 1; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
