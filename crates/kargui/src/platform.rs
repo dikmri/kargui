@@ -1246,6 +1246,16 @@ impl State {
     }
 
     /// OS のハイコントラストの設定と色を読み直し、変わっていたら描き直す
+    /// 描き直しが要る時に、何もしない知らせ（WM_NULL）を積んで輪を起こす。OS は設定の変化（WM_SETTINGCHANGE・
+    /// WM_SYSCOLORCHANGE）を SendMessage で送るので、GetMessage の中で処理され、輪は次の知らせが積まれるまで戻らない
+    /// （明暗を切り替えても、窓に焦点が戻るまで描き直さなかった。トレイの知らせと同じ）
+    fn wake_loop_if_needed(&self, why: &str) {
+        if self.need_frame {
+            let _ = unsafe { PostMessageW(Some(self.hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
+            log::event("loop.wake", &format!("key={:?} why={why}", self.key), "posted");
+        }
+    }
+
     fn read_contrast(&mut self, why: &str) {
         let (on, colors) = system_high_contrast();
         if self.rt.cx.set_system_high_contrast(on, colors) {
@@ -1607,11 +1617,13 @@ impl State {
                         self.need_frame = true;
                     }
                 }
+                self.wake_loop_if_needed("settingchange");
                 None
             }
             // コントラスト テーマを切り替えた・テーマの色を変えた
             WM_SYSCOLORCHANGE => {
                 self.read_contrast("syscolor");
+                self.wake_loop_if_needed("syscolorchange");
                 None
             }
             WM_MOVE | WM_EXITSIZEMOVE | WM_DISPLAYCHANGE => {
