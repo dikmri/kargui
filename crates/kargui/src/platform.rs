@@ -617,6 +617,39 @@ mod key_tests {
         assert_eq!(key_of(VIRTUAL_KEY(0x65)), Some(Key::Num5));
         assert_eq!(key_of(VIRTUAL_KEY(0x35)), Some(Key::Num5));
     }
+
+    #[test]
+    fn a_minimized_window_wakes_at_most_once_a_second() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        // 見えている窓は頼まれたまま
+        assert_eq!(minimized_wake(false, Some(ms(46)), true), (Some(ms(46)), true));
+        assert_eq!(minimized_wake(false, None, false), (None, false));
+        // 最小化した窓: タイマーは 1 秒より短くしない。動きのフレームも 1 秒のタイマーにする（画面の更新ごとに描かない）
+        assert_eq!(minimized_wake(true, Some(ms(46)), false), (Some(MINIMIZED_FRAME_INTERVAL), false));
+        assert_eq!(minimized_wake(true, None, true), (Some(MINIMIZED_FRAME_INTERVAL), false));
+        assert_eq!(minimized_wake(true, Some(ms(5000)), false), (Some(ms(5000)), false));
+        // 何も頼まれていなければ起こさない
+        assert_eq!(minimized_wake(true, None, false), (None, false));
+    }
+}
+
+/// 最小化した窓が、タイマーや動きで次に描く時の、いちばん短い間
+const MINIMIZED_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 次に起こす時と、画面の更新ごとに描き続けるか。最小化した窓は、タイマーと動きの描き直しを 1 秒に 1 回までに間引く
+/// （止めないのは、タイマーでアプリの処理を進めている時に止めないため。見本の spinner は 46 ms おきのタイマーで、
+/// 最小化した窓に描き続けていた。X11 の版と同じ決め方）
+fn minimized_wake(minimized: bool, wake_after: Option<std::time::Duration>, want_frame: bool) -> (Option<std::time::Duration>, bool) {
+    if !minimized {
+        return (wake_after, want_frame);
+    }
+    let wake = match (wake_after, want_frame) {
+        (Some(d), _) => Some(d.max(MINIMIZED_FRAME_INTERVAL)),
+        (None, true) => Some(MINIMIZED_FRAME_INTERVAL),
+        (None, false) => None,
+    };
+    (wake, false)
 }
 
 fn key_of(vk: VIRTUAL_KEY) -> Option<Key> {
@@ -1077,8 +1110,10 @@ impl State {
         if why == "input" {
             self.post.push(Post::FrameOthers(self.hwnd));
         }
-        self.set_wake(out.wake_after);
-        self.animating = out.want_frame;
+        let minimized = unsafe { IsIconic(self.hwnd) }.as_bool();
+        let (wake, animating) = minimized_wake(minimized, out.wake_after, out.want_frame);
+        self.set_wake(wake);
+        self.animating = animating;
         self.need_frame = false;
         self.t_build = t.elapsed().as_secs_f64() * 1000.0;
         let t_draw = Instant::now();
