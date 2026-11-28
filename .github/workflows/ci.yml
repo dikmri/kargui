@@ -109,8 +109,8 @@ jobs:
             screencapture -x "shots/$name-screen.png" || echo "$name: screencapture failed"
             if wait "$pid"; then echo "$name: exit=0"; else rc=$?; echo "$name: exit=$rc"; fails="$fails $name"; fi
           }
-          # 暗い色のボタンを押す（中身と題の帯が暗くなる）・左の一覧をホイールで下へ送る・一覧の行に乗る
-          drive input-gallery 0 ./target/release/gallery-kargui click:129,28 wait:300 wheel:120,400,-5 wait:300 move:120,300
+          # 暗い色のボタン（kargui が描く題の帯の中）を押す（中身と題の帯が暗くなる）・左の一覧をホイールで下へ送る・一覧の行に乗る
+          drive input-gallery 0 ./target/release/gallery-kargui click:197,19 wait:300 wheel:120,400,-5 wait:300 move:120,300
           # 金額の欄で全部を選んで 1234 を打ち Enter・上の矢印で 100 足す・メモに tesx と打って 1 字消して t と あ・日付が無いまま追加を押す
           drive input-expenses 600 ./target/release/expenses-kargui click:90,72 key:cmd+a type:1234 key:enter click:149,72 click:500,72 type:tesx key:backspace type:t type:あ click:43,116 wait:300
           # 窓の仕組み: 表の行の右クリックのメニュー（キーで選ぶ）・クリップボード（Command+C・V）・ダブルクリック・
@@ -180,13 +180,13 @@ jobs:
           ./target/mac-ime-ref > shots/input-first-click-ref.txt 2>&1 &
           rpid=$!
           sleep 2
-          ./target/mac-drive "$gpid" 0 click:129,28 wait:800 screen:shots/input-first-click-1.png click:129,28 wait:800 screen:shots/input-first-click-2.png > shots/input-first-click-drive.txt 2>&1 || echo "first click driver exit=$?"
+          ./target/mac-drive "$gpid" 0 click:197,19 wait:800 screen:shots/input-first-click-1.png click:197,19 wait:800 screen:shots/input-first-click-2.png > shots/input-first-click-drive.txt 2>&1 || echo "first click driver exit=$?"
           kill "$rpid" 2>/dev/null || true
           if wait "$gpid"; then echo "first-click gallery: exit=0"; else rc=$?; echo "first-click gallery: exit=$rc"; fails="$fails input-first-click"; fi
           # kargui が描く題の帯（macOS の形。見本は custom_title_bar）: 信号の丸の見える写真、帯の何も無い所を引っ張って
           # 窓を動かす、2 回押しで最大化（OS の既定の AppleActionOnDoubleClick）。中身を帯の下まで広げたので、座標は
           # 窓の外枠の左上から数える（高さに 0 を渡す）
-          SHOT_MS=20000 drive input-titlebar 0 ./target/release/gallery-kargui wait:500 bounds screen:shots/input-titlebar.png down:600,18 dragto:500,48 up:500,48 wait:500 bounds screen:shots/input-titlebar-moved.png dclick:600,18 wait:1200 bounds screen:shots/input-titlebar-zoomed.png
+          SHOT_MS=20000 drive input-titlebar 0 ./target/release/gallery-kargui wait:500 bounds screen:shots/input-titlebar-start.png down:600,18 dragto:500,48 up:500,48 wait:500 bounds screen:shots/input-titlebar-moved.png dclick:600,18 wait:1200 bounds screen:shots/input-titlebar-zoomed.png
           ls -la shots
           # どれかが止まったら、ほかの確かめを全部走らせてから、この段を失敗にする
           if [ -n "$fails" ]; then echo "::error::stopped:$fails"; exit 1; fi

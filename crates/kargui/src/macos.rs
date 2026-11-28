@@ -754,12 +754,17 @@ fn marked_parts(string: &AnyObject) -> (String, Vec<usize>) {
 #[derive(Clone, Default)]
 struct MacA11ySink {
     actions: Rc<RefCell<Vec<accesskit::ActionRequest>>>,
+    /// 読み上げが使われ始め、木を渡してほしい（窓の処理がフレームの前に見て描き直す）
+    wants_tree: Rc<Cell<bool>>,
 }
 
 impl accesskit::ActivationHandler for MacA11ySink {
     fn request_initial_tree(&mut self) -> Option<accesskit::TreeUpdate> {
         // 木は次のフレームで渡す（update_if_active に全部の木を渡す）
         log::event("a11y.activate", "", "pending (tree on next frame)");
+        // 起こす知らせはどの窓にも向かないので、窓の描き直しの印は立たない。木を渡すフレームを回すよう印を立てる
+        // （立てないと木が渡らず、読み上げの操作が中身の無い AXGroup に当たった）
+        self.wants_tree.set(true);
         post_wake();
         None
     }
@@ -895,6 +900,8 @@ struct Window {
     /// 読み上げの橋渡し（KarguiView を動的に派生させて NSAccessibility の関数を足す）と、読み上げからの頼み
     a11y: accesskit_macos::SubclassingAdapter,
     a11y_actions: Rc<RefCell<Vec<accesskit::ActionRequest>>>,
+    /// 読み上げが木を待っている（MacA11ySink が立てる）
+    a11y_wants_tree: Rc<Cell<bool>>,
     /// ファイルを落とせる窓だと OS に届け出た
     files_registered: bool,
     /// kargui が題の帯を描く窓（Options::custom_title_bar）。信号の丸は OS が描き、帯の中身は kargui が描く
@@ -918,6 +925,10 @@ impl Window {
             self.why = "resize";
         }
         self.sync_title_bar();
+        if self.a11y_wants_tree.replace(false) {
+            self.need_frame = true;
+            self.why = "a11y";
+        }
         if self.wake_at.is_some_and(|t| t <= Instant::now()) {
             self.wake_at = None;
             self.need_frame = true;
@@ -1139,6 +1150,9 @@ fn new_window(mtm: MainThreadMarker, key: Option<String>, title: &str, size: (f3
         let toolbar = NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), &NSString::from_str("kargui.titlebar"));
         ns.setToolbar(Some(&toolbar));
         ns.setToolbarStyle(NSWindowToolbarStyle::UnifiedCompact);
+        // 外枠は OS の帯がある時と同じ大きさにする（Windows の版と同じ。中身が帯の分だけ高くなり、帯の下に size が残る）
+        let normal = NSWindow::frameRectForContentRect_styleMask(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(lw, lh)), style & !NSWindowStyleMask::FullSizeContentView, mtm);
+        ns.setFrame_display(normal, false);
     }
     if let Some((mw, mh)) = min_size {
         ns.setContentMinSize(NSSize::new(mw as f64, mh as f64));
@@ -1154,6 +1168,7 @@ fn new_window(mtm: MainThreadMarker, key: Option<String>, title: &str, size: (f3
     // 読み上げの橋渡し。窓を出す前に付ける（accesskit_macos の決まり）
     let sink = MacA11ySink::default();
     let a11y_actions = sink.actions.clone();
+    let a11y_wants_tree = sink.wants_tree.clone();
     // SAFETY: view は生きている NSView（Window が持ち続ける）。窓を出す前で、まだ誰も KVO で見ていない
     let a11y = unsafe { accesskit_macos::SubclassingAdapter::new(Retained::as_ptr(&view) as *mut std::ffi::c_void, sink.clone(), sink) };
     let mut w = Window {
@@ -1180,6 +1195,7 @@ fn new_window(mtm: MainThreadMarker, key: Option<String>, title: &str, size: (f3
         pending_dialog: None,
         a11y,
         a11y_actions,
+        a11y_wants_tree,
         follow_dark,
         files_registered: false,
         custom_title_bar,
