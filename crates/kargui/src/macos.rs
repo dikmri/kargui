@@ -1340,6 +1340,19 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 log::event("file_dialog.restore_key", &format!("key={:?}", w.key), &format!("key_now={}", w.ns.isKeyWindow()));
             }
         }
+        // 押された通知の答え（頼んだ窓に入れる）
+        let answers = crate::mac_notify::take_answers();
+        if !answers.is_empty() {
+            let mut guard = state.borrow_mut();
+            for (owner, key, a) in answers {
+                if let Some(w) = guard.windows.iter_mut().find(|w| w.key == owner) {
+                    log::event("notify.answer", &format!("key={key}"), &format!("{a:?}"));
+                    w.rt.cx.notification_results.insert(key, a);
+                    w.need_frame = true;
+                    w.why = "input";
+                }
+            }
+        }
         let date = {
             let mut guard = state.borrow_mut();
             let s = &mut *guard;
@@ -1499,9 +1512,10 @@ fn frame(w: &mut Window, app: &mut dyn App, started: Instant) -> bool {
         }
         log::event(if show { "window.show" } else { "window.hide" }, &w.tag(), "ok");
     }
-    // まだ作っていない仕組みの頼みは、記録して捨てる
-    for (key, _) in std::mem::take(&mut w.rt.cx.notify_requests) {
-        log::event("notify.request", &format!("key={key}"), "not on macOS yet (M4)");
+    // 通知の頼みは通知の係へ渡す（.app の束でなければ、係が記録だけ書く）
+    for (key, n) in std::mem::take(&mut w.rt.cx.notify_requests) {
+        log::event("notify.request", &crate::ui::notify::line(&key, &n), &format!("win={:?}", w.key));
+        crate::mac_notify::show(w.key.clone(), key, &n, post_wake);
     }
     w.draw_and_present(why);
     w.sync_title_appearance();

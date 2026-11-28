@@ -38,6 +38,8 @@ mod locale;
 mod logo;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod mac_notify;
 #[cfg(any(test, target_os = "macos"))]
 mod mac_keys;
 pub mod log;

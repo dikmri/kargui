@@ -183,6 +183,15 @@ jobs:
           ./target/mac-drive "$gpid" 0 click:197,19 wait:800 screen:shots/input-first-click-1.png click:197,19 wait:800 screen:shots/input-first-click-2.png > shots/input-first-click-drive.txt 2>&1 || echo "first click driver exit=$?"
           kill "$rpid" 2>/dev/null || true
           if wait "$gpid"; then echo "first-click gallery: exit=0"; else rc=$?; echo "first-click gallery: exit=$rc"; fails="$fails input-first-click"; fi
+          # 通知（.app の束のアプリだけで使える）: (1) 束でない見本で「通知を出す」を押す（記録 notify.unavailable、落ちない）
+          GALLERY_PAGE=24 SHOT_MS=12000 drive input-notify-plain 0 ./target/release/gallery-kargui click:290,154 wait:1000
+          # (2) 見本を .app の束にし（Info.plist の CFBundleIdentifier、その場で ad-hoc 署名）、束の中から開いて「ボタン付きの
+          # 通知」を押す。OS が許可を聞く（CI では押せない）。記録 notify.start・notify.authorization・notify.added と写真を残す
+          mkdir -p /tmp/KarguiGallery.app/Contents/MacOS
+          cp ./target/release/gallery-kargui /tmp/KarguiGallery.app/Contents/MacOS/
+          printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0"><dict>' '<key>CFBundleIdentifier</key><string>dev.kargui.example.gallery</string>' '<key>CFBundleExecutable</key><string>gallery-kargui</string>' '<key>CFBundleName</key><string>KarguiGallery</string>' '<key>CFBundlePackageType</key><string>APPL</string>' '<key>CFBundleVersion</key><string>1</string>' '</dict></plist>' > /tmp/KarguiGallery.app/Contents/Info.plist
+          codesign --force --sign - /tmp/KarguiGallery.app || echo "codesign failed"
+          GALLERY_PAGE=24 SHOT_MS=16000 drive input-notify-bundle 0 /tmp/KarguiGallery.app/Contents/MacOS/gallery-kargui click:530,154 wait:3000 screen:shots/input-notify-bundle-asked.png wait:2000 screen:shots/input-notify-bundle-later.png
           # kargui が描く題の帯（macOS の形。見本は custom_title_bar）: 信号の丸の見える写真、帯の何も無い所を引っ張って
           # 窓を動かす、2 回押しで最大化（OS の既定の AppleActionOnDoubleClick）。中身を帯の下まで広げたので、座標は
           # 窓の外枠の左上から数える（高さに 0 を渡す）

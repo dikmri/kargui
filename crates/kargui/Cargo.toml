@@ -63,6 +63,9 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication", "NSWindow", "NSView", "NSEvent", "NSGraphics", "NSPasteboard", "NSAppearance", "NSScreen", "NSGraphicsContext", "NSTextInputClient", "NSTextInputContext", "NSAttributedString", "NSPanel", "NSSavePanel", "NSOpenPanel", "NSDragging", "NSPasteboardItem", "NSWorkspace", "NSAccessibility", "NSMenu", "NSMenuItem", "NSImage", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSCell", "NSToolbar", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGImage", "CGColorSpace", "CGDataProvider"] }
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFData"] }
+# 通知（UNUserNotificationCenter。.app の束のアプリだけで使える。mac_notify.rs）と、その呼び返しの block
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = ["std", "block2", "bitflags", "UNUserNotificationCenter", "UNNotification", "UNNotificationRequest", "UNNotificationContent", "UNNotificationResponse", "UNNotificationAction", "UNNotificationCategory", "UNNotificationSound", "UNNotificationTrigger", "UNNotificationSettings"] }
+block2 = "0.6"
 # 読み上げの橋渡し（VoiceOver が使う NSAccessibility）。Windows の accesskit_windows と同じ accesskit 0.25.2 の世代。
 # これは objc2 0.5 の世代を使うので、読み上げの部分だけ 2 つの世代が入る（MIT/Apache-2.0）
 accesskit_macos = "=0.27.2"
