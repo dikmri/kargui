@@ -228,7 +228,8 @@ pub struct Options {
     /// Keep drawing animations at the full rate when the window is in the background.
     /// By default background windows animate at about 30 frames per second to save power.
     pub full_rate: bool,
-    /// Start in dark (`Some(true)`) or light (`Some(false)`) mode; `None` follows the system.
+    /// Start in dark (`Some(true)`) or light (`Some(false)`) mode; `None` follows the system, also
+    /// when the user changes it while the app runs.
     pub dark: Option<bool>,
     /// The window's icon (title bar and taskbar). With `None`, kargui shows its own icon (a
     /// light "k" on a dark rounded square), or the system's plain icon when

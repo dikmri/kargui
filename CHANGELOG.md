@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Windows: with `Options::dark` left at `None`, the light or dark look now follows the system's
+  app mode (Settings > Personalization > Colors) while the app runs, as on Linux. Before, it was
+  read only at start. The title bar follows too.
 - Faster long text: a text field or text area with a very long text (2 MB, two million
   characters) no longer slows every frame. Only the characters inside the visible area are drawn
   (2,000,194 drawn quads became 242), the portable text path (Linux, macOS) no longer recounts

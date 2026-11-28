@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -67,6 +67,8 @@ const IME_REQUEST_LOG_MAX: u32 = 3;
 const WHEEL_STEP: f32 = 96.0;
 /// WM_GETOBJECT（読み上げソフトなどからの問い合わせ）を受けた回数
 static GETOBJECT_COUNT: AtomicU32 = AtomicU32::new(0);
+/// OS の明暗（アプリ モード）を開いたまま追うか（アプリが Options::dark で決めていない時）
+static FOLLOW_DARK: AtomicBool = AtomicBool::new(false);
 
 enum Surface {
     Gpu(Gpu),
@@ -1595,6 +1597,16 @@ impl State {
                     self.need_frame = true;
                 }
                 self.read_contrast(&format!("spi={:#x}", wp.0));
+                // 設定 > 個人用設定 > 色 の「アプリ モード」を変えた（OS は ImmersiveColorSet の名前で知らせる）。
+                // アプリが Options::dark で決めていなければ追う（Linux・macOS と同じ）。題の帯はフレームの後で合わせる
+                if FOLLOW_DARK.load(Ordering::Relaxed) {
+                    let dark = system_dark();
+                    if dark != self.rt.cx.dark {
+                        self.rt.cx.set_dark(dark);
+                        log::event("theme.system", &format!("key={:?} spi={:#x}", self.key, wp.0), &format!("dark={dark}"));
+                        self.need_frame = true;
+                    }
+                }
                 None
             }
             // コントラスト テーマを切り替えた・テーマの色を変えた
@@ -2290,6 +2302,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     }
     let app = Rc::new(RefCell::new(app));
     let dark = options.dark.unwrap_or_else(system_dark);
+    FOLLOW_DARK.store(options.dark.is_none(), Ordering::Relaxed);
     let font_files = Rc::new(options.fonts.clone());
     let main = create_window(
         None,
