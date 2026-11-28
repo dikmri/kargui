@@ -19,6 +19,9 @@ mod portable;
 #[cfg(any(not(windows), feature = "portable-text"))]
 pub(crate) use portable::{Laid, Text};
 
+mod block;
+pub(crate) use block::Block;
+
 /// 文字の形の表の一辺（画素）
 pub(crate) const ATLAS_SIZE: u32 = 1024;
 
@@ -115,6 +118,24 @@ pub(crate) struct Line {
     pub width: f32,
     /// ベースラインの位置（並べた範囲の上から）
     pub baseline: f32,
+}
+
+/// 描く時に切り抜きと比べる、まとまりの字の数
+pub(crate) const GLYPH_CHUNK: usize = 128;
+
+/// 並べた字を GLYPH_CHUNK 個ずつに分け、まとまりごとに、字の形の四角を全部含む範囲（左, 上, 右, 下。並べた範囲の
+/// 左上が原点）を出す。描く時に、切り抜きと重ならないまとまりを丸ごと飛ばす（200 万字の欄でも、見えている字の数に
+/// 近い手間で描くため）。字は並べた順なので、近い字が同じまとまりに入り、範囲は狭くなる
+pub(crate) fn glyph_chunks(glyphs: &[Placed]) -> Vec<[f32; 4]> {
+    glyphs
+        .chunks(GLYPH_CHUNK)
+        .map(|c| {
+            c.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, g| {
+                let (l, t) = (g.x + g.slot.left as f32, g.y + g.slot.top as f32);
+                [b[0].min(l), b[1].min(t), b[2].max(l + g.slot.w as f32), b[3].max(t + g.slot.h as f32)]
+            })
+        })
+        .collect()
 }
 
 /// 改行で終わる文字列の最後の空の行を足す（並べる道具が作らない時）
@@ -251,27 +272,56 @@ impl LayoutKey {
     }
 }
 
-/// 並べた結果を覚えておく表（同じ文字列・書式・幅には同じ結果を返す）
-struct LayoutCache<L>(HashMap<LayoutKey, std::rc::Rc<L>>);
+/// この長さ（バイト）からの文字列の並べた結果は、フレームで使われなければ忘れる
+const LONG_TEXT: usize = 16 * 1024;
+
+/// 並べた結果を覚えておく表（同じ文字列・書式・幅には同じ結果を返す）。結果ごとに、最後に使ったフレームを持つ
+struct LayoutCache<L> {
+    map: HashMap<LayoutKey, (std::rc::Rc<L>, u64)>,
+    frame: u64,
+}
 
 impl<L> LayoutCache<L> {
     fn new() -> Self {
-        Self(HashMap::new())
+        Self { map: HashMap::new(), frame: 0 }
     }
 
-    fn get(&self, key: &LayoutKey) -> Option<std::rc::Rc<L>> {
-        self.0.get(key).cloned()
+    fn get(&mut self, key: &LayoutKey) -> Option<std::rc::Rc<L>> {
+        let frame = self.frame;
+        self.map.get_mut(key).map(|(laid, used)| {
+            *used = frame;
+            laid.clone()
+        })
     }
 
     fn insert(&mut self, key: LayoutKey, laid: std::rc::Rc<L>) {
-        if self.0.len() >= LAYOUT_CACHE_LIMIT {
-            self.0.clear();
+        if self.map.len() >= LAYOUT_CACHE_LIMIT {
+            self.map.clear();
         }
-        self.0.insert(key, laid);
+        self.map.insert(key, (laid, self.frame));
     }
 
     fn clear(&mut self) {
-        self.0.clear();
+        self.map.clear();
+    }
+
+    /// key と同じ書式・幅で、長い文字列の結果（打つ前の版を探すため。block.rs）
+    fn similar<'a>(&'a self, key: &'a LayoutKey) -> impl Iterator<Item = &'a std::rc::Rc<L>> {
+        self.map
+            .iter()
+            .filter(move |(k, _)| {
+                k.text.len() >= LONG_TEXT && (k.size, k.bold, k.font, k.max_width) == (key.size, key.bold, key.font, key.max_width) && k.runs == key.runs
+            })
+            .map(|(_, (laid, _))| laid)
+    }
+
+    /// フレームの終わり。長い文字列の並べた結果のうち、このフレームで使わなかった物を忘れる。入力欄に長い文字列を
+    /// 入れて打つと、打つたびに前の版が残る（200 万字の欄で、キー 5 つで 0.6〜1.1 GB 増えた。2026-11-28 の測定）。
+    /// 見えている部品の文字は毎フレーム並べた結果を引くので、使っている物は残る
+    fn end_frame(&mut self) {
+        let frame = self.frame;
+        self.map.retain(|key, (_, used)| key.text.len() < LONG_TEXT || *used == frame);
+        self.frame += 1;
     }
 }
 
@@ -579,6 +629,64 @@ mod tests {
             let (a, b) = (plain.glyphs[k].slot, italic.glyphs[k].slot);
             assert!(b.w > a.w, "{k}: 普通 {a:?}、斜体 {b:?}");
         }
+    }
+
+    /// 行の多い文字列も、字数に比べた時間で並べる。portable の道で、行ごとに文字列の頭から UTF-16 の位置を数え直して
+    /// いたため、時間が字数の 2 乗で増え、2 MB・4 万行のメモで 66 秒かかった（2026-11-28 の測定）
+    #[test]
+    fn many_lines_lay_out_without_counting_from_the_start_for_each_line() {
+        let mut t = Text::new().unwrap();
+        let s = "ab設定\n".repeat(20_000);
+        let started = std::time::Instant::now();
+        let laid = t.layout(&s, BASE, None);
+        let took = started.elapsed();
+        eprintln!("20,000 行: {took:?}");
+        assert_eq!(laid.lines.len(), 20_001);
+        // 行の位置は UTF-16 で数える（1 行は 5 つ: a b 設 定 と改行）
+        assert_eq!((laid.lines[12_345].start, laid.lines[12_345].end), (12_345 * 5, 12_345 * 5 + 4));
+        // 試験の組み立て（最適化なし）で、直す前は 120 秒、直した後は 4 秒だった（Windows の portable の道）。遅い CI でも
+        // 両側に 4 倍の余裕がある所で切る
+        assert!(took < std::time::Duration::from_secs(30), "{took:?}");
+    }
+
+    /// 長い 1 行の終わりのキャレットの位置を、毎フレーム聞いても重くならない。parley はキャレットの x を、行の頭から
+    /// 字の幅を足して出す。200 万字の 1 行の終わりでは 1 回に約 80 ms かかり、1 行の欄は毎フレーム聞くので、何も
+    /// 変わらないフレームが 70 ms になった（2026-11-28 の X11 の記録）
+    #[test]
+    fn asking_again_for_the_caret_at_the_end_of_a_long_line_is_quick() {
+        let mut t = Text::new().unwrap();
+        let n = 100_000;
+        let laid = t.layout(&"a".repeat(n), BASE, None);
+        let first = laid.x_of(n);
+        assert!(first > laid.width * 0.99, "終わりの位置: {first} {}", laid.width);
+        let caret = laid.caret(n);
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            assert_eq!(laid.x_of(n), first);
+            assert_eq!(laid.caret(n), caret);
+        }
+        let took = started.elapsed();
+        eprintln!("100 回: {took:?}");
+        // 試験の組み立てで、覚える前は 4.4 秒、覚えた後は 0.1 ms だった（Windows の portable の道）
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+    }
+
+    /// 長い文字列の並べた結果は、そのフレームで使われなければ忘れる。200 万字の欄で、打つたびに前の版の並べた結果が
+    /// 残り、キー 5 つで 0.6〜1.1 GB 増えた（2026-11-28 の測定）。短い文字列は使われなくても覚えておく
+    #[test]
+    fn long_layouts_not_used_in_a_frame_are_forgotten() {
+        let mut t = Text::new().unwrap();
+        let long = "a".repeat(20_000);
+        let edited = long.clone() + "b";
+        let before = t.layout(&long, BASE, None);
+        let short = t.layout("OK", BASE, None);
+        t.end_frame();
+        // 次のフレームでは、打った後の版だけを使う
+        let after = t.layout(&edited, BASE, None);
+        t.end_frame();
+        assert!(Rc::ptr_eq(&after, &t.layout(&edited, BASE, None)), "使った物は覚えている");
+        assert!(!Rc::ptr_eq(&before, &t.layout(&long, BASE, None)), "使わなかった長い物は忘れる");
+        assert!(Rc::ptr_eq(&short, &t.layout("OK", BASE, None)), "短い物は覚えている");
     }
 
     /// 折り返しても、形の位置は文字の順で、どの行にも入る

@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -67,6 +67,8 @@ const IME_REQUEST_LOG_MAX: u32 = 3;
 const WHEEL_STEP: f32 = 96.0;
 /// WM_GETOBJECT（読み上げソフトなどからの問い合わせ）を受けた回数
 static GETOBJECT_COUNT: AtomicU32 = AtomicU32::new(0);
+/// OS の明暗（アプリ モード）を開いたまま追うか（アプリが Options::dark で決めていない時）
+static FOLLOW_DARK: AtomicBool = AtomicBool::new(false);
 
 enum Surface {
     Gpu(Gpu),
@@ -617,6 +619,39 @@ mod key_tests {
         assert_eq!(key_of(VIRTUAL_KEY(0x65)), Some(Key::Num5));
         assert_eq!(key_of(VIRTUAL_KEY(0x35)), Some(Key::Num5));
     }
+
+    #[test]
+    fn a_minimized_window_wakes_at_most_once_a_second() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        // 見えている窓は頼まれたまま
+        assert_eq!(minimized_wake(false, Some(ms(46)), true), (Some(ms(46)), true));
+        assert_eq!(minimized_wake(false, None, false), (None, false));
+        // 最小化した窓: タイマーは 1 秒より短くしない。動きのフレームも 1 秒のタイマーにする（画面の更新ごとに描かない）
+        assert_eq!(minimized_wake(true, Some(ms(46)), false), (Some(MINIMIZED_FRAME_INTERVAL), false));
+        assert_eq!(minimized_wake(true, None, true), (Some(MINIMIZED_FRAME_INTERVAL), false));
+        assert_eq!(minimized_wake(true, Some(ms(5000)), false), (Some(ms(5000)), false));
+        // 何も頼まれていなければ起こさない
+        assert_eq!(minimized_wake(true, None, false), (None, false));
+    }
+}
+
+/// 最小化した窓が、タイマーや動きで次に描く時の、いちばん短い間
+const MINIMIZED_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 次に起こす時と、画面の更新ごとに描き続けるか。最小化した窓は、タイマーと動きの描き直しを 1 秒に 1 回までに間引く
+/// （止めないのは、タイマーでアプリの処理を進めている時に止めないため。見本の spinner は 46 ms おきのタイマーで、
+/// 最小化した窓に描き続けていた。X11 の版と同じ決め方）
+fn minimized_wake(minimized: bool, wake_after: Option<std::time::Duration>, want_frame: bool) -> (Option<std::time::Duration>, bool) {
+    if !minimized {
+        return (wake_after, want_frame);
+    }
+    let wake = match (wake_after, want_frame) {
+        (Some(d), _) => Some(d.max(MINIMIZED_FRAME_INTERVAL)),
+        (None, true) => Some(MINIMIZED_FRAME_INTERVAL),
+        (None, false) => None,
+    };
+    (wake, false)
 }
 
 fn key_of(vk: VIRTUAL_KEY) -> Option<Key> {
@@ -1077,8 +1112,10 @@ impl State {
         if why == "input" {
             self.post.push(Post::FrameOthers(self.hwnd));
         }
-        self.set_wake(out.wake_after);
-        self.animating = out.want_frame;
+        let minimized = unsafe { IsIconic(self.hwnd) }.as_bool();
+        let (wake, animating) = minimized_wake(minimized, out.wake_after, out.want_frame);
+        self.set_wake(wake);
+        self.animating = animating;
         self.need_frame = false;
         self.t_build = t.elapsed().as_secs_f64() * 1000.0;
         let t_draw = Instant::now();
@@ -1209,6 +1246,16 @@ impl State {
     }
 
     /// OS のハイコントラストの設定と色を読み直し、変わっていたら描き直す
+    /// 描き直しが要る時に、何もしない知らせ（WM_NULL）を積んで輪を起こす。OS は設定の変化（WM_SETTINGCHANGE・
+    /// WM_SYSCOLORCHANGE）を SendMessage で送るので、GetMessage の中で処理され、輪は次の知らせが積まれるまで戻らない
+    /// （明暗を切り替えても、窓に焦点が戻るまで描き直さなかった。トレイの知らせと同じ）
+    fn wake_loop_if_needed(&self, why: &str) {
+        if self.need_frame {
+            let _ = unsafe { PostMessageW(Some(self.hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
+            log::event("loop.wake", &format!("key={:?} why={why}", self.key), "posted");
+        }
+    }
+
     fn read_contrast(&mut self, why: &str) {
         let (on, colors) = system_high_contrast();
         if self.rt.cx.set_system_high_contrast(on, colors) {
@@ -1560,11 +1607,23 @@ impl State {
                     self.need_frame = true;
                 }
                 self.read_contrast(&format!("spi={:#x}", wp.0));
+                // 設定 > 個人用設定 > 色 の「アプリ モード」を変えた（OS は ImmersiveColorSet の名前で知らせる）。
+                // アプリが Options::dark で決めていなければ追う（Linux・macOS と同じ）。題の帯はフレームの後で合わせる
+                if FOLLOW_DARK.load(Ordering::Relaxed) {
+                    let dark = system_dark();
+                    if dark != self.rt.cx.dark {
+                        self.rt.cx.set_dark(dark);
+                        log::event("theme.system", &format!("key={:?} spi={:#x}", self.key, wp.0), &format!("dark={dark}"));
+                        self.need_frame = true;
+                    }
+                }
+                self.wake_loop_if_needed("settingchange");
                 None
             }
             // コントラスト テーマを切り替えた・テーマの色を変えた
             WM_SYSCOLORCHANGE => {
                 self.read_contrast("syscolor");
+                self.wake_loop_if_needed("syscolorchange");
                 None
             }
             WM_MOVE | WM_EXITSIZEMOVE | WM_DISPLAYCHANGE => {
@@ -2255,6 +2314,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     }
     let app = Rc::new(RefCell::new(app));
     let dark = options.dark.unwrap_or_else(system_dark);
+    FOLLOW_DARK.store(options.dark.is_none(), Ordering::Relaxed);
     let font_files = Rc::new(options.fonts.clone());
     let main = create_window(
         None,

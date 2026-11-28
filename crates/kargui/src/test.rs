@@ -3853,6 +3853,82 @@ mod tests {
         assert_eq!(focused_name(&h).as_deref(), Some("After"));
     }
 
+    /// 長い文字の入った入力欄は、見えている字だけを描く。家計簿のメモに 200 万字を貼ると、全部の字を毎フレーム
+    /// 描く物に入れ、何も変わらないフレームでも 160 ms かかった（2026-11-28 の X11 の記録）
+    #[test]
+    fn long_text_fields_draw_only_the_glyphs_that_can_be_seen() {
+        struct Long {
+            memo: String,
+            body: String,
+        }
+        impl App for Long {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.text_input(&mut self.memo).label("Memo");
+                ui.text_area(&mut self.body).label("Body").rows(5);
+            }
+        }
+        let memo = "a".repeat(20_000);
+        let body: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        let total = memo.len() + body.len();
+        let mut h = Harness::new(Long { memo, body });
+        // 字の四角のうち、部品の中にある数
+        let inside = |h: &mut Harness<Long>, name: &str| {
+            let r = h.find(name).unwrap();
+            h.glyph_boxes().iter().filter(|b| (b[0] as f32) < r.right() && (b[0] + b[2]) as f32 > r.x && (b[1] as f32) < r.bottom() && (b[1] + b[3]) as f32 > r.y).count()
+        };
+        let all = h.glyph_boxes().len();
+        assert!(all < 400, "見えている字だけ: {all}（全部で {total} 字）");
+        assert!(inside(&mut h, "Memo") > 10 && inside(&mut h, "Body") > 20, "見えている字は描く");
+        // 1 行の欄の終わりへ（横にずれる）と、複数行の欄の終わりへ（縦にずれる）
+        h.click("Memo").press(Key::End);
+        h.click("Body").press_with(Key::End, Mods::CTRL);
+        let all = h.glyph_boxes().len();
+        assert!(all < 400, "終わりへずらしても見えている字だけ: {all}");
+        assert!(inside(&mut h, "Memo") > 10 && inside(&mut h, "Body") > 20, "終わりの字を描く");
+        assert!(h.rt.cx.edit_scroll.get(&id_named(&h, "Memo")).copied().unwrap_or(0.0) > 1000.0, "1 行の欄は横にずれている");
+    }
+
+    /// 長い文字（かたまりに分けて並べる）の入力欄でも、行の移動・行の頭と終わり・打った字の位置が短い文字と同じで、
+    /// 1 字打っても全体を並べ直さない（200 万字の欄で、1 字打つたびに約 0.9 秒かかった。2026-11-28 の測定）
+    #[test]
+    fn long_text_fields_edit_like_short_ones_without_laying_out_everything() {
+        struct Long {
+            memo: String,
+            body: String,
+        }
+        impl App for Long {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.text_input(&mut self.memo).label("Memo");
+                ui.text_area(&mut self.body).label("Body").rows(5);
+            }
+        }
+        let body: String = (0..3000).map(|i| format!("line {i}\n")).collect();
+        let memo = "abc ".repeat(6000);
+        let mut h = Harness::new(Long { memo, body });
+        // 複数行: 終わりで打ち、上の行の終わりと頭に打つ
+        h.click("Body").press_with(Key::End, Mods::CTRL);
+        let before = h.rt.cx.text.bytes_laid;
+        h.type_text("Z");
+        let laid = h.rt.cx.text.bytes_laid - before;
+        assert!(laid < 20_000, "複数行の欄で 1 字打って並べ直した量: {laid} バイト（全体は {}）", h.app().body.len());
+        assert!(h.app().body.ends_with("line 2999\nZ"));
+        h.press(Key::Up).press(Key::End).type_text("Y").press(Key::Home).type_text("#");
+        let body = &h.app().body;
+        assert!(body.ends_with("#line 2999Y\nZ"), "{:?}", &body[body.len() - 30..]);
+        // 上へ 2 行動き、その行の頭で打つ
+        h.press(Key::Up).press(Key::Up).press(Key::Home).type_text("@");
+        assert!(h.app().body.contains("\n@line 2997\n"), "{:?}", &h.app().body[h.app().body.len() - 50..]);
+        // 1 行: 終わりで打ち、頭で打つ
+        h.click("Memo").press(Key::End);
+        let before = h.rt.cx.text.bytes_laid;
+        h.type_text("!");
+        let laid = h.rt.cx.text.bytes_laid - before;
+        assert!(laid < 20_000, "1 行の欄で 1 字打って並べ直した量: {laid} バイト（全体は {}）", h.app().memo.len());
+        assert!(h.app().memo.ends_with("abc !"));
+        h.press(Key::Home).type_text("^");
+        assert!(h.app().memo.starts_with("^abc "));
+    }
+
     #[derive(Default)]
     struct TextFields {
         name: String,

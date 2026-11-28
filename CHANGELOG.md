@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Windows: with `Options::dark` left at `None`, the light or dark look now follows the system's
+  app mode (Settings > Personalization > Colors) while the app runs, as on Linux. Before, it was
+  read only at start. The title bar follows too.
+- Faster long text: a text field or text area with a very long text (2 MB, two million
+  characters) no longer slows every frame. Only the characters inside the visible area are drawn
+  (2,000,194 drawn quads became 242), the portable text path (Linux, macOS) no longer recounts
+  line positions from the start of the text, old layouts of long texts are dropped when unused,
+  and typing re-lays only the changed blocks of the text. On Linux under X11, a frame that changes
+  nothing went from 153-183 ms to 4-6 ms, and one key in a 2 MB text area from about 68 s to
+  10-24 ms.
+- Minimized windows: on Windows and X11, while a window is minimized (or hidden on X11), frames
+  asked with `Ui::request_frame` and `Ui::request_frame_after` come at most once a second, so a
+  spinner no longer draws 21 to 30 times a second into a window nobody sees. Other threads are not
+  slowed down and `Waker::wake` still runs `view` at once; do long work (encoding, downloads) in
+  another thread, as the docs of these functions now say.
+- X11: the scale now follows `Xft.dpi` while the app runs (for example when the display scale is
+  changed on an X11 desktop). Each window keeps its size in logical pixels, its minimum size is
+  sent again in the new scale, and everything is drawn again.
+- X11: with an input method (fcitx5 or IBus), Ctrl+A, Ctrl+C and other shortcuts could arrive as
+  plain letters when a frame was slow, because the modifier state was read when the input method
+  answered instead of when the key was pressed.
+- X11: a window's place now leaves out the window manager's frame (`_NET_FRAME_EXTENTS`), so a
+  docking panel moved to a new window and opened again from a saved layout no longer moves right
+  and down by the frame's size each time. `Options::position` is now used for the main window
+  too.
 - Fixed: scrolling could leave stale or missing pixels beside or below a clipped first child
   (such as a canvas). The CPU renderer now tracks the scroll viewport separately from child clips.
 - Fixed: screen readers did not hear the names of the minimize, maximize and close buttons in

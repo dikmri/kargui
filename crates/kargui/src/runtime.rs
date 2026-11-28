@@ -139,6 +139,8 @@ impl Runtime {
             }
         self.tree = tree;
         self.frames += 1;
+        // このフレームで使わなかった長い文字列の並べた結果を忘れる（打つたびに前の版が残らないように）
+        self.cx.text.end_frame();
         let wake_after = self.cx.wake_at.map(|t| t.saturating_duration_since(self.cx.now));
         FrameOut { want_frame: want, wake_after }
     }

@@ -3339,17 +3339,17 @@ impl<'a> Ui<'a> {
         if multiline {
             // 複数行: 押した点の行と位置（文字の左上と折り返しの幅）
             let &(ox, oy, w, _) = self.cx.prev.areas.get(&id)?;
-            let laid = self.cx.text.layout(s, style, Some(w));
+            let laid = self.cx.text.layout_block(s, style, Some(w));
             return Some(edit::byte_of(s, laid.index_at_point(x - ox, y - oy)));
         }
         let &(_, text_x) = self.cx.prev.inputs.get(&id)?;
         let scroll = self.cx.edit_scroll.get(&id).copied().unwrap_or(0.0);
         Some(if password {
             // 画面の ● の何個目か → 元の文字の何文字目か
-            let laid = self.cx.text.layout(&edit::mask(s), style, None);
+            let laid = self.cx.text.layout_block(&edit::mask(s), style, None);
             edit::byte_of_char(s, laid.index_at(x - text_x + scroll))
         } else {
-            let laid = self.cx.text.layout(s, style, None);
+            let laid = self.cx.text.layout_block(s, style, None);
             edit::byte_of(s, laid.index_at(x - text_x + scroll))
         })
     }
@@ -3440,7 +3440,7 @@ impl<'a> Ui<'a> {
                     }
                     Key::Up | Key::Down | Key::PageUp | Key::PageDown if multiline => {
                         if let Some(&(_, _, w, view_h)) = cx.prev.areas.get(&id) {
-                            let laid = cx.text.layout(s, style, Some(w));
+                            let laid = cx.text.layout_block(s, style, Some(w));
                             if let Some(to) = vertical_move(&laid, s, st, key, view_h) {
                                 st.move_to(to, mods.shift);
                             }
@@ -3448,7 +3448,7 @@ impl<'a> Ui<'a> {
                     }
                     Key::Home | Key::End if multiline && !mods.ctrl => {
                         if let Some(&(_, _, w, _)) = cx.prev.areas.get(&id) {
-                            let laid = cx.text.layout(s, style, Some(w));
+                            let laid = cx.text.layout_block(s, style, Some(w));
                             let l = laid.lines[edit::line_of(&laid.lines, edit::utf16_of(s, st.cursor))];
                             let to = if key == Key::Home { l.start } else { l.end };
                             st.move_to(edit::byte_of(s, to), mods.shift);
@@ -3743,6 +3743,11 @@ impl<'a> Ui<'a> {
     /// Asks for another frame right after this one, for animations.
     /// kargui otherwise draws only when something changes.
     ///
+    /// On Windows and X11, while the window is minimized (or hidden on X11), these frames come at
+    /// most once a second, because nothing on screen changes. Do long work (encoding, downloads,
+    /// file conversion) in another thread and tell the window with [`Waker::wake`](crate::Waker::wake):
+    /// that thread runs at full speed and a wake is never slowed down.
+    ///
     /// ```
     /// # kargui::test::example(|ui| {
     /// ui.request_frame();
@@ -3790,6 +3795,10 @@ impl<'a> Ui<'a> {
     /// Asks for a frame after `after` has passed, without drawing in between (the window sleeps
     /// until then). If it is called several times, the earliest time wins. Use it for timers,
     /// blinking or anything that changes with time but not every frame.
+    ///
+    /// On Windows and X11, while the window is minimized (or hidden on X11), the frame comes no
+    /// sooner than a second after the last one. Do not use it to poll for finished work: do the
+    /// work in another thread and call [`Waker::wake`](crate::Waker::wake) when it is done.
     ///
     /// ```
     /// use std::time::Duration;
@@ -7011,7 +7020,7 @@ enum Field {
 
 /// 複数行の入力欄で、上下の矢印と PageUp/PageDown の行き先（UTF-8 の位置）。行が変わらなければ None。
 /// 横の位置は、続けて上下に動く間は最初の位置（goal_x）を保つ
-fn vertical_move(laid: &crate::text::Laid, s: &str, st: &mut edit::EditState, key: Key, view_h: f32) -> Option<usize> {
+fn vertical_move(laid: &crate::text::Block, s: &str, st: &mut edit::EditState, key: Key, view_h: f32) -> Option<usize> {
     let cur = edit::utf16_of(s, st.cursor);
     let (x, top, h) = laid.caret(cur);
     let gx = *st.goal_x.get_or_insert(x);

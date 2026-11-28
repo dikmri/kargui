@@ -2,7 +2,7 @@
 
 use crate::geom::{Color, IRect, Rect};
 use crate::paint::DrawList;
-use crate::text::{FontId, Laid, TextStyle};
+use crate::text::{Block, FontId, GLYPH_CHUNK, Laid, Placed, TextStyle};
 use crate::ime::ImeField;
 use crate::ui::context::{Context, Hit, ListInfo, OverlayInfo, Prev};
 use crate::ui::edit;
@@ -191,7 +191,7 @@ fn intrinsic(cx: &mut Context, kind: &Kind, max_w: Option<f32>) -> Option<(f32, 
 
 /// UTF-16 の範囲 [a, b) を、行ごとの四角にする（並べた範囲の左上が原点）。範囲が改行をまたぐ行は、
 /// 行の終わりから newline の幅だけ伸ばして、改行も選ばれていることを見せる
-fn range_rects(laid: &Laid, a: usize, b: usize, newline: f32) -> Vec<Rect> {
+fn range_rects(laid: &Block, a: usize, b: usize, newline: f32) -> Vec<Rect> {
     let mut out = Vec::new();
     if a >= b {
         return out;
@@ -380,11 +380,39 @@ fn contains(tree: &Tree, a: usize, t: usize) -> bool {
     tree.layout[a].children.iter().any(|&c| c == t || contains(tree, c, t))
 }
 
+/// 並べた字のうち、切り取り範囲 clip と重なる物と、その形の左上（整数の画素）。x, y は並べた範囲の左上の位置。
+/// 重ならない字は描いても画素にならないので、描く物に入れない（200 万字の入力欄で、見えない字まで毎フレーム
+/// 描く物に入れ、何も変わらないフレームでも 160 ms かかった。2026-11-28 の X11 の記録）。
+/// 字のまとまりごとの範囲（Laid::chunks）で、重ならないまとまりを丸ごと飛ばす
+fn visible_glyphs(laid: &Laid, x: f32, y: f32, clip: IRect) -> impl Iterator<Item = (&Placed, f32, f32)> {
+    // 並べた範囲の座標にした切り取り範囲。字の位置は画素に丸めるので 1 画素広げる
+    let (x0, y0) = (clip.x as f32 - x - 1.0, clip.y as f32 - y - 1.0);
+    let (x1, y1) = (clip.right() as f32 - x + 1.0, clip.bottom() as f32 - y + 1.0);
+    laid.chunks
+        .iter()
+        .enumerate()
+        .filter(move |(_, c)| c[0] < x1 && c[2] > x0 && c[1] < y1 && c[3] > y0)
+        .flat_map(move |(k, _)| &laid.glyphs[k * GLYPH_CHUNK..((k + 1) * GLYPH_CHUNK).min(laid.glyphs.len())])
+        .filter_map(move |g| {
+            let gx = (x + g.x).round() + g.slot.left as f32;
+            let gy = (y + g.y).round() + g.slot.top as f32;
+            IRect::new(gx as i32, gy as i32, g.slot.w as i32, g.slot.h as i32).intersect(&clip).map(|_| (g, gx, gy))
+        })
+}
+
 fn put(d: &mut DrawList, laid: &Laid, x: f32, y: f32, color: Color) {
-    for g in &laid.glyphs {
-        let gx = (x + g.x).round() + g.slot.left as f32;
-        let gy = (y + g.y).round() + g.slot.top as f32;
+    for (g, gx, gy) in visible_glyphs(laid, x, y, d.clip()) {
         d.glyph(gx, gy, g.slot.w as f32, g.slot.h as f32, g.slot.x as f32, g.slot.y as f32, color);
+    }
+}
+
+/// かたまりに分けて並べた文字（入力欄）を描く。切り取り範囲と字の形が重なるかたまりの、重なる字だけを入れる
+fn put_block(d: &mut DrawList, block: &Block, x: f32, y: f32, color: Color) {
+    let c = d.clip();
+    // 並べた範囲の座標にした切り取り範囲（字の位置は画素に丸めるので 1 画素広げる）
+    let (x0, y0, x1, y1) = (c.x as f32 - x - 1.0, c.y as f32 - y - 1.0, c.right() as f32 - x + 1.0, c.bottom() as f32 - y + 1.0);
+    for (laid, px, py) in block.visible(x0, y0, x1, y1) {
+        put(d, laid, x + px, y + py, color);
     }
 }
 
@@ -747,11 +775,9 @@ impl Painter<'_> {
                 }
             }
         }
-        // 文字の形（部分ごとの色）
-        for g in &laid.glyphs {
+        // 文字の形（部分ごとの色。切り取り範囲と重なる字だけ）
+        for (g, gx, gy) in visible_glyphs(&laid, r.x, r.y, self.d.clip()) {
             let color = rich::span_at(spans, g.pos as usize).map_or(if off { t.done_text } else { t.text }, |k| color_of(&spans[k]));
-            let gx = (r.x + g.x).round() + g.slot.left as f32;
-            let gy = (r.y + g.y).round() + g.slot.top as f32;
             self.d.glyph(gx, gy, g.slot.w as f32, g.slot.h as f32, g.slot.x as f32, g.slot.y as f32, color);
         }
         // 下線（リンクは乗った時に太く）と取り消し線。どちらもベースラインから測る
@@ -1965,7 +1991,7 @@ impl Painter<'_> {
         let preedit = if focused { self.cx.preedit.clone() } else { String::new() };
         // 変換中の文字はキャレットの位置に差し込んで描く（値にはまだ入れない）
         let shown = if preedit.is_empty() { value.to_string() } else { format!("{}{}{}", &value[..cursor], preedit, &value[cursor..]) };
-        let laid = self.cx.text.layout(&shown, st, None);
+        let laid = self.cx.text.layout_block(&shown, st, None);
         let line_h = laid.height.max(st.size * 1.3);
         let ty = (r.y + (r.h - line_h) / 2.0).round();
         // 変換中の下線は画素にそろえて行の下端に引く（太い下線は 2 本分で、下端まで）
@@ -2008,11 +2034,11 @@ impl Painter<'_> {
             let h = self.cx.text.layout(hint, st, None);
             put(self.d, &h, x0, ty, if off || self.cx.high_contrast { t.done_text } else { t.weak_text });
         } else {
-            put(self.d, &laid, x0, ty, if off { t.done_text } else { t.text });
+            put_block(self.d, &laid, x0, ty, if off { t.done_text } else { t.text });
             // ハイコントラストの選んだ範囲は Highlight の上なので、文字を HighlightText で描き直す
             if let Some(sel) = picked.filter(|_| self.cx.high_contrast) {
                 self.d.push_clip(IRect::covering(sel));
-                put(self.d, &laid, x0, ty, t.on_accent);
+                put_block(self.d, &laid, x0, ty, t.on_accent);
                 self.d.pop_clip();
             }
         }
@@ -2073,7 +2099,7 @@ impl Painter<'_> {
         let (cursor, anchor) = self.cx.edits.get(&id).map_or((value.len(), value.len()), |e| (e.cursor.min(value.len()), e.anchor.min(value.len())));
         let preedit = if focused { self.cx.preedit.clone() } else { String::new() };
         let shown = if preedit.is_empty() { value.to_string() } else { format!("{}{}{}", &value[..cursor], preedit, &value[cursor..]) };
-        let laid = self.cx.text.layout(&shown, st, Some(inner.w));
+        let laid = self.cx.text.layout_block(&shown, st, Some(inner.w));
         let start16 = edit::utf16_of(&shown, cursor);
         let n16 = preedit.encode_utf16().count();
         let clauses = if preedit.is_empty() { None } else { self.cx.preedit_clauses.clone() };
@@ -2114,12 +2140,12 @@ impl Painter<'_> {
             let h = self.cx.text.layout(hint, st, Some(inner.w));
             put(self.d, &h, ox, oy, if off || self.cx.high_contrast { t.done_text } else { t.weak_text });
         } else {
-            put(self.d, &laid, ox, oy, if off { t.done_text } else { t.text });
+            put_block(self.d, &laid, ox, oy, if off { t.done_text } else { t.text });
             // ハイコントラストの選んだ範囲は Highlight の上なので、行ごとに文字を HighlightText で描き直す
             if self.cx.high_contrast {
                 for sel in picked {
                     self.d.push_clip(IRect::covering(sel));
-                    put(self.d, &laid, ox, oy, t.on_accent);
+                    put_block(self.d, &laid, ox, oy, t.on_accent);
                     self.d.pop_clip();
                 }
             }
@@ -2242,3 +2268,80 @@ pub(crate) fn list_needs_refresh(tree: &Tree) -> bool {
 
 #[allow(dead_code)]
 fn _unused(_: Dir, _: Size) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text::Text;
+
+    /// 字を put した時の四角（put と同じ丸め方）を、全部の字から総当たりで出す
+    fn every_glyph_box(laid: &Laid, x: f32, y: f32) -> Vec<[f32; 4]> {
+        laid.glyphs
+            .iter()
+            .map(|g| [(x + g.x).round() + g.slot.left as f32, (y + g.y).round() + g.slot.top as f32, g.slot.w as f32, g.slot.h as f32])
+            .collect()
+    }
+
+    fn put_into(laid: &Laid, x: f32, y: f32, clip: IRect) -> Vec<[f32; 4]> {
+        let mut d = DrawList::default();
+        d.begin(IRect::new(-100_000, -100_000, 300_000, 300_000));
+        d.push_clip(clip);
+        put(&mut d, laid, x, y, [0.0, 0.0, 0.0, 1.0]);
+        d.pop_clip();
+        d.finish();
+        d.quads.iter().map(|q| q.rect).collect()
+    }
+
+    /// 描く物に入れるのは、切り抜きと重なる字だけ。重なる字は 1 つも落とさない（端で一部だけ見える字も入れる）。
+    /// 家計簿のメモに 200 万字を貼ると、見えるのは 60 字ほどなのに、全部の字を毎フレーム描く物に入れていた
+    /// （quads=2000194、何も変わらないフレームでも 160 ms。2026-11-28 の X11 の記録）
+    #[test]
+    fn put_keeps_exactly_the_glyphs_that_touch_the_clip() {
+        let mut t = Text::new().unwrap();
+        let st = TextStyle { size: 14.0, bold: false, font: FontId(0) };
+        let one_line = "a".repeat(3000) + "設定😀" + &"b".repeat(3000);
+        let many_lines: String = (0..400).map(|i| format!("行{i} abcdefghij 設定\n")).collect();
+        for (text, width, x, y) in [(one_line.as_str(), None, -9876.4, 30.0), (many_lines.as_str(), Some(160.0), 12.3, -2345.6)] {
+            let laid = t.layout(text, st, width);
+            for clip in [IRect::new(40, 20, 120, 90), IRect::new(0, 0, 900, 640), IRect::new(500, 600, 3, 3)] {
+                let want: Vec<[f32; 4]> = every_glyph_box(&laid, x, y)
+                    .into_iter()
+                    .filter(|r| IRect::covering(Rect::new(r[0], r[1], r[2], r[3])).intersect(&clip).is_some())
+                    .collect();
+                let got = put_into(&laid, x, y, clip);
+                assert_eq!(got, want, "{clip:?}");
+                assert!(want.len() < laid.glyphs.len() / 10, "見えるのは一部: {} / {}", want.len(), laid.glyphs.len());
+            }
+            // 切り抜きが全部を含めば、全部の字を入れる
+            assert_eq!(put_into(&laid, 0.0, 0.0, IRect::new(-100_000, -100_000, 300_000, 300_000)), every_glyph_box(&laid, 0.0, 0.0));
+        }
+    }
+
+    /// かたまりに分けて並べた文字（長い入力欄）も、切り抜きと重なる字だけを入れ、重なる字は落とさない
+    #[test]
+    fn put_block_keeps_exactly_the_glyphs_that_touch_the_clip() {
+        let mut t = Text::new().unwrap();
+        let st = TextStyle { size: 14.0, bold: false, font: FontId(0) };
+        let row = "abc 設定 xyz ".repeat(3000);
+        let paragraphs: String = (0..3000).map(|i| format!("{i} 行目 abcdefghij\n")).collect();
+        for (text, width, x, y) in [(row.as_str(), None, -50_000.4, 30.0), (paragraphs.as_str(), Some(160.0), 12.3, -12_345.6)] {
+            let block = t.layout_block(text, st, width);
+            for clip in [IRect::new(40, 20, 120, 90), IRect::new(0, 0, 900, 640), IRect::new(500, 600, 3, 3)] {
+                let want: Vec<[f32; 4]> = block
+                    .glyph_boxes(x, y)
+                    .into_iter()
+                    .filter(|r| IRect::covering(Rect::new(r[0], r[1], r[2], r[3])).intersect(&clip).is_some())
+                    .collect();
+                let mut d = DrawList::default();
+                d.begin(IRect::new(-100_000, -100_000, 300_000, 300_000));
+                d.push_clip(clip);
+                put_block(&mut d, &block, x, y, [0.0, 0.0, 0.0, 1.0]);
+                d.pop_clip();
+                d.finish();
+                let got: Vec<[f32; 4]> = d.quads.iter().map(|q| q.rect).collect();
+                assert_eq!(got, want, "{clip:?}");
+                assert!(clip.w < 10 || !want.is_empty(), "見える字がある: {clip:?}");
+            }
+        }
+    }
+}

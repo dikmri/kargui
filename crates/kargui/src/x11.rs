@@ -46,7 +46,7 @@ use crate::damage::Summary;
 use crate::ime_dbus;
 use crate::geom::{Color, IRect};
 use crate::ime;
-use crate::input::{A11yAction, Event, Mods};
+use crate::input::{A11yAction, Event, Key, Mods};
 use crate::linux::{A11ySink, DOUBLE_CLICK_DIST, DOUBLE_CLICK_MS, Keyboard, PortalSettings, WHEEL_STEP, app_id, key_for};
 use crate::log;
 use crate::runtime::Runtime;
@@ -69,6 +69,7 @@ x11rb::atom_manager! {
         _NET_WM_PID,
         _NET_WM_ICON,
         _NET_ACTIVE_WINDOW,
+        _NET_FRAME_EXTENTS,
         UTF8_STRING,
         CLIPBOARD,
         TARGETS,
@@ -247,9 +248,28 @@ struct XIme {
     moved: bool,
     /// 今見せている変換中の文字
     shown: String,
-    /// IME の答えを待っているキー（番号, 窓, キー, 繰り返しか, 離したか）
-    pending: VecDeque<(u64, WinId, u8, bool, bool)>,
+    /// IME の答えを待っているキー
+    pending: VecDeque<PendingKey>,
     next_id: u64,
+}
+
+/// アプリへ渡すキー 1 つの中身（キー・修飾キー・打つ文字）。押した時の XKB の状態で作る
+#[derive(Clone, Debug)]
+struct KeyInput {
+    key: Option<Key>,
+    mods: Mods,
+    text: String,
+}
+
+/// IME の答えを待っているキー。アプリへ渡す中身は押した時に作っておく（答えを待つ間にアプリの 1 フレームが重いと、
+/// Ctrl を離した知らせが先に処理され、答えが来た時の状態で作ると Ctrl+A が「a」になった）
+struct PendingKey {
+    id: u64,
+    win: WinId,
+    code: u8,
+    repeat: bool,
+    release: bool,
+    input: KeyInput,
 }
 
 /// MIT-SHM の共有メモリ（窓の絵と同じ大きさ）
@@ -308,11 +328,15 @@ struct Win {
     background: Color,
     /// 物理の大きさ
     size: (i32, i32),
+    /// 論理の最小の大きさ（倍率が変わった時に、物理の画素で OS に伝え直す）
+    min_size: Option<(f32, f32)>,
     shm: Option<ShmBuf>,
     /// サーバーが共有メモリを読み終えていない（ShmCompletion を待つ）
     shm_busy: bool,
     /// 窓が画面に出た（MapNotify。出る前の絵は捨てられる）
     mapped: bool,
+    /// 一度出た窓が画面から外れている（UnmapNotify。最小化・隠した時）。この間はタイマーと動きの描き直しを間引く
+    unmapped: bool,
     /// 窓の一部が見えるようになった（Expose）。次は絵の全部を出す
     exposed: bool,
     events: Vec<Event>,
@@ -450,7 +474,9 @@ impl State {
             | EventMask::POINTER_MOTION
             | EventMask::ENTER_WINDOW
             | EventMask::LEAVE_WINDOW
-            | EventMask::FOCUS_CHANGE;
+            | EventMask::FOCUS_CHANGE
+            // 窓の管理役が付ける枠の厚さ（_NET_FRAME_EXTENTS）の変化を聞く
+            | EventMask::PROPERTY_CHANGE;
         let bg = rt.cx.theme.background;
         let px = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u32;
         let aux = xproto::CreateWindowAux::new().background_pixel((px(bg[0]) << 16) | (px(bg[1]) << 8) | px(bg[2])).event_mask(mask);
@@ -465,7 +491,7 @@ impl State {
         // ほかのアプリから落とされる物を受け取れる（XDND の版 5）
         let _ = conn.change_property32(PropMode::REPLACE, id, a.XdndAware, AtomEnum::ATOM, &[5]);
         let mut hints = x11rb::properties::WmSizeHints::new();
-        hints.min_size = min_size.map(|(mw, mh)| (self.physical(mw) as i32, self.physical(mh) as i32));
+        hints.min_size = min_size.map(|m| min_physical(m, self.scale));
         if position.is_some() {
             hints.position = Some((x11rb::properties::WmSizeHintsSpecification::UserSpecified, x as i32, y as i32));
         }
@@ -488,9 +514,11 @@ impl State {
             summary: Summary::default(),
             background: [0.0; 4],
             size: (w as i32, h as i32),
+            min_size,
             shm: None,
             shm_busy: false,
             mapped: false,
+            unmapped: false,
             exposed: false,
             events: Vec::new(),
             need_frame: true,
@@ -814,14 +842,26 @@ impl State {
     }
 
     fn key_down(&mut self, id: WinId, code: u32, repeat: bool) {
-        let Some(kb) = self.xkb.as_ref() else { return };
+        if let Some(input) = self.key_input(code) {
+            self.deliver_key(id, input, repeat, "sent");
+        }
+    }
+
+    /// 今の XKB の状態で、キー 1 つをアプリへ渡す中身にする
+    fn key_input(&self, code: u32) -> Option<KeyInput> {
+        let kb = self.xkb.as_ref()?;
         let mods = kb.mods();
         let key = key_for(kb.base_sym(code), kb.sym(code));
         let text = if mods.ctrl || mods.alt { String::new() } else { kb.utf8(code) };
+        Some(KeyInput { key, mods, text })
+    }
+
+    fn deliver_key(&mut self, id: WinId, input: KeyInput, repeat: bool, how: &str) {
         let Some(w) = self.win(id) else { return };
+        let KeyInput { key, mods, text } = input;
         if let Some(key) = key {
             if !repeat {
-                log::event("key", &format!("key={key:?} mods={mods:?}"), "sent");
+                log::event("key", &format!("key={key:?} mods={mods:?}"), how);
             }
             w.push(Event::Key { key, mods });
         }
@@ -840,10 +880,12 @@ impl State {
 
     fn send_key_to_ime(&mut self, win: WinId, code: u8, state: u16, time: u32, repeat: bool, release: bool) {
         let keyval = self.xkb.as_ref().map_or(0, |k| k.sym(code as u32));
+        // IME が使わなかった時にアプリへ渡す中身は、押した今の状態で作っておく
+        let input = self.key_input(code as u32).unwrap_or(KeyInput { key: None, mods: Mods::NONE, text: String::new() });
         let Some(m) = self.ime.as_mut() else { return };
         let id = m.next_id;
         m.next_id += 1;
-        m.pending.push_back((id, win, code, repeat, release));
+        m.pending.push_back(PendingKey { id, win, code, repeat, release, input });
         let _ = m.tx.send(ime_dbus::Cmd::Key { id, keyval, keycode: code as u32, state: state as u32, release, time });
     }
 
@@ -863,9 +905,9 @@ impl State {
                 ime_dbus::Msg::Failed(e) => {
                     log::event("ime.unavailable", "fcitx5 / ibus", &format!("error={e} (keys go straight to the app)"));
                     let pending: Vec<_> = self.ime.take().map(|mut m| m.pending.drain(..).collect()).unwrap_or_default();
-                    for (_, win, code, repeat, release) in pending {
-                        if !release {
-                            self.key_down(win, code as u32, repeat);
+                    for p in pending {
+                        if !p.release {
+                            self.deliver_key(p.win, p.input, p.repeat, "sent (no IME)");
                         }
                     }
                     return;
@@ -875,25 +917,25 @@ impl State {
                     let mut earlier = Vec::new();
                     let mut hit = None;
                     while let Some(p) = m.pending.pop_front() {
-                        if p.0 == id {
+                        if p.id == id {
                             hit = Some(p);
                             break;
                         }
                         earlier.push(p);
                     }
                     // 答えの来なかった前のキー（無いはず）は、失わないようにアプリに渡す
-                    for (_, win, code, repeat, release) in earlier {
-                        if !release {
-                            self.key_down(win, code as u32, repeat);
+                    for p in earlier {
+                        if !p.release {
+                            self.deliver_key(p.win, p.input, p.repeat, "sent (no IME answer)");
                         }
                     }
-                    if let Some((_, win, code, repeat, release)) = hit {
+                    if let Some(p) = hit {
                         if handled {
-                            if !release && !repeat {
-                                log::event("ime.key", &format!("code={code}"), "used by the IME");
+                            if !p.release && !p.repeat {
+                                log::event("ime.key", &format!("code={}", p.code), "used by the IME");
                             }
-                        } else if !release {
-                            self.key_down(win, code as u32, repeat);
+                        } else if !p.release {
+                            self.deliver_key(p.win, p.input, p.repeat, "sent after IME");
                         }
                     }
                 }
@@ -1140,10 +1182,72 @@ impl State {
         log::event("clipboard.request", &format!("target={} requestor=0x{:x}", e.target, e.requestor), if answered { "sent" } else { "refused" });
     }
 
+    /// Xft.dpi を読み直し、倍率が変わったら、各窓の論理の大きさを保ったまま物理の大きさを作り直す
+    fn reread_dpi(&mut self) {
+        let db = x11rb::resource_manager::new_from_default(&*self.conn).ok();
+        let dpi = db.as_ref().and_then(|d| d.get_value::<f32>("Xft.dpi", "").ok().flatten());
+        let new = scale_from_dpi(dpi);
+        let old = self.scale;
+        if (new - old).abs() < 0.001 {
+            return;
+        }
+        log::event("x11.dpi", &format!("dpi={dpi:?}"), &format!("scale {old:.3} -> {new:.3}"));
+        self.scale = new;
+        for w in &mut self.windows {
+            let (pw, ph) = rescaled(w.size, old, new);
+            w.size = (pw as i32, ph as i32);
+            // 大きさを OS に頼み（ConfigureNotify が後から来る）、Runtime には先に新しい倍率を入れる
+            let _ = self.conn.configure_window(w.id, &xproto::ConfigureWindowAux::new().width(pw as u32).height(ph as u32));
+            // 最小の大きさも新しい倍率の画素で伝え直す（古い倍率のままだと、小さくできない・小さくなりすぎる）
+            if let Some((mw, mh)) = w.min_size {
+                let mut hints = x11rb::properties::WmSizeHints::new();
+                hints.min_size = Some(min_physical((mw, mh), new));
+                let _ = hints.set_normal_hints(&*self.conn, w.id);
+            }
+            w.rt.resize(pw as f32, ph as f32, new);
+            w.summary = Summary::default();
+            w.full = true;
+            w.need_frame = true;
+            w.why = "dpi";
+            log::event("window.size", &format!("physical={pw}x{ph} scale={new:.3}{}", w.tag()), "dpi");
+        }
+        let _ = self.conn.flush();
+    }
+
+    /// 窓の画面の上の場所を読み直す（中の左上を画面の座標で読み、窓の管理役の枠の厚さを引いて外枠の左上にする）。ほかの窓は
+    /// 場所が変わったら描き直す（ドッキングが窓の場所を並べ方に写す）
+    fn update_place(&mut self, id: WinId) {
+        if self.win(id).is_none() {
+            return;
+        }
+        let client = self.conn.translate_coordinates(id, self.root, 0, 0).ok().and_then(|c| c.reply().ok()).map(|t| (t.dst_x as i32, t.dst_y as i32));
+        let extents = self
+            .conn
+            .get_property(false, id, self.atoms._NET_FRAME_EXTENTS, AtomEnum::CARDINAL, 0, 4)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .and_then(|r| r.value32().map(|v| v.collect::<Vec<u32>>()))
+            .and_then(|v| <[u32; 4]>::try_from(v).ok());
+        let scale = self.scale;
+        let place = client.map(|c| window_place(c, extents, scale));
+        if let Some(w) = self.win(id)
+            && place.is_some()
+            && place != w.rt.cx.place
+        {
+            w.rt.cx.place = place;
+            if w.key.is_some() {
+                w.need_frame = true;
+                w.why = "place";
+            }
+        }
+    }
+
     /// X の知らせを 1 つ処理する
     fn handle(&mut self, ev: XEvent) {
         let focus_in = matches!(ev, XEvent::FocusIn(_));
         match ev {
+            // X のリソース（Xft.dpi が入る）が変わった。GNOME などの X11 では、表示の倍率を変えると開いたまま変わる
+            XEvent::PropertyNotify(p) if p.window == self.root && p.atom == u32::from(AtomEnum::RESOURCE_MANAGER) => self.reread_dpi(),
             XEvent::Expose(e) if e.count == 0 => {
                 if let Some(w) = self.win(e.window) {
                     w.exposed = true;
@@ -1156,7 +1260,20 @@ impl State {
                     w.mapped = true;
                     w.exposed = true;
                     w.need_frame = true;
+                    // 最小化から戻った（外れている間に止めた動きを、ここから描き直す）
+                    if w.unmapped {
+                        w.unmapped = false;
+                        w.full = true;
+                        w.why = "mapped";
+                    }
                     log::event("window.mapped", &w.tag(), "ok");
+                }
+            }
+            // 最小化・隠した（見えない窓に描いても捨てられる。タイマーと動きの描き直しを間引いて CPU を使わない）
+            XEvent::UnmapNotify(e) => {
+                if let Some(w) = self.win(e.window) {
+                    w.unmapped = true;
+                    log::event("window.unmapped", &format!("animating={}{}", w.animating, w.tag()), "ok");
                 }
             }
             XEvent::ConfigureNotify(e) => {
@@ -1176,25 +1293,10 @@ impl State {
                         log::event("window.size", &format!("physical={}x{} scale={scale:.3}{}", size.0, size.1, w.tag()), "configure");
                     }
                 }
-                // 画面の上の場所（中の左上を画面の座標で読み、論理の画素にする。外枠の左上も同じ所とする）。ほかの窓は
-                // 場所が変わったら描き直す（ドッキングが窓の場所を並べ方に写す）
-                if self.win(e.window).is_some() {
-                    let place = self.conn.translate_coordinates(e.window, self.root, 0, 0).ok().and_then(|c| c.reply().ok()).map(|t| {
-                        let (x, y) = (t.dst_x as f32 / scale, t.dst_y as f32 / scale);
-                        crate::ui::context::WindowPlace { outer: (x, y), client: (x, y), unit: 1.0 / scale }
-                    });
-                    if let Some(w) = self.win(e.window)
-                        && place.is_some()
-                        && place != w.rt.cx.place
-                    {
-                        w.rt.cx.place = place;
-                        if w.key.is_some() {
-                            w.need_frame = true;
-                            w.why = "place";
-                        }
-                    }
-                }
+                self.update_place(e.window);
             }
+            // 窓の管理役が枠の厚さを付けた・変えた（題の帯を外した時など）。外枠の左上を読み直す
+            XEvent::PropertyNotify(p) if p.atom == self.atoms._NET_FRAME_EXTENTS => self.update_place(p.window),
             XEvent::ClientMessage(e) if [self.atoms.XdndEnter, self.atoms.XdndPosition, self.atoms.XdndLeave, self.atoms.XdndDrop].contains(&e.type_) => self.xdnd(e),
             XEvent::ClientMessage(e) if e.type_ == self.atoms.WM_PROTOCOLS => {
                 let data = e.data.as_data32();
@@ -1373,10 +1475,14 @@ impl State {
         let tray = is_main.then(|| w.rt.cx.tray.clone());
         let show = w.rt.cx.show_request.take();
         let notes = std::mem::take(&mut w.rt.cx.notify_requests);
-        w.wake_at = out.wake_after.map(|d| Instant::now() + d);
+        let now = Instant::now();
+        w.wake_at = out.wake_after.map(|d| now + d);
         if out.want_frame {
-            w.wake_at = Some(w.wake_at.map_or(Instant::now() + ANIMATION_STEP, |t| t.min(Instant::now() + ANIMATION_STEP)));
+            w.wake_at = Some(w.wake_at.map_or(now + ANIMATION_STEP, |t| t.min(now + ANIMATION_STEP)));
         }
+        // 最小化・隠した窓は、タイマーと動きの描き直しを 1 秒に 1 回までに間引く（止めないのは、アプリの処理を
+        // タイマーで進めている時に止めないため。見本の spinner は 33 ms おきのタイマーで、見えない窓に描き続けていた）
+        w.wake_at = w.wake_at.map(|t| hidden_wake(w.unmapped, t, now));
         w.animating = out.want_frame;
         w.need_frame = false;
         if quit {
@@ -1532,6 +1638,35 @@ fn clip_rect(r: IRect, w: i32, h: i32) -> Option<IRect> {
     (x1 > x0 && y1 > y0).then_some(IRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
 }
 
+/// 倍率が変わった時の、窓の中の物理の大きさ（論理の大きさを保つ。1 画素より小さくしない）
+fn rescaled(physical: (i32, i32), old: f32, new: f32) -> (u16, u16) {
+    let f = |p: i32| ((p as f32 / old) * new).round().clamp(1.0, 32767.0) as u16;
+    (f(physical.0), f(physical.1))
+}
+
+/// 窓の画面の上の場所（論理の画素）。外枠の左上は、中身の左上から窓の管理役の枠の厚さ（_NET_FRAME_EXTENTS の左・上）を
+/// 引く。窓の管理役は Options::position の所に外枠の左上を置くので、読んだ場所をそのまま渡せば同じ所に開く（引かないと、
+/// ドッキングの別の窓を開き直すたびに、枠の厚さだけ右下へずれた）。厚さを知らせない窓の管理役では、中身の左上を使う
+fn window_place(client: (i32, i32), extents: Option<[u32; 4]>, scale: f32) -> crate::ui::context::WindowPlace {
+    let (left, top) = extents.map_or((0, 0), |e| (e[0] as i32, e[2] as i32));
+    let logical = |x: i32, y: i32| (x as f32 / scale, y as f32 / scale);
+    crate::ui::context::WindowPlace { outer: logical(client.0 - left, client.1 - top), client: logical(client.0, client.1), unit: 1.0 / scale }
+}
+
+/// 画面から外れている窓（最小化・隠した）が、タイマーや動きで次に描く時の、いちばん短い間
+const HIDDEN_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 次に描く時。画面から外れている間は、今から HIDDEN_FRAME_INTERVAL より早くしない（ほかの知らせ・戻った時は待たずに描く）
+fn hidden_wake(unmapped: bool, wanted: Instant, now: Instant) -> Instant {
+    if unmapped { wanted.max(now + HIDDEN_FRAME_INTERVAL) } else { wanted }
+}
+
+/// 論理の最小の大きさを、その倍率の物理の画素にする（WM_NORMAL_HINTS の min_size）
+fn min_physical(logical: (f32, f32), scale: f32) -> (i32, i32) {
+    let f = |v: f32| (v * scale).round().clamp(1.0, 32767.0) as i32;
+    (f(logical.0), f(logical.1))
+}
+
 /// Xft.dpi（X のリソース）から倍率を決める。無い・読めない時は 1
 fn scale_from_dpi(dpi: Option<f32>) -> f32 {
     match dpi {
@@ -1615,6 +1750,8 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     if depth != 24 && depth != 32 || bpp != 32 {
         return Err(error("visual", format!("depth {depth} with {bpp} bits per pixel is not supported (24 or 32 bits with 32 bits per pixel)")));
     }
+    // 根の窓の属性の変化（X のリソースの Xft.dpi が開いたまま変わるのを聞く）
+    let _ = conn.change_window_attributes(root, &xproto::ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE));
     let settings_rx = crate::linux::spawn_settings(options.dark.is_none(), options.high_contrast.is_none(), false, wake_fd.clone());
     let clip = Rc::new(RefCell::new(Clip { conn: conn.clone(), atoms, owner, ours: None, time: x11rb::CURRENT_TIME, stash: VecDeque::new() }));
     let (dialog_tx, dialog_rx) = channel();
@@ -1666,7 +1803,7 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
     let local = crate::linux::local_date().zip(crate::linux::local_time()).map_or("unknown".to_string(), |((y, m, d), (h, min))| format!("{y}-{m:02}-{d:02} {h:02}:{min:02}"));
     log::event("window.create", &format!("title={:?} size={:.0}x{:.0} class={} local={local}", options.title, options.size.0, options.size.1, app_id()), "ok");
     let icon = st.main_icon.clone();
-    st.new_window(None, &options.title, options.size, options.min_size, None, icon.as_ref(), rt)?;
+    st.new_window(None, &options.title, options.size, options.min_size, options.position, icon.as_ref(), rt)?;
     // OS の明暗の答えを、最初の絵の前に 150 ms まで待つ
     let answer = st.settings_rx.as_ref().map(|rx| rx.recv_timeout(Duration::from_millis(150)));
     match answer {
@@ -1697,8 +1834,11 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
                 if !w.animating {
                     log::event("timer", &w.tag(), "frame");
                 }
+                // ほかの理由で描くことになっていれば、記録にはその理由を残す
+                if !w.need_frame {
+                    w.why = if w.animating { "animation" } else { "timer" };
+                }
                 w.need_frame = true;
-                w.why = if w.animating { "animation" } else { "timer" };
             }
         }
         let ids: Vec<WinId> = st.windows.iter().map(|w| w.id).collect();
@@ -1776,6 +1916,49 @@ pub(crate) fn run(options: Options, app: Box<dyn App>) -> Result<(), crate::Erro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_scale_keeps_the_logical_size() {
+        assert_eq!(rescaled((1350, 930), 1.5, 1.0), (900, 620));
+        assert_eq!(rescaled((900, 620), 1.0, 2.0), (1800, 1240));
+        assert_eq!(rescaled((1350, 930), 1.5, 1.25), (1125, 775));
+        // 1 画素より小さくしない
+        assert_eq!(rescaled((1, 1), 2.0, 1.0), (1, 1));
+    }
+
+    #[test]
+    fn the_outer_corner_leaves_out_the_window_manager_frame() {
+        // openbox の枠（左 1・右 1・上 24・下 5）。Options::position の (953, 374) に外枠を置くと、中身は (954, 398)
+        let p = window_place((954, 398), Some([1, 1, 24, 5]), 1.0);
+        assert_eq!(p.outer, (953.0, 374.0), "読んだ外枠の左上をそのまま渡せば、同じ所に開く");
+        assert_eq!(p.client, (954.0, 398.0));
+        // 倍率 1.5 は論理の画素にする
+        let p = window_place((1500, 600), Some([0, 0, 36, 0]), 1.5);
+        assert_eq!(p.outer, (1000.0, 376.0));
+        assert_eq!(p.client, (1000.0, 400.0));
+        // 枠の厚さを知らせない窓の管理役では、中身の左上を外枠の左上とする
+        assert_eq!(window_place((10, 20), None, 1.0).outer, (10.0, 20.0));
+    }
+
+    #[test]
+    fn a_hidden_window_wakes_at_most_once_a_second() {
+        let now = Instant::now();
+        let soon = now + std::time::Duration::from_millis(33);
+        // 見えている窓は頼まれた時のまま
+        assert_eq!(hidden_wake(false, soon, now), soon);
+        // 最小化・隠した窓は 1 秒後より早くしない
+        assert_eq!(hidden_wake(true, soon, now), now + HIDDEN_FRAME_INTERVAL);
+        // もともと 1 秒より先なら、そのまま
+        let later = now + std::time::Duration::from_secs(5);
+        assert_eq!(hidden_wake(true, later, now), later);
+    }
+
+    #[test]
+    fn the_minimum_size_follows_the_scale() {
+        assert_eq!(min_physical((480.0, 320.0), 1.5), (720, 480));
+        assert_eq!(min_physical((480.0, 320.0), 2.0), (960, 640));
+        assert_eq!(min_physical((480.0, 320.0), 1.0), (480, 320));
+    }
 
     #[test]
     fn dpi_sets_the_scale() {
