@@ -1476,7 +1476,11 @@ fn handle(w: &mut Window, ev: &NSEvent, last_press: &mut Option<(Instant, f32, f
         }
         NSEventType::LeftMouseDown => {
             let (x, y) = w.to_physical(ev.locationInWindow());
-            if inside(w, x, y) {
+            if !w.ns.isKeyWindow() {
+                // 前面でない窓の 1 回目の押下は、窓を前面にするだけで部品は押さない（Mac の決まり。NSView の
+                // acceptsFirstMouse: の既定と同じ）。前面にするのは AppKit（sendEvent）。離した時の知らせも渡さない
+                log::event("click.activate", &format!("x={x:.0} y={y:.0}"), "window was not key; not sent to widgets");
+            } else if inside(w, x, y) {
                 let count = (ev.clickCount().clamp(1, 3)) as u8;
                 let target = w.rt.cx.hit(x, y).map(|h| h.id);
                 log::event("click", &format!("x={x:.0} y={y:.0} count={count}"), &format!("target={target:?}"));

@@ -171,6 +171,17 @@ jobs:
           # トレイ（NSStatusItem）: 見本の 24 ページ目で「通知領域にアイコンを出す」を入れ、トレイの項目を押してメニューを
           # 開いて撮り、↓↓Enter で「暗い色」を選ぶ（見本が暗くなる）
           GALLERY_PAGE=23 SHOT_MS=20000 drive input-tray 620 ./target/release/gallery-kargui click:300,154 wait:1000 axtray wait:800 screen:shots/input-tray-menu.png key:down key:down key:enter wait:1000 screen:shots/input-tray-dark.png
+          # 前面でない窓の 1 回目の押下（Mac の決まりでは窓を前面にするだけで、部品は押されない）: 見本を開いた後に
+          # 参考のアプリを前面にし、見本の「暗い色」を 2 回押す。1 回目は click.activate だけ、2 回目で暗くなる
+          KARGUI_SHOT=shots/input-first-click.png KARGUI_SHOT_MS=14000 ./target/release/gallery-kargui --log shots/input-first-click.log &
+          gpid=$!
+          sleep 3
+          ./target/mac-ime-ref > shots/input-first-click-ref.txt 2>&1 &
+          rpid=$!
+          sleep 2
+          ./target/mac-drive "$gpid" 620 click:129,28 wait:800 screen:shots/input-first-click-1.png click:129,28 wait:800 screen:shots/input-first-click-2.png > shots/input-first-click-drive.txt 2>&1 || echo "first click driver exit=$?"
+          kill "$rpid" 2>/dev/null || true
+          wait "$gpid"; echo "first-click gallery: exit=$?"
           ls -la shots
       - uses: actions/upload-artifact@v4
         if: always()
